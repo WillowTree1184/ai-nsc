@@ -2,8 +2,9 @@
 
 ## State
 
-- Branch `master`; latest commit `0ec3a18` "Implement 'use' imports (§5.6)";
-  previous `5fe9f0c` "Implement 'owner' access to shadowed outer-scope names
+- Branch `master`; latest commit `72587df` "Diagnose uninitialized constants
+  and illegal-value comparisons"; previous `0ec3a18` "Implement 'use' imports
+  (§5.6)", `5fe9f0c` "Implement 'owner' access to shadowed outer-scope names
   (§6.4)", `8c0b507` "Validate constructor chains (§3.7.1)", `eafa0da`
   "Implement built-in pointer arithmetic",
   `a5cc9cf` "Fix high-severity conformance defects found by the spec audit" and
@@ -12,7 +13,7 @@
   dirty while a concurrent session lands fixes — check `git status` before
   committing.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  — **139 tests green** (40 lib unit including 4 AST-clone tests, 19 CLI,
+  — **141 tests green** (40 lib unit including 4 AST-clone tests, 21 CLI,
   2 codegen/LLVM, 67 end-to-end execution, 10 parser, 1 spec-example conformance).
 - Build flags (required on this host):
   `CARGO_HOME=/tmp/ainsc-cargo LLVM_SYS_181_PREFIX=/usr/lib/llvm-18`

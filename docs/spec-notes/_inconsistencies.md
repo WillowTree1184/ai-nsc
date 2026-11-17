@@ -47,3 +47,5 @@ questions each. The ones that shape the implementation most:
 5. `#`/`&` are required to distinguish overloads but are absent from the
    mangled name; ai-nsc will add the `#` marker to the hash input (recorded in
    `docs/ABI.md`) unless the spec settles it first.
+
+| 8 | §3.6.2 | 指针减法结果为「元素个数」，但未规定该结果的具体整数类型（符号、宽度）。实现取 `integer(8)`（有符号 64 位），并在 `docs/AUDIT.md` #11 中记录。 |

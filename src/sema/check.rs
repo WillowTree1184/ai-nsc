@@ -4126,6 +4126,42 @@ impl<'a> Sema<'a> {
     }
 
     /// Finds an operator overload for the argument types along the owner chain.
+    /// Result type of a built-in pointer arithmetic expression, if it applies
+    /// (§3.6.2).
+    fn pointer_arithmetic_result(
+        &mut self,
+        op: BinaryOp,
+        left: TypeId,
+        right: TypeId,
+    ) -> Option<TypeId> {
+        let left_pointer = matches!(self.type_of(left), Type::Pointer { .. });
+        let right_pointer = matches!(self.type_of(right), Type::Pointer { .. });
+        match op {
+            BinaryOp::Add => {
+                if left_pointer && self.is_integer(right) {
+                    Some(left)
+                } else if right_pointer && self.is_integer(left) {
+                    Some(right)
+                } else {
+                    None
+                }
+            }
+            BinaryOp::Subtract => {
+                if left_pointer && self.is_integer(right) {
+                    Some(left)
+                } else if left_pointer && right_pointer && left == right {
+                    // The number of elements between the two addresses; the
+                    // spec leaves the result type to the type page, so a signed
+                    // 64-bit count is used (see docs/spec-notes/_inconsistencies.md).
+                    Some(self.result.types.integer(true, 8))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     fn find_operator(&self, owner: TypeId, other: TypeId, kind: OperatorKind) -> Option<u32> {
         let mut current = Some(owner);
         let mut depth = 0;
@@ -4233,18 +4269,40 @@ impl<'a> Sema<'a> {
             NodeKind::IntegerLiteral(_) | NodeKind::FloatLiteral(_) | NodeKind::CharacterLiteral(_)
         );
 
-        let mut left_type =
-            self.check_expr(binary.left, if left_is_literal { expected } else { None });
+        // A pointer expectation never types a literal operand (§3.6.2).
+        let literal_expected =
+            expected.filter(|ty| !matches!(self.type_of(*ty), Type::Pointer { .. }));
+        let mut left_type = self.check_expr(
+            binary.left,
+            if left_is_literal {
+                literal_expected
+            } else {
+                None
+            },
+        );
         let mut right_type = match left_type {
+            // A pointer operand does not type an integer literal: the literal
+            // keeps its default integer type for pointer arithmetic (§3.6.2).
+            Some(left_type)
+                if right_is_literal && matches!(self.type_of(left_type), Type::Pointer { .. }) =>
+            {
+                self.check_expr(binary.right, None)
+            }
             Some(left_type) => self.check_expr(binary.right, Some(left_type)),
             None => self.check_expr(binary.right, expected),
         };
         if left_type != right_type {
-            if left_is_literal {
+            // Pointer operands never type the other operand (§3.6.2): pointer
+            // arithmetic accepts any integer type.
+            let left_is_pointer =
+                left_type.is_some_and(|ty| matches!(self.type_of(ty), Type::Pointer { .. }));
+            let right_is_pointer =
+                right_type.is_some_and(|ty| matches!(self.type_of(ty), Type::Pointer { .. }));
+            if left_is_literal && !right_is_pointer {
                 if let Some(right_type) = right_type {
                     left_type = self.check_expr(binary.left, Some(right_type));
                 }
-            } else if right_is_literal {
+            } else if right_is_literal && !left_is_pointer {
                 if let Some(left_type) = left_type {
                     right_type = self.check_expr(binary.right, Some(left_type));
                 }
@@ -4269,6 +4327,12 @@ impl<'a> Sema<'a> {
             return None;
         };
         if let Some(result) = self.check_overloaded_binary(node, binary.op, left_type, right_type) {
+            return Some(result);
+        }
+        // Built-in pointer arithmetic (§3.6.2): `pointer + integer`,
+        // `integer + pointer`, `pointer - integer` stay pointers, and
+        // `pointer - pointer` is an element count.
+        if let Some(result) = self.pointer_arithmetic_result(binary.op, left_type, right_type) {
             return Some(result);
         }
         if left_type != right_type {

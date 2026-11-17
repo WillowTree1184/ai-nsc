@@ -4411,6 +4411,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         binary: &BinaryExpr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
         let operand_type = self.type_of(binary.left);
+        if let Some(value) = self.gen_pointer_arithmetic(node, binary)? {
+            return Ok(value);
+        }
         match binary.op {
             BinaryOp::LogicalAnd | BinaryOp::LogicalOr => self.gen_logical(binary),
             _ => {
@@ -4435,6 +4438,99 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                         .into()),
                 }
             }
+        }
+    }
+
+    /// Widens a pointer offset to `i64` preserving its sign, so negative offsets
+    /// address lower memory instead of wrapping to a huge positive index.
+    fn pointer_offset(&mut self, value: IntValue<'ctx>) -> Result<IntValue<'ctx>, String> {
+        let i64_type = self.context.i64_type();
+        let bits = value.get_type().get_bit_width();
+        if bits == 64 {
+            return Ok(value);
+        }
+        if bits > 64 {
+            return self
+                .builder
+                .build_int_truncate(value, i64_type, "offset64")
+                .map_err(|error| format!("cannot convert offset: {error}"));
+        }
+        self.builder
+            .build_int_s_extend(value, i64_type, "offset64")
+            .map_err(|error| format!("cannot convert offset: {error}"))
+    }
+
+    /// Lowers built-in pointer arithmetic (§3.6.2). The unit is the size of the
+    /// pointee, or one byte for a target-less pointer.
+    fn gen_pointer_arithmetic(
+        &mut self,
+        node: NodeId,
+        binary: &BinaryExpr,
+    ) -> Result<Option<BasicValueEnum<'ctx>>, String> {
+        let left_type = self.type_of(binary.left);
+        let right_type = self.type_of(binary.right);
+        let left_pointer = matches!(self.sema.types.get(left_type), Type::Pointer { .. });
+        let right_pointer = matches!(self.sema.types.get(right_type), Type::Pointer { .. });
+        let unit = |pointer: TypeId, sema: &SemaResult| match sema.types.get(pointer) {
+            Type::Pointer {
+                target: Some(target),
+            } => sema.size_align(*target).0.max(1),
+            _ => 1,
+        };
+        match binary.op {
+            BinaryOp::Add if left_pointer && !right_pointer => {
+                let base = self.gen_expr(binary.left)?.into_pointer_value();
+                let index = self.gen_expr(binary.right)?.into_int_value();
+                let index = self.pointer_offset(index)?;
+                let element = unit(left_type, self.sema);
+                let address = self.address_with_size(base, element, index)?;
+                Ok(Some(address.into()))
+            }
+            BinaryOp::Add if right_pointer && !left_pointer => {
+                let base = self.gen_expr(binary.right)?.into_pointer_value();
+                let index = self.gen_expr(binary.left)?.into_int_value();
+                let index = self.pointer_offset(index)?;
+                let element = unit(right_type, self.sema);
+                let address = self.address_with_size(base, element, index)?;
+                Ok(Some(address.into()))
+            }
+            BinaryOp::Subtract if left_pointer && !right_pointer => {
+                let base = self.gen_expr(binary.left)?.into_pointer_value();
+                let offset = self.gen_expr(binary.right)?.into_int_value();
+                let offset = self.pointer_offset(offset)?;
+                let negated = self
+                    .builder
+                    .build_int_neg(offset, "negate_offset")
+                    .map_err(|error| format!("cannot negate offset: {error}"))?;
+                let element = unit(left_type, self.sema);
+                let address = self.address_with_size(base, element, negated)?;
+                Ok(Some(address.into()))
+            }
+            BinaryOp::Subtract if left_pointer && right_pointer => {
+                let left = self.gen_expr(binary.left)?.into_pointer_value();
+                let right = self.gen_expr(binary.right)?.into_pointer_value();
+                let i64_type = self.context.i64_type();
+                let left_integer = self
+                    .builder
+                    .build_ptr_to_int(left, i64_type, "left_address")
+                    .map_err(|error| format!("cannot convert pointer: {error}"))?;
+                let right_integer = self
+                    .builder
+                    .build_ptr_to_int(right, i64_type, "right_address")
+                    .map_err(|error| format!("cannot convert pointer: {error}"))?;
+                let difference = self
+                    .builder
+                    .build_int_sub(left_integer, right_integer, "difference")
+                    .map_err(|error| format!("cannot subtract pointers: {error}"))?;
+                let element = i64_type.const_int(unit(left_type, self.sema), false);
+                let count = self
+                    .builder
+                    .build_int_signed_div(difference, element, "element_count")
+                    .map_err(|error| format!("cannot divide addresses: {error}"))?;
+                let _ = node;
+                Ok(Some(count.into()))
+            }
+            _ => Ok(None),
         }
     }
 

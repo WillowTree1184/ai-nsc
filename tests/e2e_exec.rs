@@ -1635,3 +1635,23 @@ fixed Main(): integer(4)
     // 0xFF + 0x41 = 320, truncated to the process exit code.
     assert_eq!(run_program(source), 320 % 256);
 }
+
+#[test]
+fn pointer_arithmetic_uses_the_pointee_size() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local values[4]: integer(4) = { 10, 20, 30, 40 };
+    local first: pointer integer(4) = Cast<pointer integer(4)>(values);
+    local second: pointer integer(4) = first + 1;
+    local third: pointer integer(4) = 1 + second;
+    local back: pointer integer(4) = third - 1;
+    local count: integer(8) = third - first;
+    return Cast<integer(4)>(second[0])
+        + Cast<integer(4)>(third[0])
+        + Cast<integer(4)>(back[0])
+        + Cast<integer(4)>(count);
+}";
+    // 20 + 30 + 20 + 2
+    assert_eq!(run_program(source), 72);
+}

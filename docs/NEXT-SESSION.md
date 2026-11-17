@@ -2,16 +2,17 @@
 
 ## State
 
-- Branch `master`; latest commit `8c0b507` "Validate constructor chains
-  (§3.7.1)"; previous `eafa0da` "Implement built-in pointer arithmetic",
+- Branch `master`; latest commit `5fe9f0c` "Implement 'owner' access to
+  shadowed outer-scope names (§6.4)"; previous `8c0b507` "Validate constructor
+  chains (§3.7.1)", `eafa0da` "Implement built-in pointer arithmetic",
   `a5cc9cf` "Fix high-severity conformance defects found by the spec audit" and
   `3a34c91` "Implement generics with compile-time monomorphization" (see
   `git log --oneline`). Working tree may be
   dirty while a concurrent session lands fixes — check `git status` before
   committing.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  — **134 tests green** (40 lib unit including 4 AST-clone tests, 18 CLI,
-  2 codegen/LLVM, 63 end-to-end execution, 10 parser, 1 spec-example conformance).
+  — **136 tests green** (40 lib unit including 4 AST-clone tests, 18 CLI,
+  2 codegen/LLVM, 65 end-to-end execution, 10 parser, 1 spec-example conformance).
 - Build flags (required on this host):
   `CARGO_HOME=/tmp/ainsc-cargo LLVM_SYS_181_PREFIX=/usr/lib/llvm-18`
 - CLI: `target/debug/ai-nsc check|emit-ir|emit-obj|build|run <file.ns>`.
@@ -104,7 +105,7 @@ synthetic built-in exception declarations and the first AST node of a file.
 1. **HIGH group is closed** (#1–#10 fixed). Remaining MED/HIGH #11 tail:
    `Type.SizeOf<T>()` (needs the compile-time API) and `p += i` compound
    assignment.
-2. **MED items** (#13–#25) in order: `owner`, `use` imports, non-`this` `&`
+2. **MED items** (#13–#25) in order: `use` imports (#14), non-`this` `&`
    parameters, VLAs, array flattening/casts, heap inference/allocator, `dispose`,
    missing-return/`finally` diagnostics, `illegal`/`uninitialized`, variant
    elision/equality, and the warning subsystem (no `Severity::Warning` sites

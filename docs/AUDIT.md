@@ -32,7 +32,7 @@ only after the reproduction is re-run and its regression test is green.
 | 10 | HIGH | §3.2 | Float→integer explicit cast emits bare `fptosi`/`fptoui` (UB out of range; spec requires wrapping) | fixed (a5cc9cf) |
 | 11 | MED/HIGH | §3.6.2 | Pointer arithmetic missing (`p + i`, `p - i`, `p - q`); no pointer builtin overloads, no `Type.SizeOf<T>()` | partial (eafa0da: `p ± i`, `i + p`, `p - q` implemented with pointee-size unit; `Type.SizeOf<T>()` and `p += i` still missing) |
 | 12 | MED | §2.7.7 | `\x hh` escape produces a UTF-8 encoded scalar (2 bytes) instead of one raw byte | fixed (a5cc9cf) |
-| 13 | MED | §6.4 | `owner` / `owner.owner` unsupported ("owner expressions are not implemented yet") | open |
+| 13 | MED | §6.4 | `owner` / `owner.owner` unsupported ("owner expressions are not implemented yet") | fixed (5fe9f0c: reads and assignment targets, nested chains, function-body scope merged) |
 | 14 | MED | §5.6 | `use` statement is a no-op/error; imported members are not visible | open |
 | 15 | MED | §8.2 | `&` parameters other than `this` unsupported (spec example `Scale(value: &integer(4), …)` rejected) | open |
 | 16 | MED | §3.6.1 | VLAs (dimensions from runtime values) unsupported; dimensions are forced to constants | open |

@@ -442,3 +442,22 @@ fixed Main(): integer(4)
     );
     assert!(stderr.contains("storage initial value"), "{stderr}");
 }
+
+#[test]
+fn payload_variant_state_must_be_constructed() {
+    let stderr = check_source(
+        "\
+variant Maybe
+{
+    Some: integer(4);
+    Nothing;
+}
+
+fixed Main(): integer(4)
+{
+    local value: Maybe = Some;
+    return 0;
+}",
+    );
+    assert!(stderr.contains("carries a payload"), "{stderr}");
+}

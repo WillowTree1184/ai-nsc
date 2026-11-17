@@ -1879,3 +1879,32 @@ fixed Main(): integer(4)
     // `matrix` is not visible through `flat`.
     assert_eq!(run_program(source), 5);
 }
+
+#[test]
+fn variant_state_names_elide_the_type_in_context() {
+    let source = "\
+variant Status
+{
+    Idle;
+    Busy;
+    Done;
+}
+
+fixed Describe(state: Status): integer(4)
+{
+    match state
+    {
+        case is Status.Idle { return 3; }
+        case is Status.Busy { return 5; }
+        case wildcard { return 7; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local idle: Status = Idle;
+    local done: Status = Done;
+    return Describe(idle) + Describe(done);
+}";
+    assert_eq!(run_program(source), 10);
+}

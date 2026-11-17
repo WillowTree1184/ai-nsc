@@ -3443,7 +3443,7 @@ impl<'a> Sema<'a> {
                     None
                 }
             },
-            NodeKind::Name(name) => self.check_name_expr(node, &name),
+            NodeKind::Name(name) => self.check_name_expr(node, &name, expected),
             NodeKind::MemberAccess(access) => self.check_member_access(node, &access, false),
             NodeKind::PointerMemberAccess(access) => self.check_member_access(node, &access, true),
             NodeKind::Index(index) => self.check_index_expr(node, &index),
@@ -3747,8 +3747,44 @@ impl<'a> Sema<'a> {
 
     // -- names -------------------------------------------------------------
 
-    fn check_name_expr(&mut self, node: NodeId, name: &NameExpr) -> Option<TypeId> {
+    fn check_name_expr(
+        &mut self,
+        node: NodeId,
+        name: &NameExpr,
+        expected: Option<TypeId>,
+    ) -> Option<TypeId> {
         let Some(symbol) = self.lookup(&name.name).cloned() else {
+            // Name elision for variant states (§3.7.5): in a context that wants a
+            // variant, a payload-less state name stands for `Variant.State`.
+            if let Some(expected) = expected {
+                if let Type::Named(index) = self.types_of(expected) {
+                    let definition = &self.result.type_defs[index as usize];
+                    if definition.kind == TypeDefKind::Variant {
+                        if let Some(state) = definition
+                            .variant_states
+                            .iter()
+                            .position(|state| state.name == name.name)
+                        {
+                            if definition.variant_states[state].payload.is_some() {
+                                self.error(
+                                    self.span_of(node),
+                                    format!(
+                                        "variant state '{}' carries a payload and must be constructed",
+                                        name.name
+                                    ),
+                                );
+                                return None;
+                            }
+                            self.result.resolutions[node as usize] =
+                                Some(Resolution::VariantState {
+                                    type_id: expected,
+                                    state: state as u32,
+                                });
+                            return Some(expected);
+                        }
+                    }
+                }
+            }
             self.error(self.span_of(node), format!("unknown name '{}'", name.name));
             return None;
         };

@@ -60,7 +60,7 @@ area is fixed.
 | §10 generics / monomorphization | ✅ | `src/sema/generics.rs`: templates for `class`/`structure`/`interface`/`variant`/`union` and `fixed`/`linkable` functions; kind constraints (`class`, `structure`, `interface`, `enumeration`, `variant`, `union`, `basic`) and named-type constraints with diagnostics; monomorphization in type positions, constructions, calls, member constructions and `is` targets; module-level `extension for Generic<T>` targets; instances cached per `(declaration node, argument list)` with their own mangled names. Remaining: generic methods declaring own type parameters, array extension targets, generic enumerations (spec-forbidden) — see below |
 | §11.1–11.5 compile-time execution, `#(...)`, `#` params | 🟡 | `#(...)` integer constants and `Type.SizeOf<T>()` evaluate at compile time and reject runtime values; general compile-time execution, non-integer constants and `#` parameters still diagnosed |
 | §11.6 `#if` / `#else` | ✅ | constant evaluation, selected-branch-only checking/generation |
-| §11.7 `#{...}` compile-time blocks | 🟡 | treated as blocks; compile-time variable constant propagation pending |
+| §11.7 `#{...}` compile-time blocks | 🟡 | treated as blocks; locals with constant initializers are usable in later constant expressions (array dimensions) (9ec3eea); full compile-time execution pending |
 | §11.8 compiler API (`Type`, `Compiler`, `Platform`, NOLAA) | ⛔ | diagnosed |
 | §12 memory model: locals, heap/dispose, NOLAA | 🟡 | heap/dispose; NOLAA analysis pending |
 | §15 Built-In Library (Object, exceptions, Optional/Result, containers, iterators, compiler API) | 🟡 | exception class hierarchy only; rest pending |

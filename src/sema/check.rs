@@ -3068,21 +3068,34 @@ impl<'a> Sema<'a> {
     }
 
     fn check_heap_statement(&mut self, node: NodeId, declaration: &HeapDecl) {
-        let Some(type_node) = declaration.ty else {
-            self.error(self.span_of(node), "heap definition requires a type");
-            return;
+        // The type may be omitted when an initializer provides it (§5.4).
+        let declared = match declaration.ty {
+            Some(type_node) => Some(self.resolve_type(type_node)),
+            None => None,
         };
-        let Some(ty) = self.resolve_type(type_node) else {
-            return;
+        let mut ty = match declared {
+            Some(Some(ty)) => Some(ty),
+            Some(None) => return,
+            None => None,
         };
         if let Some(initializer) = declaration.init {
             self.initializer_depth += 1;
-            let inferred = self.check_expr(initializer, Some(ty));
+            let inferred = self.check_expr(initializer, ty);
             self.initializer_depth -= 1;
             if let Some(inferred) = inferred {
-                self.expect_assignable(self.span_of(node), inferred, ty);
+                match ty {
+                    Some(ty) => self.expect_assignable(self.span_of(node), inferred, ty),
+                    None => ty = Some(inferred),
+                }
             }
         }
+        let Some(ty) = ty else {
+            self.error(
+                self.span_of(node),
+                "heap definition requires a type or an initializer",
+            );
+            return;
+        };
         let local = self.add_local(
             declaration.name.clone(),
             ty,

@@ -1962,3 +1962,22 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 20);
 }
+
+#[test]
+fn heap_type_is_inferred_from_the_initializer() {
+    let source = "\
+structure Item
+{
+    public Value: integer(4);
+}
+
+fixed Main(): integer(4)
+{
+    heap item = Item();
+    item.Value = 7;
+    local result: integer(4) = item.Value;
+    dispose item;
+    return result;
+}";
+    assert_eq!(run_program(source), 7);
+}

@@ -3753,10 +3753,8 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     None => Ok(self.context.i8_type().const_zero().into()),
                 }
             }
-            _ => Err(format!(
-                "call target is not a direct function yet: node {node} span {:?}",
-                self.ast.node(node).span
-            )),
+            Some(Resolution::CompileTimeNoOp) => Ok(self.context.i8_type().const_zero().into()),
+            _ => Err("call target is not a direct function yet".to_string()),
         }
     }
 

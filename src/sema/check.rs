@@ -354,6 +354,50 @@ impl<'a> Sema<'a> {
                     let Some(ty) = self.resolve_type(ty_node) else {
                         continue;
                     };
+                    // A `static` field is class-level storage, not instance
+                    // layout (§9.15): it becomes a global initialized by the
+                    // launcher.
+                    if field.modifiers.static_ {
+                        let class_name = match self.result.types.get(type_id) {
+                            Type::Named(index) => self.result.type_defs[*index as usize]
+                                .qualified_name
+                                .clone(),
+                            _ => String::new(),
+                        };
+                        let mut scope: Vec<String> =
+                            class_name.split('.').map(str::to_string).collect();
+                        scope.pop();
+                        let spelling = self.spelling(ty);
+                        let mangled = mangle_function(&scope, &field.name, &[spelling]);
+                        let init = match field.init {
+                            Some(Initializer::Expression(expression)) => Some(expression),
+                            Some(Initializer::Block(_)) => {
+                                self.error(
+                                    self.span_of(*member),
+                                    "static field initializer must be an expression",
+                                );
+                                None
+                            }
+                            None => None,
+                        };
+                        let index = self.result.globals.len() as u32;
+                        self.result.globals.push(GlobalInfo {
+                            name: field.name.clone(),
+                            scope,
+                            ty,
+                            init,
+                            fixed: false,
+                            mangled,
+                            node: *member,
+                            span: self.span_of(*member),
+                        });
+                        if let Type::Named(type_index) = self.result.types.get(type_id) {
+                            self.result.type_defs[*type_index as usize]
+                                .static_fields
+                                .insert(field.name.clone(), index);
+                        }
+                        continue;
+                    }
                     let (size, natural_align) = self.size_align(ty);
                     let field_alignment = field.modifiers.aligned.or(struct_alignment);
                     let alignment = match field_alignment {
@@ -595,7 +639,18 @@ impl<'a> Sema<'a> {
         for member in members {
             match self.node_kind(member) {
                 NodeKind::Fixed(declaration) => {
-                    self.create_method(member, &declaration, target);
+                    if declaration.modifiers.static_ {
+                        let is_function = declaration.ty.is_some_and(|ty| {
+                            matches!(self.node_kind(ty), NodeKind::FunctionType(_))
+                        });
+                        if is_function {
+                            self.create_static_method(member, &declaration, target);
+                        } else {
+                            self.create_static_constant(member, &declaration, target);
+                        }
+                    } else {
+                        self.create_method(member, &declaration, target);
+                    }
                 }
                 NodeKind::Accessor(_) => {
                     self.pending_accessors.push(PendingAccessor {
@@ -736,6 +791,7 @@ impl<'a> Sema<'a> {
             body,
             parameters,
             method_of: Some(owner),
+            static_owner: None,
             is_virtual: declaration.modifiers.virtual_ || declaration.modifiers.override_,
             is_override: declaration.modifiers.override_,
             is_sealed: declaration.modifiers.sealed,
@@ -763,6 +819,126 @@ impl<'a> Sema<'a> {
                 .push(index);
             definition.method_list.push(index);
         }
+        Some(index)
+    }
+
+    /// Registers a `static fixed` constant (§9.15, §5.3): class-level immutable
+    /// storage initialized by the launcher.
+    fn create_static_constant(&mut self, node: NodeId, declaration: &FixedDecl, owner: TypeId) {
+        let Some(ty_node) = declaration.ty else {
+            self.error(self.span_of(node), "a static constant requires a type");
+            return;
+        };
+        let Some(ty) = self.resolve_type(ty_node) else {
+            return;
+        };
+        let init = match declaration.init {
+            Some(Initializer::Expression(expression)) => Some(expression),
+            Some(Initializer::Block(_)) => {
+                self.error(
+                    self.span_of(node),
+                    "a static constant requires an expression initializer",
+                );
+                None
+            }
+            None => {
+                self.error(self.span_of(node), "a constant must be initialized (§5.3)");
+                None
+            }
+        };
+        let Type::Named(owner_index) = self.types_of(owner) else {
+            return;
+        };
+        let owner_name = self.result.type_defs[owner_index as usize]
+            .qualified_name
+            .clone();
+        let mut scope: Vec<String> = owner_name.split('.').map(str::to_string).collect();
+        scope.pop();
+        let spelling = self.spelling(ty);
+        let mangled = mangle_function(&scope, &declaration.name, &[spelling]);
+        let index = self.result.globals.len() as u32;
+        self.result.globals.push(GlobalInfo {
+            name: declaration.name.clone(),
+            scope,
+            ty,
+            init,
+            fixed: true,
+            mangled,
+            node,
+            span: self.span_of(node),
+        });
+        self.result.type_defs[owner_index as usize]
+            .static_fields
+            .insert(declaration.name.clone(), index);
+    }
+
+    /// Registers a `static` method: no `this`, class-level storage (§9.15).
+    fn create_static_method(
+        &mut self,
+        node: NodeId,
+        declaration: &FixedDecl,
+        owner: TypeId,
+    ) -> Option<u32> {
+        let Some(ty_node) = declaration.ty else {
+            self.error(
+                self.span_of(node),
+                "a static method requires a function type",
+            );
+            return None;
+        };
+        let NodeKind::FunctionType(function) = self.node_kind(ty_node).clone() else {
+            self.unsupported(self.span_of(node), "static function-valued constants");
+            return None;
+        };
+        let Some(Initializer::Block(body)) = declaration.init else {
+            self.error(self.span_of(node), "a static method requires a body");
+            return None;
+        };
+        let parameters = self.resolve_parameters(&function)?;
+        let return_type = function.return_type.and_then(|ty| self.resolve_type(ty));
+        let Type::Named(owner_index) = self.types_of(owner) else {
+            return None;
+        };
+        let owner_name = self.result.type_defs[owner_index as usize]
+            .qualified_name
+            .clone();
+        let scope: Vec<String> = owner_name.split('.').map(str::to_string).collect();
+        let spellings: Vec<String> = parameters
+            .iter()
+            .map(|parameter| self.spelling(parameter.ty))
+            .collect();
+        let mangled = mangle_function(&scope, &declaration.name, &spellings);
+        let generic_env = self.captured_generic_env();
+        let decl_scope = self.current_scope();
+        let index = self.result.functions.len() as u32;
+        self.result.functions.push(FunctionInfo {
+            name: declaration.name.clone(),
+            scope,
+            node,
+            body: Some(FunctionBody::Block(body)),
+            parameters,
+            method_of: None,
+            static_owner: Some(owner),
+            is_virtual: false,
+            is_override: false,
+            is_sealed: false,
+            is_abstract: false,
+            return_type,
+            mangled,
+            exposed_symbol: None,
+            generic_parameters: Vec::new(),
+            generic_arguments: Vec::new(),
+            template: None,
+            decl_scope,
+            generic_env,
+            locals: Vec::new(),
+            span: self.span_of(node),
+        });
+        self.result.type_defs[owner_index as usize]
+            .static_methods
+            .entry(declaration.name.clone())
+            .or_default()
+            .push(index);
         Some(index)
     }
 
@@ -1283,6 +1459,7 @@ impl<'a> Sema<'a> {
             body,
             parameters: all_parameters,
             method_of: with_this.then_some(owner),
+            static_owner: None,
             is_virtual: false,
             is_override: false,
             is_sealed: false,
@@ -1495,6 +1672,7 @@ impl<'a> Sema<'a> {
             body,
             parameters,
             method_of: Some(owner),
+            static_owner: None,
             is_virtual: false,
             is_override: false,
             is_sealed: false,
@@ -1914,6 +2092,7 @@ impl<'a> Sema<'a> {
             body: Some(FunctionBody::Block(body)),
             parameters,
             method_of,
+            static_owner: None,
             is_virtual: false,
             is_override: false,
             is_sealed: false,
@@ -2370,10 +2549,25 @@ impl<'a> Sema<'a> {
             }
             let body = body.expect("body checked above");
             let generic_env = self.result.functions[current].generic_env.clone();
+            let static_owner = self.result.functions[current].static_owner;
             self.current_function = Some(current as u32);
             self.loop_labels.clear();
             self.push_scope();
             self.generic_env.push(generic_env);
+            // Static fields of the owning class are in scope in a static method
+            // body (§9.15).
+            if let Some(owner) = static_owner {
+                if let Type::Named(index) = self.types_of(owner) {
+                    let fields: Vec<(String, u32)> = self.result.type_defs[index as usize]
+                        .static_fields
+                        .iter()
+                        .map(|(name, global)| (name.clone(), *global))
+                        .collect();
+                    for (name, global) in fields {
+                        self.declare(name, Symbol::Global(global), span);
+                    }
+                }
+            }
             let mut llvm_parameter_index = 0u32;
             if let Some(owner) = method_of {
                 self.declare("this".to_string(), Symbol::This { owner }, span);
@@ -4200,6 +4394,20 @@ impl<'a> Sema<'a> {
                     );
                     return None;
                 }
+                TypeDefKind::Class | TypeDefKind::Structure => {
+                    if let Some(global) = definition.static_fields.get(&access.name).copied() {
+                        self.result.resolutions[node as usize] = Some(Resolution::Global(global));
+                        return Some(self.result.globals[global as usize].ty);
+                    }
+                    self.error(
+                        self.span_of(node),
+                        format!(
+                            "'{}' is not a static member of '{}'",
+                            access.name, definition.qualified_name
+                        ),
+                    );
+                    return None;
+                }
                 TypeDefKind::Variant => {
                     if let Some(state) = definition
                         .variant_states
@@ -5305,9 +5513,7 @@ impl<'a> Sema<'a> {
                     self.error(span, format!("'Compiler.{name}' requires a message"));
                     return None;
                 };
-                let Some(message) = message(self, argument) else {
-                    return None;
-                };
+                let message = message(self, argument)?;
                 match name.as_str() {
                     "LogNote" => self.note(span, message),
                     "LogWarning" => self.warn(span, message),
@@ -5462,6 +5668,20 @@ impl<'a> Sema<'a> {
                             );
                         }
                         _ => {}
+                    }
+                }
+            }
+        }
+        // Static method call: `Class.Method(arguments)` (§9.15).
+        if let NodeKind::MemberAccess(access) = self.node_kind(call.callee).clone() {
+            if let Some(Symbol::Type(type_id)) = self.try_resolve_name(access.base) {
+                if let Type::Named(index) = self.types_of(type_id) {
+                    if let Some(overloads) = self.result.type_defs[index as usize]
+                        .static_methods
+                        .get(&access.name)
+                        .cloned()
+                    {
+                        return self.resolve_overload(node, &overloads, &call.arguments);
                     }
                 }
             }

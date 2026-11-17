@@ -192,6 +192,10 @@ pub struct TypeDef {
     pub template: Option<TypeDefId>,
     /// Lexical scope the declaration appeared in (constraint lookups).
     pub decl_scope: usize,
+    /// Static ("class-level") fields, by name: index into `globals` (§9.15).
+    pub static_fields: std::collections::HashMap<String, u32>,
+    /// Static methods, by name: indices into `functions` (§9.15).
+    pub static_methods: std::collections::HashMap<String, Vec<u32>>,
     /// Fields, in declaration order (structures/classes).
     pub fields: Vec<FieldInfo>,
     /// Field initializers, parallel to `fields` (§3.8.1).
@@ -271,6 +275,9 @@ pub struct FunctionInfo {
     pub parameters: Vec<ParameterInfo>,
     /// The type this function is a method of, if it came from an extension.
     pub method_of: Option<TypeId>,
+    /// The class owning a static method: its static fields are in scope in the
+    /// body (§9.15).
+    pub static_owner: Option<TypeId>,
     /// Whether the method is virtual (`virtual` or `override`, §9.12/§9.13).
     pub is_virtual: bool,
     /// Whether the method overrides a base method.
@@ -1097,6 +1104,8 @@ impl<'a> Sema<'a> {
                 generic_arguments: Vec::new(),
                 template: None,
                 decl_scope: 0,
+                static_fields: std::collections::HashMap::new(),
+                static_methods: std::collections::HashMap::new(),
                 fields: Vec::new(),
                 field_initializers: Vec::new(),
                 methods: std::collections::HashMap::new(),
@@ -1328,6 +1337,8 @@ impl<'a> Sema<'a> {
             generic_arguments: Vec::new(),
             template: None,
             decl_scope: self.current_scope(),
+            static_fields: std::collections::HashMap::new(),
+            static_methods: std::collections::HashMap::new(),
             fields: Vec::new(),
             field_initializers: Vec::new(),
             methods: std::collections::HashMap::new(),

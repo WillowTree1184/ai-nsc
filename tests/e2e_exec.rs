@@ -2181,3 +2181,63 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 0);
 }
+
+#[test]
+fn static_fields_and_methods_share_class_level_storage() {
+    let source = "\
+class Counter
+{
+    private static Total: integer(4) = 10;
+
+    extension
+    {
+        public static fixed Bump(amount: integer(4)): integer(4)
+        {
+            Total += amount;
+            return Total;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    Counter.Bump(1);
+    Counter.Bump(2);
+    return Counter.Total;
+}";
+    assert_eq!(run_program(source), 13);
+}
+
+#[test]
+fn static_fields_are_read_and_written_through_the_class() {
+    let source = "\
+class Config
+{
+    public static Limit: integer(4) = 7;
+}
+
+fixed Main(): integer(4)
+{
+    Config.Limit = Config.Limit + 1;
+    return Config.Limit;
+}";
+    assert_eq!(run_program(source), 8);
+}
+
+#[test]
+fn static_constants_are_class_level_values() {
+    let source = "\
+class Limits
+{
+    extension
+    {
+        public static fixed Max: integer(4) = 9;
+    }
+}
+
+fixed Main(): integer(4)
+{
+    return Limits.Max;
+}";
+    assert_eq!(run_program(source), 9);
+}

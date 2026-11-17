@@ -251,3 +251,4 @@ report an error (§4.8).
 ### 31. `is`-patterns over interface targets
 
 `match`/`is` patterns whose target is an interface are not supported (§4.8).
+| 33 | MED | §15.3 | Compiler compile-time API (`LogNote`/`LogWarning`/`LogError`/`Assert`) missing | fixed (5d1a968: literal messages and constant assertions inside compile-time blocks; computed messages pending) |

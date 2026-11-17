@@ -2,14 +2,15 @@
 
 ## State
 
-- Branch `master`; latest commit `a5cc9cf` "Fix high-severity conformance defects
-  found by the spec audit"; previous `3a34c91` "Implement generics with
-  compile-time monomorphization" (see `git log --oneline`). Working tree may be
+- Branch `master`; latest commit `eafa0da` "Implement built-in pointer
+  arithmetic"; previous `a5cc9cf` "Fix high-severity conformance defects found by
+  the spec audit" and `3a34c91` "Implement generics with compile-time
+  monomorphization" (see `git log --oneline`). Working tree may be
   dirty while a concurrent session lands fixes — check `git status` before
   committing.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  — **130 tests green** (40 lib unit including 4 AST-clone tests, 16 CLI,
-  2 codegen/LLVM, 61 end-to-end execution, 10 parser, 1 spec-example conformance).
+  — **131 tests green** (40 lib unit including 4 AST-clone tests, 16 CLI,
+  2 codegen/LLVM, 62 end-to-end execution, 10 parser, 1 spec-example conformance).
 - Build flags (required on this host):
   `CARGO_HOME=/tmp/ainsc-cargo LLVM_SYS_181_PREFIX=/usr/lib/llvm-18`
 - CLI: `target/debug/ai-nsc check|emit-ir|emit-obj|build|run <file.ns>`.
@@ -99,9 +100,9 @@ constructor when the base one is non-trivial" diagnostic are still missing).
 The fixes also removed a latent `type_id_for_node` collision between the
 synthetic built-in exception declarations and the first AST node of a file.
 
-1. **Finish the HIGH group**: audit #7 (constructor-chain diagnostics) and then
-   MED/HIGH **#11 pointer arithmetic** (`p + i`, `p - i`, `p - q`, pointer
-   builtin overloads, `Type.SizeOf<T>()`).
+1. **Finish the HIGH group**: audit #7 (constructor-chain diagnostics). Then the
+   rest of #11: `Type.SizeOf<T>()` (needs the compile-time API) and `p += i`
+   compound assignment.
 2. **MED items** (#13–#25) in order: `owner`, `use` imports, non-`this` `&`
    parameters, VLAs, array flattening/casts, heap inference/allocator, `dispose`,
    missing-return/`finally` diagnostics, `illegal`/`uninitialized`, variant

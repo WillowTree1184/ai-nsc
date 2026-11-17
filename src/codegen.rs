@@ -2983,6 +2983,11 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .build_load(llvm_type, pointer, "union_member")
                     .map_err(|error| format!("cannot load union member: {error}"))
             }
+            Some(Resolution::SizeOf { ty }) => {
+                let size = self.sema.size_align(ty).0;
+                let llvm_type = self.llvm_type(self.type_of(node))?.into_int_type();
+                Ok(llvm_type.const_int(size, false).into())
+            }
             Some(Resolution::Function(_)) => Err("function values are not lowered yet".to_string()),
             Some(Resolution::Type(_)) | None => Err("name cannot be used as a value".to_string()),
         }
@@ -3589,6 +3594,11 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             Some(Resolution::Construct { .. })
             | Some(Resolution::ConstructVariant { .. })
             | Some(Resolution::ConstructUnion { .. }) => self.gen_construction(node),
+            Some(Resolution::SizeOf { ty }) => {
+                let size = self.sema.size_align(ty).0;
+                let llvm_type = self.llvm_type(self.type_of(node))?.into_int_type();
+                Ok(llvm_type.const_int(size, false).into())
+            }
             Some(Resolution::Function(index)) => {
                 let function = *self
                     .functions

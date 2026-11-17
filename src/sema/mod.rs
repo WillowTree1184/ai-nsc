@@ -528,6 +528,11 @@ pub enum Resolution {
         /// Member index.
         member: u32,
     },
+    /// `Type.SizeOf<T>()` from the compiler API (§11.8): a compile-time size.
+    SizeOf {
+        /// The type whose memory size is produced.
+        ty: TypeId,
+    },
     /// A structure or class field.
     Field {
         /// The declaring type.

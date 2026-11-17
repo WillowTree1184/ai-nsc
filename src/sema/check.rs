@@ -5112,6 +5112,17 @@ impl<'a> Sema<'a> {
     }
 
     fn check_call(&mut self, node: NodeId, call: &CallExpr) -> Option<TypeId> {
+        // Compiler API: `Type.SizeOf<T>()` yields `T`'s memory size as a
+        // `cardinal(8)` value (§11.8).
+        if let Some(type_argument) = builtin_size_of_type_argument(&self.ast, call.callee) {
+            let ty = self.resolve_type(type_argument)?;
+            self.result.resolutions[node as usize] = Some(Resolution::SizeOf { ty });
+            if call.arguments.is_empty() {
+                return Some(self.result.types.integer(false, 8));
+            }
+            self.error(self.span_of(node), "Type.SizeOf<T>() takes no arguments");
+            return None;
+        }
         // Monomorphized call or construction: `Generic<Arguments>(...)` (§10.2).
         if let NodeKind::Monomorphization(monomorphization) = self.node_kind(call.callee).clone() {
             return match self.check_monomorphization(call.callee, &monomorphization) {
@@ -5694,4 +5705,28 @@ enum IsTargetResolved {
         /// State index.
         state: u32,
     },
+}
+
+/// Detects the compiler API call `Type.SizeOf<T>()` (§11.8) and returns its type
+/// argument. `Type` is a built-in compiler namespace, not a declared module.
+fn builtin_size_of_type_argument(ast: &Ast, callee: NodeId) -> Option<NodeId> {
+    let NodeKind::Monomorphization(monomorphization) = ast.node(callee).kind.clone() else {
+        return None;
+    };
+    let NodeKind::MemberAccess(access) = ast.node(monomorphization.base).kind.clone() else {
+        return None;
+    };
+    if access.name != "SizeOf" {
+        return None;
+    }
+    let NodeKind::Name(namespace) = ast.node(access.base).kind.clone() else {
+        return None;
+    };
+    if namespace.name != "Type" {
+        return None;
+    }
+    match monomorphization.arguments.as_slice() {
+        [Some(argument)] => Some(*argument),
+        _ => None,
+    }
 }

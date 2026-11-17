@@ -1981,3 +1981,22 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 7);
 }
+
+#[test]
+fn type_size_of_reports_memory_sizes() {
+    let source = "\
+structure Vector3
+{
+    public X: float(4);
+    public Y: float(4);
+    public Z: float(4);
+}
+
+fixed Main(): integer(4)
+{
+    local size: cardinal(8) = Type.SizeOf<Vector3>();
+    local int_size: cardinal(8) = Type.SizeOf<integer(4)>();
+    return Cast<integer(4)>(size) + Cast<integer(4)>(int_size);
+}";
+    assert_eq!(run_program(source), 16);
+}

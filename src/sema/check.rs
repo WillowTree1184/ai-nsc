@@ -690,6 +690,10 @@ impl<'a> Sema<'a> {
 
         let mut parameters = Vec::new();
         for (index, parameter) in function.parameters.iter().enumerate() {
+            if let Some(expanded) = self.expand_array_parameter(parameter) {
+                parameters.extend(expanded);
+                continue;
+            }
             if parameter.compile_time {
                 self.unsupported(parameter.span, "compile-time ('#') parameters");
                 return None;
@@ -1807,12 +1811,59 @@ impl<'a> Sema<'a> {
         });
     }
 
+    /// Expands the array parameter sugar
+    /// `message[length: cardinal(4)]: cardinal(1)` into two parameters, a pointer
+    /// to the element type and the bound dimension length (§2.5, §3.6.1).
+    fn expand_array_parameter(&mut self, parameter: &Parameter) -> Option<Vec<ParameterInfo>> {
+        let ty_node = parameter.ty?;
+        let NodeKind::ArrayType(array) = self.node_kind(ty_node) else {
+            return None;
+        };
+        if array.dimensions.is_empty() {
+            return None;
+        }
+        let mut bindings = Vec::new();
+        for dimension in &array.dimensions {
+            match dimension {
+                ArrayDimension::Binding { name, ty } => bindings.push((name.clone(), *ty)),
+                ArrayDimension::Size(_) => return None,
+            }
+        }
+        if bindings.is_empty() {
+            return None;
+        }
+        let element = self.resolve_type(array.element)?;
+        let pointer = self.result.types.pointer(Some(element));
+        let name = parameter
+            .name
+            .clone()
+            .unwrap_or_else(|| "message".to_string());
+        let mut expanded = vec![ParameterInfo {
+            name,
+            ty: pointer,
+            by_ref: false,
+        }];
+        for (binding_name, binding_type_node) in bindings {
+            let binding_type = self.resolve_type(binding_type_node)?;
+            expanded.push(ParameterInfo {
+                name: binding_name,
+                ty: binding_type,
+                by_ref: false,
+            });
+        }
+        Some(expanded)
+    }
+
     pub(crate) fn resolve_parameters(
         &mut self,
         function: &crate::ast::FunctionType,
     ) -> Option<Vec<ParameterInfo>> {
         let mut parameters = Vec::new();
         for (index, parameter) in function.parameters.iter().enumerate() {
+            if let Some(expanded) = self.expand_array_parameter(parameter) {
+                parameters.extend(expanded);
+                continue;
+            }
             if parameter.compile_time {
                 self.unsupported(parameter.span, "compile-time ('#') parameters");
                 return None;

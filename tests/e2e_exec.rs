@@ -2150,3 +2150,20 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 10);
 }
+
+#[test]
+fn array_parameter_sugar_expands_to_pointer_and_length() {
+    let source = "\
+fixed FirstByte(message[length: cardinal(4)]: cardinal(1)): integer(4)
+{
+    if (length < 1) { return 0; }
+    return Cast<integer(4)>(message[0]);
+}
+
+fixed Main(): integer(4)
+{
+    local text[3]: cardinal(1) = { 97, 98, 99 };
+    return FirstByte(Cast<pointer cardinal(1)>(text), 3);
+}";
+    assert_eq!(run_program(source), 97);
+}

@@ -689,6 +689,7 @@ impl<'a> Sema<'a> {
     // -- passes ------------------------------------------------------------
 
     fn run(&mut self) {
+        self.declare_builtin_exceptions();
         // Pass 1: declare modules and named types so that signatures can refer
         // to them regardless of declaration order (§6.3).
         let roots = self.ast.roots.clone();
@@ -703,6 +704,63 @@ impl<'a> Sema<'a> {
         self.build_vtables();
         self.check_function_bodies();
         self.check_global_initializers();
+    }
+
+    /// Declares the Built-In Library exception class hierarchy (§15.2):
+    /// `Exception` and the runtime exception subclasses.
+    fn declare_builtin_exceptions(&mut self) {
+        const NAMES: [&str; 6] = [
+            "Exception",
+            "NotImplementedException",
+            "DivideByZeroException",
+            "OutOfRangeException",
+            "AllocateFailedException",
+            "DeallocateFailedException",
+        ];
+        for name in NAMES {
+            let index = self.result.type_defs.len() as TypeDefId;
+            self.result.type_defs.push(TypeDef {
+                name: name.to_string(),
+                qualified_name: name.to_string(),
+                kind: TypeDefKind::Class,
+                node: NodeId::default(),
+                fields: Vec::new(),
+                field_initializers: Vec::new(),
+                methods: std::collections::HashMap::new(),
+                method_list: Vec::new(),
+                accessors: Vec::new(),
+                operators: Vec::new(),
+                interfaces: Vec::new(),
+                interface_dispatch: Vec::new(),
+                sealed: false,
+                vtable: Vec::new(),
+                vtable_ready: true,
+                base: None,
+                variant_states: Vec::new(),
+                union_members: Vec::new(),
+                tag_type: None,
+                payload_offset: 0,
+                payload_size: 0,
+                instance_size: 16,
+                instance_align: 8,
+                enum_members: Vec::new(),
+                underlying: None,
+                size: 8,
+                align: 8,
+            });
+            let type_id = self.result.types.intern(Type::Named(index));
+            self.declare(name.to_string(), Symbol::Type(type_id), Span::default());
+        }
+        let exception = self.lookup("Exception").cloned();
+        if let Some(Symbol::Type(exception)) = exception {
+            for name in &NAMES[1..] {
+                if let Some(Symbol::Type(type_id)) = self.lookup(name).cloned() {
+                    if let Type::Named(index) = self.result.types.get(type_id) {
+                        self.result.type_defs[*index as usize].base = Some(exception);
+                    }
+                }
+            }
+        }
     }
 
     /// Pass 1: walk the declaration structure creating module scopes and named

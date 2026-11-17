@@ -88,6 +88,7 @@ pub fn generate(ast: &Ast, sema: &SemaResult, options: &CodegenOptions) -> Resul
         interface_tables: HashMap::new(),
         trap_stack: Vec::new(),
         type_key_globals: HashMap::new(),
+        builtin_exceptions: HashMap::new(),
     };
     generator.run()?;
     if let Err(message) = generator.module.verify() {
@@ -140,6 +141,7 @@ struct Generator<'ctx, 'a> {
     interface_tables: HashMap<u32, GlobalValue<'ctx>>,
     trap_stack: Vec<TrapFrame<'ctx>>,
     type_key_globals: HashMap<TypeId, GlobalValue<'ctx>>,
+    builtin_exceptions: HashMap<u32, GlobalValue<'ctx>>,
 }
 
 impl<'ctx, 'a> Generator<'ctx, 'a> {
@@ -474,6 +476,28 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             self.interface_tables.insert(index, table_global);
         }
 
+        // Static instances for the Built-In Library exception classes so that
+        // runtime exception sources can throw them (§15.2).
+        const BUILTIN_EXCEPTIONS: [&str; 6] = [
+            "Exception",
+            "NotImplementedException",
+            "DivideByZeroException",
+            "OutOfRangeException",
+            "AllocateFailedException",
+            "DeallocateFailedException",
+        ];
+        for (index, definition) in self.sema.type_defs.iter().enumerate() {
+            if !BUILTIN_EXCEPTIONS.contains(&definition.qualified_name.as_str()) {
+                continue;
+            }
+            let instance_type = self.struct_type(index as u32)?;
+            let global =
+                self.module
+                    .add_global(instance_type, None, &format!("nsc.exception.{index}"));
+            global.set_initializer(&instance_type.const_zero());
+            self.builtin_exceptions.insert(index as u32, global);
+        }
+
         for &index in &classes {
             let base_global = match self.sema.type_defs[index as usize].base {
                 Some(base_type) => match self.sema.types.get(base_type) {
@@ -777,6 +801,38 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         self.current_return = None;
         self.local_slots.clear();
         self.loops.clear();
+        // Initialize the static exception instances' class headers.
+        let builtin_exceptions: Vec<(u32, GlobalValue<'ctx>)> = self
+            .builtin_exceptions
+            .iter()
+            .map(|(index, global)| (*index, *global))
+            .collect();
+        for (index, global) in builtin_exceptions {
+            let instance_struct = self.struct_type(index)?;
+            let storage = global.as_pointer_value();
+            let vtable = self.vtable_globals.get(&index).map_or_else(
+                || self.context.ptr_type(AddressSpace::default()).const_zero(),
+                |vtable| vtable.as_pointer_value(),
+            );
+            let typeinfo = self.typeinfo_globals.get(&index).map_or_else(
+                || self.context.ptr_type(AddressSpace::default()).const_zero(),
+                |typeinfo| typeinfo.as_pointer_value(),
+            );
+            for (field_index, header_value) in [vtable, typeinfo].into_iter().enumerate() {
+                let pointer = self
+                    .builder
+                    .build_struct_gep(
+                        instance_struct,
+                        storage,
+                        field_index as u32,
+                        "exception_header",
+                    )
+                    .map_err(|error| format!("cannot initialize exception: {error}"))?;
+                self.builder
+                    .build_store(pointer, header_value)
+                    .map_err(|error| format!("cannot initialize exception: {error}"))?;
+            }
+        }
 
         let initializers = self.launcher_initializers.clone();
         for global_index in initializers {
@@ -2977,7 +3033,10 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             NodeKind::Index(index) => {
                 let base_type = self.type_of(index.base);
                 match self.sema.types.get(base_type).clone() {
-                    Type::Array { .. } => {
+                    Type::Array {
+                        dimensions,
+                        element: _,
+                    } => {
                         let base_pointer = match self.gen_lvalue(index.base)? {
                             Some(pointer) => pointer,
                             None => {
@@ -2994,6 +3053,32 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                             }
                         };
                         let index_value = self.gen_expr(index.index)?.into_int_value();
+                        let index_integer = self.as_i64(index_value)?;
+                        let length = i64::try_from(dimensions.first().copied().unwrap_or(0))
+                            .map_err(|_| "array is too large".to_string())?;
+                        let in_bounds = self
+                            .builder
+                            .build_int_compare(
+                                IntPredicate::ULT,
+                                index_integer,
+                                self.context.i64_type().const_int(length as u64, false),
+                                "in_bounds",
+                            )
+                            .map_err(|error| format!("cannot check bounds: {error}"))?;
+                        let function = self.current_llvm_function()?;
+                        let ok_block = self.context.append_basic_block(function, "index_ok");
+                        let fail_block = self.context.append_basic_block(function, "index_fail");
+                        self.builder
+                            .build_conditional_branch(in_bounds, ok_block, fail_block)
+                            .map_err(|error| format!("cannot check bounds: {error}"))?;
+                        self.builder.position_at_end(fail_block);
+                        self.gen_runtime_throw("OutOfRangeException")?;
+                        if !self.builder_terminated() {
+                            self.builder
+                                .build_unreachable()
+                                .map_err(|error| format!("cannot trap: {error}"))?;
+                        }
+                        self.builder.position_at_end(ok_block);
                         let element_type = self.type_of(node);
                         let pointer =
                             self.element_address(base_pointer, element_type, index_value)?;
@@ -4221,6 +4306,55 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         }
     }
 
+    /// Throws a Built-In Library runtime exception (§5.10.1-6/9): the innermost
+    /// body trap handles it, otherwise the program terminates.
+    fn gen_runtime_throw(&mut self, class_name: &str) -> Result<(), String> {
+        let index = self
+            .sema
+            .type_defs
+            .iter()
+            .position(|definition| definition.qualified_name == class_name)
+            .ok_or_else(|| format!("missing built-in exception '{class_name}'"))?
+            as u32;
+        let instance = self
+            .builtin_exceptions
+            .get(&index)
+            .ok_or_else(|| format!("missing built-in exception instance '{class_name}'"))?
+            .as_pointer_value();
+        let typeinfo = self
+            .typeinfo_globals
+            .get(&index)
+            .ok_or_else(|| format!("missing built-in exception type information '{class_name}'"))?
+            .as_pointer_value();
+        let innermost = self
+            .trap_stack
+            .last()
+            .map(|frame| (frame.exception_slot, frame.dispatch, frame.is_handler));
+        match innermost {
+            Some((slot, dispatch, false)) => {
+                let typeinfo_slot =
+                    self.address_with_size(slot, 1, self.context.i64_type().const_zero())?;
+                let payload_slot =
+                    self.address_with_size(slot, 1, self.context.i64_type().const_int(8, false))?;
+                self.builder
+                    .build_store(typeinfo_slot, typeinfo)
+                    .map_err(|error| format!("cannot raise exception: {error}"))?;
+                self.builder
+                    .build_store(payload_slot, instance)
+                    .map_err(|error| format!("cannot raise exception: {error}"))?;
+                self.builder
+                    .build_unconditional_branch(dispatch)
+                    .map_err(|error| format!("cannot raise exception: {error}"))?;
+                let dead = self
+                    .context
+                    .append_basic_block(self.current_llvm_function()?, "exception_dead");
+                self.builder.position_at_end(dead);
+                Ok(())
+            }
+            _ => self.emit_abort(),
+        }
+    }
+
     fn emit_division_by_zero_check(
         &mut self,
         divisor: IntValue<'ctx>,
@@ -4238,9 +4372,12 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .build_conditional_branch(is_zero, trap_block, continue_block)
             .map_err(|error| format!("cannot branch: {error}"))?;
         self.builder.position_at_end(trap_block);
-        self.builder
-            .build_unreachable()
-            .map_err(|error| format!("cannot trap: {error}"))?;
+        self.gen_runtime_throw("DivideByZeroException")?;
+        if !self.builder_terminated() {
+            self.builder
+                .build_unreachable()
+                .map_err(|error| format!("cannot trap: {error}"))?;
+        }
         self.builder.position_at_end(continue_block);
         Ok(())
     }

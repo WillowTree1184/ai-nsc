@@ -1013,3 +1013,68 @@ fixed Main(): integer(4)
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("trap"), "stderr: {stderr}");
 }
+
+#[test]
+fn division_by_zero_raises_builtin_exception() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local result: integer(4) = 0;
+    local zero: integer(4) = 0;
+    trap
+    {
+        result = 10 / zero;
+        result = 1;
+    }
+    catch error: DivideByZeroException
+    {
+        result = 42;
+    }
+    return result;
+}";
+    assert_eq!(run_program(source), 42);
+}
+
+#[test]
+fn out_of_range_index_raises_catchable_exception() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local result: integer(4) = 0;
+    local values[3]: integer(4);
+    values[0] = 1;
+    values[1] = 2;
+    values[2] = 3;
+    local position: integer(4) = 5;
+    trap
+    {
+        result = values[position];
+    }
+    catch error: OutOfRangeException
+    {
+        result = 7;
+    }
+    return result;
+}";
+    assert_eq!(run_program(source), 7);
+}
+
+#[test]
+fn builtin_exceptions_match_their_base_class() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local result: integer(4) = 0;
+    local zero: integer(4) = 0;
+    trap
+    {
+        result = 1 / zero;
+    }
+    catch error: Exception
+    {
+        result = 9;
+    }
+    return result;
+}";
+    assert_eq!(run_program(source), 9);
+}

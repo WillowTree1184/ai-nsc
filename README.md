@@ -50,12 +50,14 @@ Implemented today:
 - **Operator overloading**: binary `+ - * / % == > <`, unary `-`, indexers with `get`/`set`
   accessor members, and conversion operators; derived `!=` / `<=` / `>=` desugared from `==`
   and `<`/`>`; user overloads take precedence over built-ins during check and codegen
-- **Exceptions (source-level)**: `trap`/`catch`/`finally` with lexical matching, `throw` in trap
-  and catch bodies, type matching by exact type, class base chain and interface tables, catch
-  bindings, ordered/wildcard clauses, propagation to enclosing traps and program termination;
-  runtime exception *sources* (division, bounds, allocation) are not yet routed to `trap`
+- **Exceptions**: `trap`/`catch`/`finally` with lexical matching, `throw` in trap and catch
+  bodies, type matching by exact type, class base chain and interface tables, catch bindings,
+  ordered/wildcard clauses, propagation to enclosing traps and program termination;
+  runtime exception sources raise the Built-In Library exception classes: division by zero
+  raises `DivideByZeroException`, array index out of bounds raises `OutOfRangeException`, and
+  they can be caught by their subclasses or by `Exception`
 - **Name mangling** per §13.2, including the spec's worked example as a unit test
-- 94 tests: 36 unit, 8 CLI, 2 LLVM smoke, 37 end-to-end execution, 10 parser, 1 spec
+- 97 tests: 36 unit, 8 CLI, 2 LLVM smoke, 40 end-to-end execution, 10 parser, 1 spec
   conformance; `cargo fmt` + `clippy -D warnings` clean
 
 Not implemented yet (rejected with a clear diagnostic): generics/monomorphization,

@@ -3058,21 +3058,28 @@ impl<'a> Sema<'a> {
     fn check_dispose_statement(&mut self, statement: &DisposeStmt) {
         if let NodeKind::Name(name) = self.node_kind(statement.target) {
             if let Some(Symbol::Local(local)) = self.lookup(&name.name).cloned() {
-                if self
-                    .local_info(local)
-                    .is_some_and(|info| info.storage == Storage::Heap)
-                {
-                    self.result.resolutions[statement.target as usize] =
-                        Some(Resolution::Local(local));
-                    self.result.node_types[statement.target as usize] =
-                        self.local_info(local).map(|info| info.ty);
-                    return;
+                let info = self.local_info(local).cloned();
+                if let Some(info) = info {
+                    let disposable = matches!(
+                        self.types_of(info.ty),
+                        Type::Named(index)
+                            if matches!(
+                                self.result.type_defs[index as usize].kind,
+                                TypeDefKind::Class | TypeDefKind::Structure
+                            )
+                    );
+                    if disposable {
+                        self.result.resolutions[statement.target as usize] =
+                            Some(Resolution::Local(local));
+                        self.result.node_types[statement.target as usize] = Some(info.ty);
+                        return;
+                    }
                 }
             }
         }
         self.error(
             self.span_of(statement.target),
-            "dispose requires a heap-allocated variable",
+            "dispose requires a class or structure variable",
         );
     }
 

@@ -414,3 +414,17 @@ fixed Main(): integer(4) { return 0; }",
     );
     assert!(stderr.contains("not all code paths"), "{stderr}");
 }
+
+#[test]
+fn dispose_requires_a_class_or_structure_variable() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    local number: integer(4) = 3;
+    dispose number;
+    return number;
+}",
+    );
+    assert!(stderr.contains("class or structure"), "{stderr}");
+}

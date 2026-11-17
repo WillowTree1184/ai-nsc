@@ -1822,3 +1822,31 @@ fixed Choose(flag: boolean): integer(4)
 fixed Main(): integer(4) { return Pick(1) + Choose(false); }";
     assert_eq!(run_program(source), 12);
 }
+
+#[test]
+fn dispose_runs_the_destructor_of_a_scoped_value() {
+    let source = "\
+local destroyed: integer(4) = 0;
+
+structure Token
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Destruct(this: &Token)
+        {
+            destroyed = 1;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local made: Token;
+    made.Value = 5;
+    dispose made;
+    return destroyed * 10 + made.Value;
+}";
+    assert_eq!(run_program(source), 15);
+}

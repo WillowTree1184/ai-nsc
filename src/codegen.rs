@@ -1493,11 +1493,20 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .get(&local)
             .ok_or_else(|| "missing heap slot".to_string())?;
         let pointer_type = self.context.ptr_type(AddressSpace::default());
-        let storage = self
-            .builder
-            .build_load(pointer_type, slot, "heap_pointer")
-            .map_err(|error| format!("cannot load heap pointer: {error}"))?
-            .into_pointer_value();
+        // Heap storage holds the instance pointer; value storage (scope-lifetime
+        // locals, §5.8) is the instance itself.
+        let is_heap = info.storage == Storage::Heap;
+        if info.storage != Storage::Heap && info.storage != Storage::Value {
+            return Err("dispose requires a class or structure variable".to_string());
+        }
+        let storage = if is_heap {
+            self.builder
+                .build_load(pointer_type, slot, "heap_pointer")
+                .map_err(|error| format!("cannot load heap pointer: {error}"))?
+                .into_pointer_value()
+        } else {
+            slot
+        };
         if let Some(destructor) = self.find_method(info.ty, "Destruct") {
             let function = *self
                 .functions
@@ -1507,12 +1516,14 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 .build_call(function, &[storage.into()], "destruct")
                 .map_err(|error| format!("cannot call destructor: {error}"))?;
         }
-        let free = self
-            .free_fn
-            .ok_or_else(|| "free is not declared".to_string())?;
-        self.builder
-            .build_call(free, &[storage.into()], "deallocate")
-            .map_err(|error| format!("cannot deallocate: {error}"))?;
+        if is_heap {
+            let free = self
+                .free_fn
+                .ok_or_else(|| "free is not declared".to_string())?;
+            self.builder
+                .build_call(free, &[storage.into()], "deallocate")
+                .map_err(|error| format!("cannot deallocate: {error}"))?;
+        }
         let _ = name;
         Ok(())
     }

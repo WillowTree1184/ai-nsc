@@ -34,7 +34,7 @@ only after the reproduction is re-run and its regression test is green.
 | 12 | MED | §2.7.7 | `\x hh` escape produces a UTF-8 encoded scalar (2 bytes) instead of one raw byte | fixed (a5cc9cf) |
 | 13 | MED | §6.4 | `owner` / `owner.owner` unsupported ("owner expressions are not implemented yet") | fixed (5fe9f0c: reads and assignment targets, nested chains, function-body scope merged) |
 | 14 | MED | §5.6 | `use` statement is a no-op/error; imported members are not visible | fixed (0ec3a18: module members imported per scope; module-level `use` applies to later declarations) |
-| 15 | MED | §8.2 | `&` parameters other than `this` unsupported (spec example `Scale(value: &integer(4), …)` rejected) | open |
+| 15 | MED | §8.2 | `&` parameters other than `this` unsupported (spec example `Scale(value: &integer(4), …)` rejected) | fixed (cea98d8: functions and methods accept further `&` parameters, aliasing call sites) |
 | 16 | MED | §3.6.1 | VLAs (dimensions from runtime values) unsupported; dimensions are forced to constants | open |
 | 17 | MED | §3.6.1 | `array(3) array(4) T` and `array(3,4) T` are distinct interned types (no flattening); fixed-array↔fixed-array casts rejected | fixed (9c701f0 flattening; c2217b6 explicit casts between equal-size array shapes, different byte sizes diagnosed) |
 | 18 | MED | §6.3, §8.5, §14.1 | Duplicate declarations mostly undiagnosed (fields, enum members, variants, unions; signatures only at call sites; duplicate `Main`) | fixed (a5cc9cf) |

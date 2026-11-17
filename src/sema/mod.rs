@@ -124,6 +124,15 @@ pub(crate) struct PendingAccessor {
     pub(crate) generic_env: HashMap<String, TypeId>,
 }
 
+/// A built-in generic variant type (§15.2).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BuiltinVariantKind {
+    /// `Optional<T>`: `Value: T` or a payload-less `Null`.
+    Optional,
+    /// `Result<TValue; TAlternative>`: `Value: TValue` or `Alternative: TAlternative`.
+    Result,
+}
+
 /// A module-level extension with a generic target (`extension for Box<T>`,
 /// §3.8.3). Such extensions are instantiated together with the targeted type.
 #[derive(Clone, Debug)]
@@ -196,6 +205,8 @@ pub struct TypeDef {
     pub static_fields: std::collections::HashMap<String, u32>,
     /// Static methods, by name: indices into `functions` (§9.15).
     pub static_methods: std::collections::HashMap<String, Vec<u32>>,
+    /// Built-in variant kind, for `Optional`/`Result` (§15.2).
+    pub builtin_variant: Option<BuiltinVariantKind>,
     /// Fields, in declaration order (structures/classes).
     pub fields: Vec<FieldInfo>,
     /// Field initializers, parallel to `fields` (§3.8.1).
@@ -580,6 +591,21 @@ pub enum TrapContextKind {
     Finally,
 }
 
+/// Type information recorded for a checked `??` expression (§4.9.26).
+#[derive(Clone, Copy, Debug)]
+pub struct CoalesceInfo {
+    /// The decision variant type (`Optional<T>` / `Result<...>` or a user type).
+    pub decision_type: TypeId,
+    /// The value type produced by the expression (`TValue`).
+    pub result_type: TypeId,
+    /// The alternative type carried when the decision is not `Value`.
+    pub alternative_type: TypeId,
+    /// State index of `Value`.
+    pub value_state: u32,
+    /// State index of `Alternative`/`Null`.
+    pub alternative_state: u32,
+}
+
 /// Type information recorded for a checked `match` pattern.
 #[derive(Clone, Debug)]
 pub enum MatchPatternInfo {
@@ -643,6 +669,8 @@ pub struct SemaResult {
     pub trap_catches: HashMap<NodeId, Vec<CatchInfo>>,
     /// Compile-time `#if` decisions, keyed by statement node.
     pub compile_time_conditions: HashMap<NodeId, bool>,
+    /// Checked `??` expressions, keyed by expression node (§4.9.26).
+    pub coalesce: HashMap<NodeId, CoalesceInfo>,
     /// Number of errors reported.
     pub error_count: u32,
 }
@@ -1060,6 +1088,7 @@ impl<'a> Sema<'a> {
 
     fn run(&mut self) {
         self.declare_builtin_exceptions();
+        self.declare_builtin_variants();
         // Pass 1: declare modules and named types so that signatures can refer
         // to them regardless of declaration order (§6.3).
         let roots = self.ast.roots.clone();
@@ -1108,6 +1137,7 @@ impl<'a> Sema<'a> {
                 decl_scope: 0,
                 static_fields: std::collections::HashMap::new(),
                 static_methods: std::collections::HashMap::new(),
+                builtin_variant: None,
                 fields: Vec::new(),
                 field_initializers: Vec::new(),
                 methods: std::collections::HashMap::new(),
@@ -1260,6 +1290,71 @@ impl<'a> Sema<'a> {
         matches!(self.node_kind(block), NodeKind::Block(statements) if statements.is_empty())
     }
 
+    /// Declares the Built-In Library generic variants `Optional<T>` and
+    /// `Result<TValue; TAlternative>` (§15.2) as templates. Their instances are
+    /// built directly, without AST cloning: `instantiate_builtin_variant`.
+    fn declare_builtin_variants(&mut self) {
+        for (name, kind, parameters) in [
+            ("Optional", BuiltinVariantKind::Optional, vec!["T"]),
+            (
+                "Result",
+                BuiltinVariantKind::Result,
+                vec!["TValue", "TAlternative"],
+            ),
+        ] {
+            let index = self.result.type_defs.len() as TypeDefId;
+            self.result.type_defs.push(TypeDef {
+                name: name.to_string(),
+                qualified_name: name.to_string(),
+                kind: TypeDefKind::Variant,
+                // Unique synthetic node; also used as the instantiation-cache key
+                // (`Sema::ast_placeholder_node`).
+                node: NodeId::MAX - 1 - index,
+                generic_parameters: parameters
+                    .iter()
+                    .map(|parameter| GenericParameterInfo {
+                        name: (*parameter).to_string(),
+                        constraints: Vec::new(),
+                        span: Span::default(),
+                    })
+                    .collect(),
+                generic_arguments: Vec::new(),
+                template: None,
+                decl_scope: 0,
+                static_fields: std::collections::HashMap::new(),
+                static_methods: std::collections::HashMap::new(),
+                builtin_variant: Some(kind),
+                fields: Vec::new(),
+                field_initializers: Vec::new(),
+                methods: std::collections::HashMap::new(),
+                method_list: Vec::new(),
+                accessors: Vec::new(),
+                operators: Vec::new(),
+                interfaces: Vec::new(),
+                interface_dispatch: Vec::new(),
+                sealed: false,
+                is_abstract: false,
+                is_static: false,
+                vtable: Vec::new(),
+                vtable_ready: true,
+                base: None,
+                variant_states: Vec::new(),
+                union_members: Vec::new(),
+                tag_type: None,
+                payload_offset: 0,
+                payload_size: 0,
+                instance_size: 0,
+                instance_align: 1,
+                enum_members: Vec::new(),
+                underlying: None,
+                size: 0,
+                align: 1,
+            });
+            let type_id = self.result.types.intern(Type::Named(index));
+            self.declare(name.to_string(), Symbol::Type(type_id), Span::default());
+        }
+    }
+
     /// Pass 1: walk the declaration structure creating module scopes and named
     /// type stubs.
     fn declare_types(&mut self, nodes: &[NodeId]) {
@@ -1342,6 +1437,7 @@ impl<'a> Sema<'a> {
             decl_scope: self.current_scope(),
             static_fields: std::collections::HashMap::new(),
             static_methods: std::collections::HashMap::new(),
+            builtin_variant: None,
             fields: Vec::new(),
             field_initializers: Vec::new(),
             methods: std::collections::HashMap::new(),

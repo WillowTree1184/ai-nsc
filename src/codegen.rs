@@ -21,9 +21,9 @@ use inkwell::values::{
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 
 use crate::ast::{
-    ArrayElement, Ast, BinaryExpr, BinaryOp, CallExpr, CastExpr, ConditionalExpr, ForStmt,
-    ForTarget, IndexExpr, Initializer, IsExpr, IsTarget, MatchStmt, NodeId, NodeKind, Pattern,
-    SetStmt, UnaryExpr, UnaryOp,
+    ArrayElement, Ast, BinaryExpr, BinaryOp, CallExpr, CastExpr, CoalescingAlternative,
+    ConditionalExpr, ForStmt, ForTarget, IndexExpr, Initializer, IsExpr, IsTarget, MatchStmt,
+    NodeId, NodeKind, Pattern, SetStmt, UnaryExpr, UnaryOp,
 };
 use crate::literal;
 use crate::sema::types::{Type, TypeId};
@@ -1356,6 +1356,14 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
     }
 
     fn gen_throw_statement(&mut self, statement: &crate::ast::ThrowStmt) -> Result<(), String> {
+        let value = self.gen_expr(statement.value)?;
+        let ty = self.type_of(statement.value);
+        self.emit_throw_value(value, ty)
+    }
+
+    /// Emits a throw of `value` (of static type `ty`) to the nearest enclosing
+    /// non-handler trap frame (§5.10.3).
+    fn emit_throw_value(&mut self, value: BasicValueEnum<'ctx>, ty: TypeId) -> Result<(), String> {
         let frame_index = self.trap_stack.iter().rposition(|frame| !frame.is_handler);
         let Some(frame_index) = frame_index else {
             return Err("'throw' outside a trap".to_string());
@@ -1364,8 +1372,6 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             let frame = &self.trap_stack[frame_index];
             (frame.exception_slot, frame.dispatch)
         };
-        let value = self.gen_expr(statement.value)?;
-        let ty = self.type_of(statement.value);
         let (typeinfo, payload) = match self.sema.types.get(ty).clone() {
             Type::Named(index)
                 if matches!(
@@ -1474,6 +1480,172 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .build_store(slot, storage)
             .map_err(|error| format!("cannot store heap pointer: {error}"))?;
         Ok(())
+    }
+
+    fn gen_coalesce_expr(
+        &mut self,
+        node: NodeId,
+        coalesce: &crate::ast::CoalesceExpr,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let info = *self
+            .sema
+            .coalesce
+            .get(&node)
+            .ok_or_else(|| "missing coalescing information".to_string())?;
+        let Type::Named(index) = self.sema.types.get(info.decision_type).clone() else {
+            return Err("coalescing requires a variant decision".to_string());
+        };
+        let (tag_type, payload_offset) = {
+            let definition = &self.sema.type_defs[index as usize];
+            (
+                definition
+                    .tag_type
+                    .ok_or_else(|| "decision variant has no tag type".to_string())?,
+                definition.payload_offset,
+            )
+        };
+        let decision_llvm = self.instance_llvm_type(info.decision_type)?;
+        let value = self.gen_expr(coalesce.value)?;
+        let decision_slot = self
+            .builder
+            .build_alloca(decision_llvm, "decision")
+            .map_err(|error| format!("cannot allocate decision: {error}"))?;
+        self.builder
+            .build_store(decision_slot, value)
+            .map_err(|error| format!("cannot store decision: {error}"))?;
+        let result_type = info.result_type;
+        let result_llvm = if result_type == TypeId::VOID {
+            self.context.i8_type().into()
+        } else {
+            self.llvm_type(result_type)?
+        };
+        let result_slot = self
+            .builder
+            .build_alloca(result_llvm, "coalesced")
+            .map_err(|error| format!("cannot allocate coalesced value: {error}"))?;
+        let tag_llvm = self.llvm_type(tag_type)?.into_int_type();
+        let tag_address =
+            self.address_with_size(decision_slot, 1, self.context.i64_type().const_zero())?;
+        let tag = self
+            .builder
+            .build_load(tag_llvm, tag_address, "decision_tag")
+            .map_err(|error| format!("cannot read decision: {error}"))?
+            .into_int_value();
+        let is_value = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                tag,
+                tag_llvm.const_int(u64::from(info.value_state), false),
+                "is_value",
+            )
+            .map_err(|error| format!("cannot compare decision: {error}"))?;
+        let function = self.current_llvm_function()?;
+        let value_block = self.context.append_basic_block(function, "coalesce_value");
+        let alternative_block = self
+            .context
+            .append_basic_block(function, "coalesce_alternative");
+        let end_block = self.context.append_basic_block(function, "coalesce_end");
+        self.builder
+            .build_conditional_branch(is_value, value_block, alternative_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+
+        self.builder.position_at_end(value_block);
+        if result_type == TypeId::VOID {
+            self.builder
+                .build_store(result_slot, self.context.i8_type().const_zero())
+                .map_err(|error| format!("cannot store coalesced value: {error}"))?;
+        } else {
+            let payload_address = self.address_with_size(
+                decision_slot,
+                1,
+                self.context.i64_type().const_int(payload_offset, false),
+            )?;
+            let payload = self
+                .builder
+                .build_load(result_llvm, payload_address, "coalesce_payload")
+                .map_err(|error| format!("cannot load payload: {error}"))?;
+            self.builder
+                .build_store(result_slot, payload)
+                .map_err(|error| format!("cannot store coalesced value: {error}"))?;
+        }
+        self.builder
+            .build_unconditional_branch(end_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+
+        self.builder.position_at_end(alternative_block);
+        let mut terminated = false;
+        match &coalesce.alternative {
+            CoalescingAlternative::Expression(expression) => {
+                let alternative = self.gen_expr(*expression)?;
+                if result_type != TypeId::VOID {
+                    self.builder
+                        .build_store(result_slot, alternative)
+                        .map_err(|error| format!("cannot store coalesced value: {error}"))?;
+                }
+            }
+            CoalescingAlternative::Throw(exception) => {
+                match exception {
+                    Some(expression) => {
+                        let value = self.gen_expr(*expression)?;
+                        let ty = self.type_of(*expression);
+                        self.emit_throw_value(value, ty)?;
+                    }
+                    None => {
+                        let payload_address = self.address_with_size(
+                            decision_slot,
+                            1,
+                            self.context.i64_type().const_int(payload_offset, false),
+                        )?;
+                        let alternative_llvm = self.llvm_type(info.alternative_type)?;
+                        let payload = self
+                            .builder
+                            .build_load(alternative_llvm, payload_address, "alternative")
+                            .map_err(|error| format!("cannot load alternative: {error}"))?;
+                        self.emit_throw_value(payload, info.alternative_type)?;
+                    }
+                }
+                // The throw branch never reaches the merge block; terminate the
+                // dead block so the module stays well formed.
+                self.builder
+                    .build_unreachable()
+                    .map_err(|error| format!("cannot terminate throw: {error}"))?;
+                terminated = true;
+            }
+            CoalescingAlternative::Return(value) => {
+                match value {
+                    Some(expression) => {
+                        let value = self.gen_expr(*expression)?;
+                        self.builder
+                            .build_return(Some(&value))
+                            .map_err(|error| format!("cannot return: {error}"))?;
+                    }
+                    None => {
+                        let decision = self
+                            .builder
+                            .build_load(decision_llvm, decision_slot, "decision_value")
+                            .map_err(|error| format!("cannot load decision: {error}"))?;
+                        self.builder
+                            .build_return(Some(&decision))
+                            .map_err(|error| format!("cannot return: {error}"))?;
+                    }
+                }
+                terminated = true;
+            }
+        }
+        if !terminated {
+            self.builder
+                .build_unconditional_branch(end_block)
+                .map_err(|error| format!("cannot branch: {error}"))?;
+        }
+        self.builder.position_at_end(end_block);
+        if result_type == TypeId::VOID {
+            Ok(self.context.i8_type().const_zero().into())
+        } else {
+            self.builder
+                .build_load(result_llvm, result_slot, "coalesce_result")
+                .map_err(|error| format!("cannot load coalesced value: {error}"))
+        }
     }
 
     fn gen_dispose_statement(&mut self, statement: &crate::ast::DisposeStmt) -> Result<(), String> {
@@ -2891,6 +3063,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             NodeKind::Binary(binary) => self.gen_binary_expr(node, &binary),
             NodeKind::Is(is_expression) => self.gen_is_expr(node, &is_expression),
             NodeKind::Conditional(conditional) => self.gen_conditional_expr(node, &conditional),
+            NodeKind::Coalesce(coalesce) => self.gen_coalesce_expr(node, &coalesce),
             NodeKind::ArrayLiteral(literal_value) => self.gen_array_literal(node, &literal_value),
             NodeKind::CompileTimeExpr(inner) => self.gen_expr(inner),
             _ => Err("unsupported expression in code generation".to_string()),

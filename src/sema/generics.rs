@@ -344,6 +344,15 @@ impl<'a> Sema<'a> {
         if !self.check_generic_constraints(&parameters, &arguments, decl_scope, span) {
             return None;
         }
+        if let Some(kind) = self.result.type_defs[template_index as usize].builtin_variant {
+            return self.instantiate_builtin_variant(
+                template_index,
+                kind,
+                &parameters,
+                arguments,
+                span,
+            );
+        }
 
         let spelled: Vec<String> = arguments
             .iter()
@@ -361,6 +370,7 @@ impl<'a> Sema<'a> {
             template: Some(template_index),
             decl_scope,
             static_fields: HashMap::new(),
+            builtin_variant: None,
             static_methods: HashMap::new(),
             fields: Vec::new(),
             field_initializers: Vec::new(),
@@ -656,6 +666,106 @@ impl<'a> Sema<'a> {
         for extension in extensions {
             self.apply_generic_extension(&extension, instance_type, arguments);
         }
+    }
+
+    /// Builds an instance of a built-in generic variant (`Optional`/`Result`)
+    /// directly: states, payloads and layout, without cloning an AST declaration.
+    fn instantiate_builtin_variant(
+        &mut self,
+        template_index: TypeDefId,
+        kind: BuiltinVariantKind,
+        parameters: &[GenericParameterInfo],
+        arguments: Vec<TypeId>,
+        span: Span,
+    ) -> Option<TypeId> {
+        let key = (self.ast_placeholder_node(template_index), arguments.clone());
+        if let Some(existing) = self.type_instantiations.get(&key) {
+            return Some(*existing);
+        }
+        let template_name = self.result.type_defs[template_index as usize]
+            .qualified_name
+            .clone();
+        let spelled: Vec<String> = arguments
+            .iter()
+            .map(|argument| self.spelling(*argument))
+            .collect();
+        let qualified_name = format!("{template_name}<{}>", spelled.join(";"));
+        let empty = |ty: TypeId| ty == TypeId::VOID;
+        let states = match kind {
+            BuiltinVariantKind::Optional => vec![
+                VariantStateInfo {
+                    name: "Value".to_string(),
+                    payload: Some(arguments[0]),
+                },
+                VariantStateInfo {
+                    name: "Null".to_string(),
+                    payload: None,
+                },
+            ],
+            BuiltinVariantKind::Result => vec![
+                VariantStateInfo {
+                    name: "Value".to_string(),
+                    payload: (!empty(arguments[0])).then_some(arguments[0]),
+                },
+                VariantStateInfo {
+                    name: "Alternative".to_string(),
+                    payload: (!empty(arguments[1])).then_some(arguments[1]),
+                },
+            ],
+        };
+        let name = self.result.type_defs[template_index as usize].name.clone();
+        let instance_index = self.result.type_defs.len() as TypeDefId;
+        self.result.type_defs.push(TypeDef {
+            name,
+            qualified_name,
+            kind: TypeDefKind::Variant,
+            node: self.ast_placeholder_node(template_index),
+            generic_parameters: Vec::new(),
+            generic_arguments: arguments.clone(),
+            template: Some(template_index),
+            decl_scope: 0,
+            static_fields: HashMap::new(),
+            static_methods: HashMap::new(),
+            builtin_variant: None,
+            fields: Vec::new(),
+            field_initializers: Vec::new(),
+            methods: HashMap::new(),
+            method_list: Vec::new(),
+            accessors: Vec::new(),
+            operators: Vec::new(),
+            interfaces: Vec::new(),
+            interface_dispatch: Vec::new(),
+            sealed: false,
+            is_abstract: false,
+            is_static: false,
+            vtable: Vec::new(),
+            vtable_ready: true,
+            base: None,
+            variant_states: states,
+            union_members: Vec::new(),
+            tag_type: None,
+            payload_offset: 0,
+            payload_size: 0,
+            instance_size: 0,
+            instance_align: 1,
+            enum_members: Vec::new(),
+            underlying: None,
+            size: 0,
+            align: 1,
+        });
+        let instance_type = self.result.types.intern(Type::Named(instance_index));
+        self.type_instantiations.insert(key, instance_type);
+        self.finalize_variant_layout(instance_index as usize);
+        let _ = (parameters, span);
+        Some(instance_type)
+    }
+
+    /// The declaration node used as the instantiation-cache key for a built-in
+    /// generic template (built-ins have no AST node).
+    fn ast_placeholder_node(&self, template_index: TypeDefId) -> NodeId {
+        // A stable synthetic id per template: templates are declared before any
+        // source node exists, so `NodeId::MAX - index` cannot collide.
+        NodeId::MAX - 1 - template_index
     }
 
     // ------------------------------------------------------------------

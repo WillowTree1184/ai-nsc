@@ -1900,7 +1900,7 @@ impl<'a> Sema<'a> {
         }
     }
 
-    fn finalize_variant_layout(&mut self, index: usize) {
+    pub(crate) fn finalize_variant_layout(&mut self, index: usize) {
         let states = self.result.type_defs[index].variant_states.clone();
         // State space: the smallest unsigned integer type that can hold the
         // state count (§3.7.5).
@@ -3974,10 +3974,7 @@ impl<'a> Sema<'a> {
                 ty
             }
             NodeKind::Is(is_expression) => self.check_is_expression(node, &is_expression),
-            NodeKind::Coalesce(_) => {
-                self.unsupported(self.span_of(node), "null coalescing expressions");
-                None
-            }
+            NodeKind::Coalesce(coalesce) => self.check_coalesce(node, &coalesce),
             NodeKind::FunctionLiteral(_) => {
                 self.unsupported(self.span_of(node), "function literals (lambdas)");
                 None
@@ -5292,6 +5289,99 @@ impl<'a> Sema<'a> {
                 Some(TypeId::BOOLEAN)
             }
         }
+    }
+
+    /// Checks a `??` expression (§4.9.26): the left operand decides between its
+    /// value and the alternative continuation.
+    fn check_coalesce(&mut self, node: NodeId, coalesce: &CoalesceExpr) -> Option<TypeId> {
+        let span = self.span_of(node);
+        let decision_type = self.check_expr(coalesce.value, None)?;
+        let Type::Named(index) = self.types_of(decision_type) else {
+            self.unsupported(span, "?? on types without a built-in decision");
+            return None;
+        };
+        let Some(template) = self.result.type_defs[index as usize].template else {
+            self.unsupported(span, "user-defined ?? operators");
+            return None;
+        };
+        let kind = self.result.type_defs[template as usize].builtin_variant;
+        let arguments = self.result.type_defs[index as usize]
+            .generic_arguments
+            .clone();
+        let (result_type, alternative_type) = match kind {
+            Some(BuiltinVariantKind::Optional) => (arguments[0], TypeId::VOID),
+            Some(BuiltinVariantKind::Result) => (arguments[0], arguments[1]),
+            None => {
+                self.unsupported(span, "user-defined ?? operators");
+                return None;
+            }
+        };
+        let states = self.result.type_defs[index as usize].variant_states.clone();
+        let value_state = states
+            .iter()
+            .position(|state| state.name == "Value")
+            .unwrap_or(0) as u32;
+        let alternative_state = if states.len() > 1 { 1 } else { 0 };
+        match coalesce.alternative {
+            CoalescingAlternative::Expression(expression) => {
+                let inferred = self.check_expr(expression, Some(result_type));
+                if let Some(inferred) = inferred {
+                    self.expect_assignable(self.span_of(expression), inferred, result_type);
+                }
+            }
+            CoalescingAlternative::Throw(exception) => {
+                if alternative_type == TypeId::VOID {
+                    self.error(
+                        span,
+                        "the alternative carries no value; '?? throw' requires an exception",
+                    );
+                    return None;
+                }
+                if !matches!(
+                    self.trap_contexts.last(),
+                    Some(TrapContextKind::Body | TrapContextKind::Catch)
+                ) {
+                    self.error(span, "'?? throw' must appear inside a trap or catch block");
+                    return None;
+                }
+                if let Some(exception) = exception {
+                    self.check_expr(exception, None);
+                }
+            }
+            CoalescingAlternative::Return(value) => {
+                let return_type = self
+                    .current_function
+                    .and_then(|index| self.result.functions[index as usize].return_type);
+                match value {
+                    Some(value) => {
+                        let inferred = self.check_expr(value, return_type);
+                        if let (Some(inferred), Some(return_type)) = (inferred, return_type) {
+                            self.expect_assignable(self.span_of(value), inferred, return_type);
+                        }
+                    }
+                    None => {
+                        if return_type != Some(decision_type) {
+                            self.error(
+                                span,
+                                "'?? return' requires the function to return the decision value",
+                            );
+                            return None;
+                        }
+                    }
+                }
+            }
+        }
+        self.result.coalesce.insert(
+            node,
+            CoalesceInfo {
+                decision_type,
+                result_type,
+                alternative_type,
+                value_state,
+                alternative_state,
+            },
+        );
+        Some(result_type)
     }
 
     fn check_is_expression(&mut self, node: NodeId, is_expression: &IsExpr) -> Option<TypeId> {

@@ -2267,3 +2267,59 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 8);
 }
+
+#[test]
+fn optional_coalescing_takes_value_or_alternative() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local present: Optional<integer(4)> = Optional<integer(4)>.Value(42);
+    local empty: Optional<integer(4)> = Optional<integer(4)>.Null;
+    local a: integer(4) = present ?? 7;
+    local b: integer(4) = empty ?? 7;
+    return a + b;
+}";
+    assert_eq!(run_program(source), 49);
+}
+
+#[test]
+fn result_coalescing_supports_throw_and_return() {
+    let throw_source = "\
+fixed Unwrap(result: Result<integer(4); integer(4)>): integer(4)
+{
+    trap
+    {
+        return result ?? throw;
+    }
+    catch error: integer(4)
+    {
+        return 100 + error;
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local ok: Result<integer(4); integer(4)> = Result<integer(4); integer(4)>.Value(4);
+    local bad: Result<integer(4); integer(4)> = Result<integer(4); integer(4)>.Alternative(7);
+    return Unwrap(ok) + Unwrap(bad);
+}";
+    assert_eq!(run_program(throw_source), 111);
+
+    let return_source = "\
+fixed Scale(result: Result<integer(4); Exception>): Result<integer(4); Exception>
+{
+    local value: integer(4) = result ?? return;
+    return Result<integer(4); Exception>.Value(value * 10);
+}
+
+fixed Main(): integer(4)
+{
+    local ok: Result<integer(4); Exception> = Result<integer(4); Exception>.Value(5);
+    local bad: Result<integer(4); Exception> = Result<integer(4); Exception>.Alternative(Exception());
+    local scaled: Result<integer(4); Exception> = Scale(ok);
+    local a: integer(4) = scaled ?? 0;
+    local b: integer(4) = Scale(bad) ?? -1;
+    return a - b;
+}";
+    assert_eq!(run_program(return_source), 51);
+}

@@ -30,7 +30,7 @@ only after the reproduction is re-run and its regression test is green.
 | 8 | HIGH | ABI §13.2 | Mangled symbols embed internal type ids (`named(<id>)`), so symbols depend on declaration order | fixed (a5cc9cf) |
 | 9 | HIGH | §5.10.4 | An unmatched inner `catch` does not reach the enclosing `trap`; the program aborts | fixed (a5cc9cf) |
 | 10 | HIGH | §3.2 | Float→integer explicit cast emits bare `fptosi`/`fptoui` (UB out of range; spec requires wrapping) | fixed (a5cc9cf) |
-| 11 | MED/HIGH | §3.6.2 | Pointer arithmetic missing (`p + i`, `p - i`, `p - q`); no pointer builtin overloads, no `Type.SizeOf<T>()` | partial (eafa0da: `p ± i`, `i + p`, `p - q` implemented with pointee-size unit; `Type.SizeOf<T>()` and `p += i` still missing) |
+| 11 | MED/HIGH | §3.6.2 | Pointer arithmetic missing (`p + i`, `p - i`, `p - q`); no pointer builtin overloads, no `Type.SizeOf<T>()` | partial (eafa0da `p ± i`, `i + p`, `p - q`; 2c5435c `p += i`/`p -= i`; `Type.SizeOf<T>()` still missing) |
 | 12 | MED | §2.7.7 | `\x hh` escape produces a UTF-8 encoded scalar (2 bytes) instead of one raw byte | fixed (a5cc9cf) |
 | 13 | MED | §6.4 | `owner` / `owner.owner` unsupported ("owner expressions are not implemented yet") | fixed (5fe9f0c: reads and assignment targets, nested chains, function-body scope merged) |
 | 14 | MED | §5.6 | `use` statement is a no-op/error; imported members are not visible | fixed (0ec3a18: module members imported per scope; module-level `use` applies to later declarations) |

@@ -7,8 +7,8 @@ Status against `docs/grammar/Draft 1.12.md` (draft). Legend:
 - ⛔ not implemented yet (diagnosed as "not implemented yet", never silently miscompiled)
 
 Verification gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-`cargo test` (161 tests: 40 lib unit including 4 AST-clone tests, 30 CLI, 2 codegen/LLVM,
-78 end-to-end execution, 10 parser, 1 spec-example conformance), plus the CLI
+`cargo test` (163 tests: 40 lib unit including 4 AST-clone tests, 31 CLI, 2 codegen/LLVM,
+79 end-to-end execution, 10 parser, 1 spec-example conformance), plus the CLI
 `ai-nsc check/emit-ir/run` smoke path.
 
 Audit-driven corrections landed in `a5cc9cf` (see `docs/AUDIT.md` for the register):
@@ -58,7 +58,7 @@ area is fixed.
 | §8 functions: parameters, defaults, overload resolution, `#` const params | 🟡 | defaults/overloads; `#` compile-time parameters and default-argument call lowering pending |
 | §9 modifiers (accessibility, scoped, readonly, implicitable, verbatim, manual, abstract, sealed, virtual, override, aligned, static) | 🟡 | virtual/override/sealed/aligned/static parsing; accessibility and some modifier semantics not enforced |
 | §10 generics / monomorphization | ✅ | `src/sema/generics.rs`: templates for `class`/`structure`/`interface`/`variant`/`union` and `fixed`/`linkable` functions; kind constraints (`class`, `structure`, `interface`, `enumeration`, `variant`, `union`, `basic`) and named-type constraints with diagnostics; monomorphization in type positions, constructions, calls, member constructions and `is` targets; module-level `extension for Generic<T>` targets; instances cached per `(declaration node, argument list)` with their own mangled names. Remaining: generic methods declaring own type parameters, array extension targets, generic enumerations (spec-forbidden) — see below |
-| §11.1–11.5 compile-time execution, `#(...)`, `#` params | ⛔ | diagnosed |
+| §11.1–11.5 compile-time execution, `#(...)`, `#` params | 🟡 | `#(...)` integer constants and `Type.SizeOf<T>()` evaluate at compile time and reject runtime values; general compile-time execution, non-integer constants and `#` parameters still diagnosed |
 | §11.6 `#if` / `#else` | ✅ | constant evaluation, selected-branch-only checking/generation |
 | §11.7 `#{...}` compile-time blocks | 🟡 | treated as blocks; compile-time variable constant propagation pending |
 | §11.8 compiler API (`Type`, `Compiler`, `Platform`, NOLAA) | ⛔ | diagnosed |

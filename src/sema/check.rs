@@ -699,10 +699,6 @@ impl<'a> Sema<'a> {
                 .name
                 .clone()
                 .unwrap_or_else(|| format!("argument{index}"));
-            if index > 0 && parameter.by_ref {
-                self.unsupported(parameter.span, "by-reference parameters other than 'this'");
-                return None;
-            }
             parameters.push(ParameterInfo {
                 name,
                 ty: parameter_type,
@@ -1814,10 +1810,6 @@ impl<'a> Sema<'a> {
                 return None;
             };
             let parameter_type = self.resolve_type(parameter_type_node)?;
-            if parameter.by_ref {
-                self.unsupported(parameter.span, "by-reference parameters outside methods");
-                return None;
-            }
             let name = parameter
                 .name
                 .clone()
@@ -1825,7 +1817,7 @@ impl<'a> Sema<'a> {
             parameters.push(ParameterInfo {
                 name,
                 ty: parameter_type,
-                by_ref: false,
+                by_ref: parameter.by_ref,
             });
         }
         Some(parameters)
@@ -2333,7 +2325,11 @@ impl<'a> Sema<'a> {
                     parameter.ty,
                     false,
                     Some(llvm_parameter_index),
-                    Storage::Value,
+                    if parameter.by_ref {
+                        Storage::Reference
+                    } else {
+                        Storage::Value
+                    },
                     span,
                 );
                 llvm_parameter_index += 1;

@@ -2072,3 +2072,49 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 15);
 }
+
+#[test]
+fn by_reference_parameters_write_back_to_the_caller() {
+    let source = "\
+fixed Scale(value: &integer(4), factor: integer(4))
+{
+    value = value * factor;
+}
+
+fixed Main(): integer(4)
+{
+    local number: integer(4) = 6;
+    Scale(number, 7);
+    return number;
+}";
+    assert_eq!(run_program(source), 42);
+}
+
+#[test]
+fn method_by_reference_parameters_alias_the_caller() {
+    let source = "\
+structure Counter
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Bump(this: &Counter, amount: &integer(4))
+        {
+            this.Value += amount;
+            amount += 1;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local counter: Counter;
+    counter.Value = 0;
+    local step: integer(4) = 3;
+    counter.Bump(step);
+    counter.Bump(step);
+    return counter.Value * 10 + step;
+}";
+    assert_eq!(run_program(source), 75);
+}

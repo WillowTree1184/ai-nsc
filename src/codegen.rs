@@ -684,7 +684,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 self.current_this_slot = Some(this_slot);
             }
             for (local_index, local) in locals.iter().enumerate() {
-                let llvm_type = if local.storage == Storage::Heap {
+                let llvm_type = if matches!(local.storage, Storage::Heap | Storage::Reference) {
                     self.context.ptr_type(AddressSpace::default()).into()
                 } else {
                     self.llvm_type(local.ty)?
@@ -2900,6 +2900,18 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .local_slots
                     .get(&local)
                     .ok_or_else(|| "missing local slot".to_string())?;
+                if info.storage == Storage::Reference {
+                    let pointer_type = self.context.ptr_type(AddressSpace::default());
+                    let pointer = self
+                        .builder
+                        .build_load(pointer_type, slot, "reference")
+                        .map_err(|error| format!("cannot load reference: {error}"))?;
+                    let llvm_type = self.llvm_type(ty)?;
+                    return self
+                        .builder
+                        .build_load(llvm_type, pointer.into_pointer_value(), "referenced")
+                        .map_err(|error| format!("cannot load referenced value: {error}"));
+                }
                 if info.storage == Storage::Heap {
                     let pointer_type = self.context.ptr_type(AddressSpace::default());
                     let pointer = self
@@ -3129,6 +3141,14 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .local_slots
                     .get(&local)
                     .ok_or_else(|| "missing local slot".to_string())?;
+                if info.storage == Storage::Reference {
+                    let pointer_type = self.context.ptr_type(AddressSpace::default());
+                    let pointer = self
+                        .builder
+                        .build_load(pointer_type, slot, "reference")
+                        .map_err(|error| format!("cannot load reference: {error}"))?;
+                    return Ok(Some(pointer.into_pointer_value()));
+                }
                 if info.storage == Storage::Heap {
                     let pointer_type = self.context.ptr_type(AddressSpace::default());
                     let pointer = self
@@ -3619,8 +3639,20 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     receiver = Some(receiver_pointer);
                     arguments.push(receiver_pointer.into());
                 }
-                for argument in &call.arguments {
-                    arguments.push(self.gen_expr(argument.value)?.into());
+                let parameter_offset = usize::from(is_method);
+                let parameters = self.sema.functions[index as usize].parameters.clone();
+                for (position, argument) in call.arguments.iter().enumerate() {
+                    let by_ref = parameters
+                        .get(parameter_offset + position)
+                        .is_some_and(|parameter| parameter.by_ref);
+                    if by_ref {
+                        let address = self.gen_lvalue(argument.value)?.ok_or_else(|| {
+                            "by-reference argument is not addressable".to_string()
+                        })?;
+                        arguments.push(address.into());
+                    } else {
+                        arguments.push(self.gen_expr(argument.value)?.into());
+                    }
                 }
                 let call_site = if let Some(receiver_pointer) = receiver {
                     let receiver_type = if is_method {

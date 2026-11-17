@@ -394,6 +394,9 @@ pub enum Storage {
     Value,
     /// Heap storage reached through a pointer (`heap` definitions).
     Heap,
+    /// By-reference parameter storage: the slot holds a pointer to the caller's
+    /// value (§8.2).
+    Reference,
 }
 
 /// A local variable (also used for parameters' storage).

@@ -125,3 +125,23 @@ fn check_rejects_an_invalid_program() {
 
     std::fs::remove_dir_all(&directory).expect("clean temp dir");
 }
+
+#[test]
+fn operator_accessibility_modifier_is_rejected() {
+    let directory = std::env::temp_dir().join(format!("ainsc-cli-access-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("main.ns");
+    std::fs::write(
+        &path,
+        "structure Left { public X: integer(4); }\n\nextension for Left\n{\n    public operator +(left: Left, right: Left): Left { return Left(left.X + right.X); }\n}\n\nfixed Main(): integer(4) { return 0; }\n",
+    )
+    .expect("write program");
+    let output = ai_nsc()
+        .args(["check", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("accessibility"), "stderr: {stderr}");
+}

@@ -59,7 +59,7 @@ Implemented today:
 - **Compile-time conditionals**: `#if`/`#else` evaluated at compile time over boolean
   constants and constant comparisons; only the selected branch is checked and generated
 - **Name mangling** per §13.2, including the spec's worked example as a unit test
-- 99 tests: 36 unit, 8 CLI, 2 LLVM smoke, 42 end-to-end execution, 10 parser, 1 spec
+- 100 tests: 36 unit, 9 CLI, 2 LLVM smoke, 42 end-to-end execution, 10 parser, 1 spec
   conformance; `cargo fmt` + `clippy -D warnings` clean
 
 Not implemented yet (rejected with a clear diagnostic): generics/monomorphization,

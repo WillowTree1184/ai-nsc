@@ -788,6 +788,15 @@ impl<'a> Sema<'a> {
         };
         let is_interface =
             self.result.type_defs[owner_index as usize].kind == TypeDefKind::Interface;
+        if !matches!(
+            declaration.modifiers.accessibility,
+            Accessibility::Unspecified
+        ) {
+            self.error(
+                self.span_of(node),
+                "operator definitions must not carry accessibility modifiers",
+            );
+        }
         match &declaration.head {
             OperatorHead::Indexer {
                 parameters,

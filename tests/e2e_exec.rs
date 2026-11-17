@@ -764,22 +764,22 @@ structure Vec2
             this.Y = y;
         }
 
-        public operator +(left: Vec2, right: Vec2): Vec2
+        operator +(left: Vec2, right: Vec2): Vec2
         {
             return Vec2(left.X + right.X, left.Y + right.Y);
         }
 
-        public operator ==(left: Vec2, right: Vec2): boolean
+        operator ==(left: Vec2, right: Vec2): boolean
         {
             return left.X == right.X && left.Y == right.Y;
         }
 
-        public operator <(left: Vec2, right: Vec2): boolean
+        operator <(left: Vec2, right: Vec2): boolean
         {
             return left.X < right.X;
         }
 
-        public operator -(operand: Vec2): Vec2
+        operator -(operand: Vec2): Vec2
         {
             return Vec2(-operand.X, -operand.Y);
         }
@@ -820,7 +820,7 @@ structure Grid
             this.Data[3] = d;
         }
 
-        public operator [index: integer(4)]: integer(4)
+        operator [index: integer(4)]: integer(4)
         {
             get(this: &Grid) { return this.Data[index]; }
             set(this: &Grid, value: integer(4)) { this.Data[index] = value; }
@@ -852,7 +852,7 @@ structure Fahrenheit
     {
         public fixed Construct(this: &Fahrenheit, degrees: integer(4)) { this.Degrees = degrees; }
 
-        public operator Fahrenheit(value: Celsius): Fahrenheit
+        operator Fahrenheit(value: Celsius): Fahrenheit
         {
             return Fahrenheit(value.Degrees * 9 / 5 + 32);
         }

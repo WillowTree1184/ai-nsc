@@ -5114,7 +5114,7 @@ impl<'a> Sema<'a> {
     fn check_call(&mut self, node: NodeId, call: &CallExpr) -> Option<TypeId> {
         // Compiler API: `Type.SizeOf<T>()` yields `T`'s memory size as a
         // `cardinal(8)` value (§11.8).
-        if let Some(type_argument) = builtin_size_of_type_argument(&self.ast, call.callee) {
+        if let Some(type_argument) = builtin_size_of_type_argument(self.ast, call.callee) {
             let ty = self.resolve_type(type_argument)?;
             self.result.resolutions[node as usize] = Some(Resolution::SizeOf { ty });
             if call.arguments.is_empty() {

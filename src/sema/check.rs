@@ -2418,8 +2418,8 @@ impl<'a> Sema<'a> {
                     self.check_block(else_block);
                 }
             }
-            NodeKind::Throw(_) => self.unsupported(self.span_of(node), "throw statements"),
-            NodeKind::Trap(_) => self.unsupported(self.span_of(node), "trap statements"),
+            NodeKind::Throw(statement) => self.check_throw_statement(&statement),
+            NodeKind::Trap(statement) => self.check_trap_statement(node, &statement),
             NodeKind::Dispose(statement) => self.check_dispose_statement(&statement),
             NodeKind::Heap(declaration) => self.check_heap_statement(node, &declaration),
             NodeKind::Class(_)
@@ -2580,6 +2580,76 @@ impl<'a> Sema<'a> {
             },
             NodeKind::Index(_) | NodeKind::MemberAccess(_) | NodeKind::PointerMemberAccess(_) => {}
             _ => self.error(self.span_of(node), "expression is not assignable"),
+        }
+    }
+
+    fn check_throw_statement(&mut self, statement: &ThrowStmt) {
+        match self.trap_contexts.last() {
+            Some(TrapContextKind::Body | TrapContextKind::Catch) => {}
+            Some(TrapContextKind::Finally) => {
+                self.error(
+                    self.span_of(statement.value),
+                    "a throw inside 'finally' must terminate the program",
+                );
+                return;
+            }
+            None => {
+                self.error(
+                    self.span_of(statement.value),
+                    "'throw' must appear inside a trap or catch block",
+                );
+                return;
+            }
+        }
+        self.check_expr(statement.value, None);
+    }
+
+    fn check_trap_statement(&mut self, node: NodeId, statement: &TrapStmt) {
+        if self.current_function.is_none() {
+            self.error(
+                self.span_of(node),
+                "'trap' must appear inside a function body",
+            );
+        }
+        let mut catches = Vec::new();
+        let mut saw_wildcard = false;
+        for catch in &statement.catches {
+            if saw_wildcard {
+                self.error(catch.span, "'wildcard' must be the last catch clause");
+            }
+            if catch.wildcard {
+                saw_wildcard = true;
+            }
+            let catch_type = catch.ty.and_then(|ty| self.resolve_type(ty));
+            if !catch.wildcard && catch_type.is_none() {
+                self.error(catch.span, "catch requires a type or 'wildcard'");
+            }
+            self.push_scope();
+            let binding = match (&catch.name, catch_type) {
+                (Some(name), Some(ty)) => {
+                    Some(self.add_local(name.clone(), ty, false, None, Storage::Value, catch.span))
+                }
+                _ => None,
+            };
+            self.trap_contexts.push(TrapContextKind::Catch);
+            self.check_block(catch.body);
+            self.trap_contexts.pop();
+            self.pop_scope();
+            catches.push(CatchInfo {
+                ty: catch_type,
+                binding,
+                wildcard: catch.wildcard,
+                body: catch.body,
+            });
+        }
+        self.result.trap_catches.insert(node, catches);
+        self.trap_contexts.push(TrapContextKind::Body);
+        self.check_block(statement.body);
+        self.trap_contexts.pop();
+        if let Some(finally) = statement.finally {
+            self.trap_contexts.push(TrapContextKind::Finally);
+            self.check_block(finally);
+            self.trap_contexts.pop();
         }
     }
 

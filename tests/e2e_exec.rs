@@ -867,3 +867,149 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 212);
 }
+
+#[test]
+fn throw_is_caught_by_matching_trap() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local result: integer(4) = 0;
+    local code: integer(4) = 42;
+    trap
+    {
+        throw code;
+        result = 1;
+    }
+    catch value: integer(4)
+    {
+        result = value;
+    }
+    return result;
+}";
+    assert_eq!(run_program(source), 42);
+}
+
+#[test]
+fn catch_matches_base_classes_and_runs_finally() {
+    let source = "\
+class AppError
+{
+    extension
+    {
+        public virtual fixed Code(this: &AppError): integer(4) { return 1; }
+    }
+}
+
+class NotFound: AppError
+{
+    extension
+    {
+        public override fixed Code(this: &NotFound): integer(4) { return 7; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local result: integer(4) = 0;
+    trap
+    {
+        local problem: NotFound = NotFound();
+        throw problem;
+    }
+    catch error: AppError
+    {
+        result = error.Code();
+    }
+    catch wildcard
+    {
+        result = 99;
+    }
+    finally
+    {
+        result += 1;
+    }
+    return result;
+}";
+    assert_eq!(run_program(source), 8);
+}
+
+#[test]
+fn finally_runs_on_normal_and_handled_paths() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local log: integer(4) = 0;
+    trap
+    {
+        throw 1;
+    }
+    catch wildcard
+    {
+        log += 10;
+    }
+    finally
+    {
+        log += 20;
+    }
+    trap
+    {
+        log += 1;
+    }
+    catch wildcard
+    {
+        log += 100;
+    }
+    finally
+    {
+        log += 4;
+    }
+    return log;
+}";
+    assert_eq!(run_program(source), 35);
+}
+
+#[test]
+fn unmatched_exception_propagates_to_outer_trap() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local result: integer(4) = 0;
+    local code: integer(4) = 7;
+    trap
+    {
+        trap
+        {
+            throw code;
+        }
+        catch value: boolean
+        {
+            result = 100;
+        }
+    }
+    catch value: integer(4)
+    {
+        result = value;
+    }
+    return result;
+}";
+    assert_eq!(run_program(source), 7);
+}
+
+#[test]
+fn throw_outside_trap_is_reported() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    throw 1;
+    return 0;
+}";
+    let path = write_program(source);
+    let output = ai_nsc()
+        .args(["check", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(path.parent().expect("temp dir"));
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("trap"), "stderr: {stderr}");
+}

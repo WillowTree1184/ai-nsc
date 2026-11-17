@@ -409,6 +409,30 @@ pub enum Resolution {
     },
 }
 
+/// One checked `catch` clause of a `trap` statement (§5.10.4).
+#[derive(Clone, Debug)]
+pub struct CatchInfo {
+    /// Caught type; `None` for `wildcard`.
+    pub ty: Option<TypeId>,
+    /// Local receiving the thrown value, if a name was written.
+    pub binding: Option<LocalId>,
+    /// Whether this is `catch wildcard`.
+    pub wildcard: bool,
+    /// Handler body block.
+    pub body: NodeId,
+}
+
+/// Lexical exception-handling context used while checking statements.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TrapContextKind {
+    /// Inside a `trap` body.
+    Body,
+    /// Inside a `catch` block.
+    Catch,
+    /// Inside a `finally` block.
+    Finally,
+}
+
 /// Type information recorded for a checked `match` pattern.
 #[derive(Clone, Debug)]
 pub enum MatchPatternInfo {
@@ -451,6 +475,8 @@ pub struct SemaResult {
     pub loop_bindings: HashMap<NodeId, LocalId>,
     /// Type-checked `is` patterns, keyed by match statement node and case index.
     pub match_patterns: HashMap<(NodeId, u32), MatchPatternInfo>,
+    /// Checked catch clauses, keyed by trap statement node.
+    pub trap_catches: HashMap<NodeId, Vec<CatchInfo>>,
     /// Number of errors reported.
     pub error_count: u32,
 }
@@ -545,6 +571,7 @@ pub fn analyze(ast: &Ast, sources: &SourceManager, engine: &mut DiagnosticEngine
         suppress_errors: 0,
         loop_labels: Vec::new(),
         pending_accessors: Vec::new(),
+        trap_contexts: Vec::new(),
     };
     sema.run();
     sema.result.error_count = sema.engine.error_count();
@@ -564,6 +591,8 @@ pub(crate) struct Sema<'a> {
     pub(crate) loop_labels: Vec<Option<String>>,
     /// Accessor declarations waiting for their owner's field layout.
     pub(crate) pending_accessors: Vec<(NodeId, TypeId)>,
+    /// Lexical trap context stack for validating `throw` (§5.10).
+    pub(crate) trap_contexts: Vec<TrapContextKind>,
 }
 
 impl<'a> Sema<'a> {

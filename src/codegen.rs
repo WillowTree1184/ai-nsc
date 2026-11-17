@@ -86,6 +86,8 @@ pub fn generate(ast: &Ast, sema: &SemaResult, options: &CodegenOptions) -> Resul
         typeinfo_globals: HashMap::new(),
         vtable_globals: HashMap::new(),
         interface_tables: HashMap::new(),
+        trap_stack: Vec::new(),
+        type_key_globals: HashMap::new(),
     };
     generator.run()?;
     if let Err(message) = generator.module.verify() {
@@ -103,6 +105,16 @@ struct LoopInfo<'ctx> {
     label: Option<String>,
     break_block: BasicBlock<'ctx>,
     continue_block: BasicBlock<'ctx>,
+}
+
+/// One active lexical trap frame while lowering statements (§5.10.4).
+struct TrapFrame<'ctx> {
+    /// Storage of the thrown value: `{ typeinfo, payload }`.
+    exception_slot: PointerValue<'ctx>,
+    /// Block that matches catch clauses.
+    dispatch: inkwell::basic_block::BasicBlock<'ctx>,
+    /// Whether this frame is a `catch` handler (throws skip it).
+    is_handler: bool,
 }
 
 struct Generator<'ctx, 'a> {
@@ -126,6 +138,8 @@ struct Generator<'ctx, 'a> {
     typeinfo_globals: HashMap<u32, GlobalValue<'ctx>>,
     vtable_globals: HashMap<u32, GlobalValue<'ctx>>,
     interface_tables: HashMap<u32, GlobalValue<'ctx>>,
+    trap_stack: Vec<TrapFrame<'ctx>>,
+    type_key_globals: HashMap<TypeId, GlobalValue<'ctx>>,
 }
 
 impl<'ctx, 'a> Generator<'ctx, 'a> {
@@ -870,6 +884,8 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             NodeKind::Block(_) | NodeKind::VerbatimBlock(_) => self.gen_block_contents(node),
             NodeKind::Local(_) | NodeKind::Fixed(_) => self.gen_local_declaration(node),
             NodeKind::Heap(declaration) => self.gen_heap_statement(node, &declaration),
+            NodeKind::Trap(statement) => self.gen_trap_statement(node, &statement),
+            NodeKind::Throw(statement) => self.gen_throw_statement(&statement),
             NodeKind::Dispose(statement) => self.gen_dispose_statement(&statement),
             NodeKind::Set(statement) => self.gen_set_statement(&statement),
             NodeKind::CompoundSet(statement) => self.gen_compound_set_statement(&statement),
@@ -960,6 +976,384 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .locals
             .get(local as usize)
             .cloned()
+    }
+
+    fn builder_terminated(&self) -> bool {
+        self.builder
+            .get_insert_block()
+            .is_some_and(|block| block.get_terminator().is_some())
+    }
+
+    fn type_key(&mut self, ty: TypeId) -> Result<PointerValue<'ctx>, String> {
+        if let Some(global) = self.type_key_globals.get(&ty) {
+            return Ok(global.as_pointer_value());
+        }
+        let index = self.type_key_globals.len();
+        let key_type = self.context.i8_type().array_type(1);
+        let global = self
+            .module
+            .add_global(key_type, None, &format!("nsc.typekey.{index}"));
+        global.set_initializer(&key_type.const_zero());
+        global.set_constant(true);
+        self.type_key_globals.insert(ty, global);
+        Ok(global.as_pointer_value())
+    }
+
+    /// Checks whether a thrown value's typeinfo matches a catch target type.
+    fn emit_typeinfo_match(
+        &mut self,
+        typeinfo: PointerValue<'ctx>,
+        target: TypeId,
+    ) -> Result<IntValue<'ctx>, String> {
+        let Type::Named(index) = self.sema.types.get(target).clone() else {
+            let key = self.type_key(target)?;
+            return self
+                .builder
+                .build_int_compare(IntPredicate::EQ, typeinfo, key, "catch_type")
+                .map_err(|error| format!("cannot compare catch type: {error}"));
+        };
+        match self.sema.type_defs[index as usize].kind {
+            TypeDefKind::Class => self.emit_class_from_typeinfo(typeinfo, index),
+            TypeDefKind::Interface => self.emit_interface_from_typeinfo(typeinfo, index),
+            _ => {
+                let key = self.type_key(target)?;
+                self.builder
+                    .build_int_compare(IntPredicate::EQ, typeinfo, key, "catch_type")
+                    .map_err(|error| format!("cannot compare catch type: {error}"))
+            }
+        }
+    }
+
+    /// Walks a typeinfo base chain looking for a class.
+    fn emit_class_from_typeinfo(
+        &mut self,
+        typeinfo: PointerValue<'ctx>,
+        target_index: u32,
+    ) -> Result<IntValue<'ctx>, String> {
+        let pointer_type = self.context.ptr_type(AddressSpace::default());
+        let target = self
+            .typeinfo_globals
+            .get(&target_index)
+            .ok_or_else(|| "missing target type information".to_string())?
+            .as_pointer_value();
+        let current_slot = self
+            .builder
+            .build_alloca(pointer_type, "catch_current")
+            .map_err(|error| format!("cannot allocate catch state: {error}"))?;
+        self.builder
+            .build_store(current_slot, typeinfo)
+            .map_err(|error| format!("cannot store catch state: {error}"))?;
+        let result_slot = self
+            .builder
+            .build_alloca(self.context.bool_type(), "catch_result")
+            .map_err(|error| format!("cannot allocate catch result: {error}"))?;
+        self.builder
+            .build_store(result_slot, self.context.bool_type().const_zero())
+            .map_err(|error| format!("cannot store catch result: {error}"))?;
+        let function = self.current_llvm_function()?;
+        let loop_block = self.context.append_basic_block(function, "catch_loop");
+        let true_block = self.context.append_basic_block(function, "catch_true");
+        let end_block = self.context.append_basic_block(function, "catch_end");
+        self.builder
+            .build_unconditional_branch(loop_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(loop_block);
+        let current = self
+            .builder
+            .build_load(pointer_type, current_slot, "current")
+            .map_err(|error| format!("cannot load catch state: {error}"))?
+            .into_pointer_value();
+        let is_null = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                current,
+                pointer_type.const_zero(),
+                "catch_null",
+            )
+            .map_err(|error| format!("cannot compare catch state: {error}"))?;
+        let check_block = self.context.append_basic_block(function, "catch_check");
+        self.builder
+            .build_conditional_branch(is_null, end_block, check_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(check_block);
+        let matches = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, current, target, "catch_match")
+            .map_err(|error| format!("cannot compare catch type: {error}"))?;
+        let next_block = self.context.append_basic_block(function, "catch_next");
+        self.builder
+            .build_conditional_branch(matches, true_block, next_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(next_block);
+        let base = self.load_pointer_at(current, 8)?;
+        self.builder
+            .build_store(current_slot, base)
+            .map_err(|error| format!("cannot store catch state: {error}"))?;
+        self.builder
+            .build_unconditional_branch(loop_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(true_block);
+        self.builder
+            .build_store(result_slot, self.context.bool_type().const_int(1, false))
+            .map_err(|error| format!("cannot store catch result: {error}"))?;
+        self.builder
+            .build_unconditional_branch(end_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(end_block);
+        Ok(self
+            .builder
+            .build_load(self.context.bool_type(), result_slot, "catch_result")
+            .map_err(|error| format!("cannot load catch result: {error}"))?
+            .into_int_value())
+    }
+
+    fn emit_abort(&mut self) -> Result<(), String> {
+        let abort = self.module.get_function("abort").unwrap_or_else(|| {
+            let signature = self.context.void_type().fn_type(&[], false);
+            self.module.add_function("abort", signature, None)
+        });
+        self.builder
+            .build_call(abort, &[], "")
+            .map_err(|error| format!("cannot call abort: {error}"))?;
+        self.builder
+            .build_unreachable()
+            .map_err(|error| format!("cannot terminate: {error}"))?;
+        Ok(())
+    }
+
+    /// Propagates the exception in `exception_slot` to the next outer body trap,
+    /// or terminates the program (§5.10.1-7).
+    fn emit_outer_dispatch(&mut self, exception_slot: PointerValue<'ctx>) -> Result<(), String> {
+        let outer = self
+            .trap_stack
+            .iter()
+            .rev()
+            .find(|frame| !frame.is_handler)
+            .map(|frame| (frame.exception_slot, frame.dispatch));
+        let Some((outer_slot, outer_dispatch)) = outer else {
+            return self.emit_abort();
+        };
+        let typeinfo = self.load_pointer_at(exception_slot, 0)?;
+        let payload = self.load_pointer_at(exception_slot, 8)?;
+        let typeinfo_slot =
+            self.address_with_size(outer_slot, 1, self.context.i64_type().const_zero())?;
+        let payload_slot =
+            self.address_with_size(outer_slot, 1, self.context.i64_type().const_int(8, false))?;
+        self.builder
+            .build_store(typeinfo_slot, typeinfo)
+            .map_err(|error| format!("cannot propagate exception: {error}"))?;
+        self.builder
+            .build_store(payload_slot, payload)
+            .map_err(|error| format!("cannot propagate exception: {error}"))?;
+        self.builder
+            .build_unconditional_branch(outer_dispatch)
+            .map_err(|error| format!("cannot propagate exception: {error}"))?;
+        Ok(())
+    }
+
+    fn gen_trap_statement(
+        &mut self,
+        node: NodeId,
+        statement: &crate::ast::TrapStmt,
+    ) -> Result<(), String> {
+        let function = self.current_llvm_function()?;
+        let pointer_type = self.context.ptr_type(AddressSpace::default());
+        let exception_type = self
+            .context
+            .struct_type(&[pointer_type.into(), pointer_type.into()], false);
+        let exception_slot = self
+            .builder
+            .build_alloca(exception_type, "exception")
+            .map_err(|error| format!("cannot allocate exception: {error}"))?;
+        let dispatch = self.context.append_basic_block(function, "trap_dispatch");
+        let after_body = self.context.append_basic_block(function, "trap_after_body");
+        let end = self.context.append_basic_block(function, "trap_end");
+        let finally_blocks = statement.finally.map(|finally| {
+            (
+                finally,
+                self.context.append_basic_block(function, "trap_finally"),
+                self.context
+                    .append_basic_block(function, "trap_finally_propagate"),
+            )
+        });
+        self.trap_stack.push(TrapFrame {
+            exception_slot,
+            dispatch,
+            is_handler: false,
+        });
+        self.gen_block_contents(statement.body)?;
+        self.trap_stack.pop();
+        if !self.builder_terminated() {
+            self.builder
+                .build_unconditional_branch(after_body)
+                .map_err(|error| format!("cannot branch: {error}"))?;
+        }
+        self.builder.position_at_end(after_body);
+        if let Some((finally, normal, _)) = finally_blocks {
+            self.builder
+                .build_unconditional_branch(normal)
+                .map_err(|error| format!("cannot branch: {error}"))?;
+            self.builder.position_at_end(normal);
+            self.gen_block_contents(finally)?;
+            if !self.builder_terminated() {
+                self.builder
+                    .build_unconditional_branch(end)
+                    .map_err(|error| format!("cannot branch: {error}"))?;
+            }
+        } else {
+            self.builder
+                .build_unconditional_branch(end)
+                .map_err(|error| format!("cannot branch: {error}"))?;
+        }
+        let catches = self
+            .sema
+            .trap_catches
+            .get(&node)
+            .cloned()
+            .unwrap_or_default();
+        let mut check_block = dispatch;
+        for catch in &catches {
+            let catch_block = self.context.append_basic_block(function, "trap_catch");
+            let next_block = self.context.append_basic_block(function, "trap_check");
+            self.builder.position_at_end(check_block);
+            if catch.wildcard {
+                self.builder
+                    .build_unconditional_branch(catch_block)
+                    .map_err(|error| format!("cannot branch: {error}"))?;
+            } else if let Some(target) = catch.ty {
+                let typeinfo = self
+                    .load_pointer_at(exception_slot, 0)?
+                    .into_pointer_value();
+                let condition = self.emit_typeinfo_match(typeinfo, target)?;
+                self.builder
+                    .build_conditional_branch(condition, catch_block, next_block)
+                    .map_err(|error| format!("cannot branch: {error}"))?;
+            } else {
+                self.builder
+                    .build_unconditional_branch(next_block)
+                    .map_err(|error| format!("cannot branch: {error}"))?;
+            }
+            self.builder.position_at_end(catch_block);
+            if let Some(binding) = catch.binding {
+                let slot = *self
+                    .local_slots
+                    .get(&binding)
+                    .ok_or_else(|| "missing catch binding slot".to_string())?;
+                let payload = self
+                    .load_pointer_at(exception_slot, 8)?
+                    .into_pointer_value();
+                let target = catch.ty.ok_or_else(|| "catch type missing".to_string())?;
+                let is_reference = matches!(self.sema.types.get(target), Type::Named(index) if matches!(self.sema.type_defs[*index as usize].kind, TypeDefKind::Class | TypeDefKind::Interface));
+                if is_reference {
+                    self.builder
+                        .build_store(slot, payload)
+                        .map_err(|error| format!("cannot bind exception: {error}"))?;
+                } else {
+                    let llvm_type = self.llvm_type(target)?;
+                    let value = self
+                        .builder
+                        .build_load(llvm_type, payload, "catch_value")
+                        .map_err(|error| format!("cannot load exception: {error}"))?;
+                    self.builder
+                        .build_store(slot, value)
+                        .map_err(|error| format!("cannot bind exception: {error}"))?;
+                }
+            }
+            self.trap_stack.push(TrapFrame {
+                exception_slot,
+                dispatch,
+                is_handler: true,
+            });
+            self.gen_block_contents(catch.body)?;
+            self.trap_stack.pop();
+            if !self.builder_terminated() {
+                match finally_blocks {
+                    Some((_, normal, _)) => self
+                        .builder
+                        .build_unconditional_branch(normal)
+                        .map_err(|error| format!("cannot branch: {error}"))?,
+                    None => self
+                        .builder
+                        .build_unconditional_branch(end)
+                        .map_err(|error| format!("cannot branch: {error}"))?,
+                };
+            }
+            check_block = next_block;
+        }
+        self.builder.position_at_end(check_block);
+        match finally_blocks {
+            Some((finally, _, propagate)) => {
+                self.builder
+                    .build_unconditional_branch(propagate)
+                    .map_err(|error| format!("cannot branch: {error}"))?;
+                self.builder.position_at_end(propagate);
+                self.gen_block_contents(finally)?;
+                if !self.builder_terminated() {
+                    self.emit_outer_dispatch(exception_slot)?;
+                }
+            }
+            None => self.emit_outer_dispatch(exception_slot)?,
+        }
+        self.builder.position_at_end(end);
+        Ok(())
+    }
+
+    fn gen_throw_statement(&mut self, statement: &crate::ast::ThrowStmt) -> Result<(), String> {
+        let frame_index = self.trap_stack.iter().rposition(|frame| !frame.is_handler);
+        let Some(frame_index) = frame_index else {
+            return Err("'throw' outside a trap".to_string());
+        };
+        let (exception_slot, dispatch) = {
+            let frame = &self.trap_stack[frame_index];
+            (frame.exception_slot, frame.dispatch)
+        };
+        let value = self.gen_expr(statement.value)?;
+        let ty = self.type_of(statement.value);
+        let (typeinfo, payload) = match self.sema.types.get(ty).clone() {
+            Type::Named(index)
+                if matches!(
+                    self.sema.type_defs[index as usize].kind,
+                    TypeDefKind::Class | TypeDefKind::Interface
+                ) =>
+            {
+                let instance = value.into_pointer_value();
+                let typeinfo = self.load_pointer_at(instance, 8)?.into_pointer_value();
+                (typeinfo, instance)
+            }
+            _ => {
+                let llvm_type = self.llvm_type(ty)?;
+                let spill = self
+                    .builder
+                    .build_alloca(llvm_type, "throw_value")
+                    .map_err(|error| format!("cannot allocate thrown value: {error}"))?;
+                self.builder
+                    .build_store(spill, value)
+                    .map_err(|error| format!("cannot store thrown value: {error}"))?;
+                (self.type_key(ty)?, spill)
+            }
+        };
+        let typeinfo_slot =
+            self.address_with_size(exception_slot, 1, self.context.i64_type().const_zero())?;
+        let payload_slot = self.address_with_size(
+            exception_slot,
+            1,
+            self.context.i64_type().const_int(8, false),
+        )?;
+        self.builder
+            .build_store(typeinfo_slot, typeinfo)
+            .map_err(|error| format!("cannot store exception: {error}"))?;
+        self.builder
+            .build_store(payload_slot, payload)
+            .map_err(|error| format!("cannot store exception: {error}"))?;
+        self.builder
+            .build_unconditional_branch(dispatch)
+            .map_err(|error| format!("cannot transfer exception: {error}"))?;
+        let dead = self
+            .context
+            .append_basic_block(self.current_llvm_function()?, "throw_dead");
+        self.builder.position_at_end(dead);
+        Ok(())
     }
 
     fn gen_heap_statement(
@@ -2000,13 +2394,22 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         instance: PointerValue<'ctx>,
         interface_index: u32,
     ) -> Result<IntValue<'ctx>, String> {
+        let typeinfo = self.load_pointer_at(instance, 8)?.into_pointer_value();
+        self.emit_interface_from_typeinfo(typeinfo, interface_index)
+    }
+
+    /// Emits an interface-table search starting from a typeinfo pointer.
+    fn emit_interface_from_typeinfo(
+        &mut self,
+        typeinfo: PointerValue<'ctx>,
+        interface_index: u32,
+    ) -> Result<IntValue<'ctx>, String> {
         let pointer_type = self.context.ptr_type(AddressSpace::default());
         let target = self
             .typeinfo_globals
             .get(&interface_index)
             .ok_or_else(|| "missing interface type information".to_string())?
             .as_pointer_value();
-        let typeinfo = self.load_pointer_at(instance, 8)?.into_pointer_value();
         let result_slot = self
             .builder
             .build_alloca(self.context.bool_type(), "iface_result")

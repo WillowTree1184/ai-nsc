@@ -7,8 +7,8 @@ Status against `docs/grammar/Draft 1.12.md` (draft). Legend:
 - ⛔ not implemented yet (diagnosed as "not implemented yet", never silently miscompiled)
 
 Verification gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-`cargo test` (136 tests: 40 lib unit including 4 AST-clone tests, 18 CLI, 2 codegen/LLVM,
-65 end-to-end execution, 10 parser, 1 spec-example conformance), plus the CLI
+`cargo test` (139 tests: 40 lib unit including 4 AST-clone tests, 19 CLI, 2 codegen/LLVM,
+67 end-to-end execution, 10 parser, 1 spec-example conformance), plus the CLI
 `ai-nsc check/emit-ir/run` smoke path.
 
 Audit-driven corrections landed in `a5cc9cf` (see `docs/AUDIT.md` for the register):
@@ -53,7 +53,7 @@ area is fixed.
 | §4.9.27 `?:` conditional | ✅ | conditional expression e2e |
 | §5 statements (blocks, locals, fixed, set/compound, if, while, do, for, match, break/continue, return, export) | ✅ | e2e statement tests; `match` is a logical control flow (`break`/`continue`/named labels) and pattern comparisons use operator overloads |
 | §5.10.3/4 `throw`, `trap`/`catch`/`finally` | 🟡 | source-level + runtime exceptions; `finally` on `return`/`break`/`continue` pending; heap-failure exceptions pending |
-| §6 names/modules/`use`, scopes, shadowing | 🟡 | modules/scopes resolved, `owner`/nested `owner` works for shadowed outer names (reads and writes); `use` imports (#14) and multiple input files pending |
+| §6 names/modules/`use`, scopes, shadowing | 🟡 | modules/scopes resolved; `owner`/nested `owner` for shadowed outer names (reads and writes); `use` imports module members per scope (§5.6); multiple input files pending |
 | §7/§13/§14 ABI: name mangling, class layout, launcher, exit code | ✅ | mangling unit tests, LLVM smoke + e2e exit codes |
 | §8 functions: parameters, defaults, overload resolution, `#` const params | 🟡 | defaults/overloads; `#` compile-time parameters and default-argument call lowering pending |
 | §9 modifiers (accessibility, scoped, readonly, implicitable, verbatim, manual, abstract, sealed, virtual, override, aligned, static) | 🟡 | virtual/override/sealed/aligned/static parsing; accessibility and some modifier semantics not enforced |

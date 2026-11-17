@@ -599,3 +599,38 @@ fixed Main(): integer(4)
     );
     assert!(stderr.contains("compile-time expressions"), "{stderr}");
 }
+
+#[test]
+fn double_dispose_warns_without_failing() {
+    let directory = std::env::temp_dir().join(format!("ainsc-cli-warn4-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("main.ns");
+    std::fs::write(
+        &path,
+        "\
+structure Token
+{
+    public Value: integer(4);
+}
+
+fixed Main(): integer(4)
+{
+    local made: Token;
+    dispose made;
+    dispose made;
+    return 0;
+}",
+    )
+    .expect("write program");
+    let output = ai_nsc()
+        .args(["check", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "warnings must not fail the build: {stderr}"
+    );
+    assert!(stderr.contains("disposed more than once"), "{stderr}");
+}

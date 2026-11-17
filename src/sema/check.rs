@@ -2609,9 +2609,13 @@ impl<'a> Sema<'a> {
             }
         };
         self.push_scope();
+        // Disposal tracking is restored at block boundaries so that disjoint
+        // branches do not look like a double dispose (§5.8).
+        let disposed_before = self.disposed_locals.clone();
         for statement in statements {
             self.check_statement(statement);
         }
+        self.disposed_locals = disposed_before;
         self.pop_scope();
     }
 
@@ -2630,9 +2634,11 @@ impl<'a> Sema<'a> {
                 return;
             }
         };
+        let disposed_before = self.disposed_locals.clone();
         for statement in statements {
             self.check_statement(statement);
         }
+        self.disposed_locals = disposed_before;
     }
 
     fn check_statement(&mut self, node: NodeId) {
@@ -3133,6 +3139,12 @@ impl<'a> Sema<'a> {
                             )
                     );
                     if disposable {
+                        if !self.disposed_locals.insert(local) {
+                            self.warn(
+                                self.span_of(statement.target),
+                                format!("'{}' is disposed more than once", name.name),
+                            );
+                        }
                         self.result.resolutions[statement.target as usize] =
                             Some(Resolution::Local(local));
                         self.result.node_types[statement.target as usize] = Some(info.ty);

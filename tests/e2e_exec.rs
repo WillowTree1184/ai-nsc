@@ -1655,3 +1655,42 @@ fixed Main(): integer(4)
     // 20 + 30 + 20 + 2
     assert_eq!(run_program(source), 72);
 }
+
+#[test]
+fn derived_constructor_calls_the_base_constructor() {
+    let source = "\
+class Base
+{
+    public X: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Base, x: integer(4))
+        {
+            this.X = x;
+        }
+    }
+}
+
+class Derived : Base
+{
+    public Y: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Derived, y: integer(4))
+        {
+            base.Construct(y * 2);
+            this.Y = y;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local d: Derived = Derived(5);
+    return d.X + d.Y;
+}";
+    // Base constructor sets X = 10, derived sets Y = 5.
+    assert_eq!(run_program(source), 15);
+}

@@ -275,3 +275,39 @@ fixed Main(): integer(4) { return 0; }",
     );
     assert!(stderr.contains("duplicate field"), "{stderr}");
 }
+
+#[test]
+fn derived_class_must_declare_a_constructor_for_a_non_trivial_base() {
+    let stderr = check_source(
+        "\
+class Base
+{
+    public X: integer(4);
+    extension { public fixed Construct(this: &Base, x: integer(4)) { this.X = x; } }
+}
+class Derived : Base { }
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(stderr.contains("must declare a constructor"), "{stderr}");
+}
+
+#[test]
+fn constructor_must_start_by_calling_the_base_constructor() {
+    let stderr = check_source(
+        "\
+class Base
+{
+    public X: integer(4);
+    extension { public fixed Construct(this: &Base, x: integer(4)) { this.X = x; } }
+}
+class Derived : Base
+{
+    extension
+    {
+        public fixed Construct(this: &Derived) { this.X = 1; }
+    }
+}
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(stderr.contains("base.Construct"), "{stderr}");
+}

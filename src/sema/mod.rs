@@ -981,6 +981,7 @@ impl<'a> Sema<'a> {
         self.finalize_variant_union_layouts();
         self.build_vtables();
         self.check_entry_point();
+        self.check_constructor_chains();
     }
 
     /// Declares the Built-In Library exception class hierarchy (§15.2):
@@ -1063,6 +1064,99 @@ impl<'a> Sema<'a> {
                 }
             }
         }
+    }
+
+    /// Validates constructor chains (§3.7.1).
+    ///
+    /// When a base class constructor has parameters or a non-empty body, every
+    /// derived class must declare a constructor, and each constructor must call
+    /// the base constructor with `base.Construct(...)` as its first statement.
+    fn check_constructor_chains(&mut self) {
+        for index in 0..self.result.type_defs.len() {
+            let definition = &self.result.type_defs[index];
+            if definition.kind != TypeDefKind::Class || !definition.generic_parameters.is_empty() {
+                continue;
+            }
+            let Some(base) = definition.base else {
+                continue;
+            };
+            let Type::Named(base_index) = self.result.types.get(base) else {
+                continue;
+            };
+            let base_index = *base_index as usize;
+            let base_constructors = self.result.type_defs[base_index]
+                .methods
+                .get("Construct")
+                .cloned()
+                .unwrap_or_default();
+            let base_is_non_trivial = base_constructors.iter().any(|constructor| {
+                let function = &self.result.functions[*constructor as usize];
+                function.parameters.len() > 1
+                    || match function.body {
+                        Some(FunctionBody::Block(block)) => !self.block_is_empty(block),
+                        _ => true,
+                    }
+            });
+            if !base_is_non_trivial {
+                continue;
+            }
+            let class_name = self.result.type_defs[index].qualified_name.clone();
+            let class_node = self.result.type_defs[index].node;
+            let constructors = self.result.type_defs[index]
+                .methods
+                .get("Construct")
+                .cloned()
+                .unwrap_or_default();
+            if constructors.is_empty() {
+                self.error(
+                    self.span_of(class_node),
+                    format!(
+                        "class '{class_name}' must declare a constructor because its base \
+                         class constructor is not empty"
+                    ),
+                );
+                continue;
+            }
+            for constructor in constructors {
+                let function = &self.result.functions[constructor as usize];
+                let span = function.span;
+                let starts_with_base_call = match function.body {
+                    Some(FunctionBody::Block(block)) => match self.node_kind(block) {
+                        NodeKind::Block(statements) => statements
+                            .first()
+                            .is_some_and(|statement| self.is_base_construct_call(*statement)),
+                        _ => false,
+                    },
+                    _ => false,
+                };
+                if !starts_with_base_call {
+                    self.error(
+                        span,
+                        "a constructor must call the base class constructor with \
+                         'base.Construct(...)' as its first statement",
+                    );
+                }
+            }
+        }
+    }
+
+    /// Whether a statement is a call of the form `base.Construct(...)`.
+    fn is_base_construct_call(&self, statement: NodeId) -> bool {
+        let NodeKind::ExpressionStmt(expression) = self.node_kind(statement) else {
+            return false;
+        };
+        let NodeKind::Call(call) = self.node_kind(expression) else {
+            return false;
+        };
+        let NodeKind::MemberAccess(access) = self.node_kind(call.callee) else {
+            return false;
+        };
+        access.name == "Construct" && matches!(self.node_kind(access.base), NodeKind::Base)
+    }
+
+    /// Whether a block has no statements.
+    fn block_is_empty(&self, block: NodeId) -> bool {
+        matches!(self.node_kind(block), NodeKind::Block(statements) if statements.is_empty())
     }
 
     /// Pass 1: walk the declaration structure creating module scopes and named

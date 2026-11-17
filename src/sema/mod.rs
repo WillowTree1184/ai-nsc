@@ -11,7 +11,10 @@
 //! declared type.
 
 mod check;
+mod generics;
 pub mod types;
+
+pub(crate) use generics::MonomorphizedTarget;
 
 use std::collections::HashMap;
 
@@ -42,6 +45,98 @@ pub enum TypeDefKind {
     Variant,
     /// `union`
     Union,
+}
+
+/// A constraint on a generic parameter (§10.1).
+#[derive(Clone, Debug)]
+pub enum GenericConstraint {
+    /// A type-kind keyword (`class`, `structure`, `interface`, `enumeration`,
+    /// `variant`, `union`, `basic`).
+    Kind(GenericConstraintKind),
+    /// A named type; the argument must inherit, implement or equal it.
+    Named(String),
+}
+
+/// The type-kind keywords allowed as generic constraints (§10.1).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GenericConstraintKind {
+    /// `class`
+    Class,
+    /// `structure`
+    Structure,
+    /// `interface`
+    Interface,
+    /// `enumeration`
+    Enumeration,
+    /// `variant`
+    Variant,
+    /// `union`
+    Union,
+    /// `basic` (any basic type, §3.2)
+    Basic,
+}
+
+/// One generic parameter of a declaration (§10.1).
+#[derive(Clone, Debug)]
+pub struct GenericParameterInfo {
+    /// Parameter name.
+    pub name: String,
+    /// Constraints; an empty list accepts any type.
+    pub constraints: Vec<GenericConstraint>,
+    /// Span of the declaration.
+    pub span: Span,
+}
+
+impl GenericParameterInfo {
+    /// Builds the semantic view of a parsed generic parameter.
+    #[must_use]
+    pub fn from_ast(parameter: &GenericParameter) -> Self {
+        let constraints = parameter
+            .constraints
+            .iter()
+            .map(|constraint| match constraint.as_str() {
+                "class" => GenericConstraint::Kind(GenericConstraintKind::Class),
+                "structure" => GenericConstraint::Kind(GenericConstraintKind::Structure),
+                "interface" => GenericConstraint::Kind(GenericConstraintKind::Interface),
+                "enumeration" => GenericConstraint::Kind(GenericConstraintKind::Enumeration),
+                "variant" => GenericConstraint::Kind(GenericConstraintKind::Variant),
+                "union" => GenericConstraint::Kind(GenericConstraintKind::Union),
+                "basic" => GenericConstraint::Kind(GenericConstraintKind::Basic),
+                name => GenericConstraint::Named(name.to_string()),
+            })
+            .collect();
+        Self {
+            name: parameter.name.clone(),
+            constraints,
+            span: parameter.span,
+        }
+    }
+}
+
+/// One accessor declaration waiting for its owner's layout (§3.8.2).
+#[derive(Clone, Debug)]
+pub(crate) struct PendingAccessor {
+    /// The accessor declaration node.
+    pub(crate) node: NodeId,
+    /// The type the accessor belongs to.
+    pub(crate) owner: TypeId,
+    /// Generic substitution environment of the owner's instantiation (§10.1).
+    pub(crate) generic_env: HashMap<String, TypeId>,
+}
+
+/// A module-level extension with a generic target (`extension for Box<T>`,
+/// §3.8.3). Such extensions are instantiated together with the targeted type.
+#[derive(Clone, Debug)]
+pub(crate) struct PendingGenericExtension {
+    /// The `extension` declaration node.
+    pub(crate) node: NodeId,
+    /// Declaration node of the targeted generic type.
+    pub(crate) template_node: NodeId,
+    /// Generic parameters written in the target, positionally matched against
+    /// the target type's parameters.
+    pub(crate) parameters: Vec<GenericParameterInfo>,
+    /// Lexical scope of the extension declaration, for constraint lookups.
+    pub(crate) decl_scope: usize,
 }
 
 /// One field of a structure or class (§3.8.1).
@@ -88,6 +183,15 @@ pub struct TypeDef {
     pub kind: TypeDefKind,
     /// The declaration's AST node.
     pub node: NodeId,
+    /// Generic parameters of the declaration (§10.1); empty both for
+    /// non-generic declarations and for instantiations.
+    pub generic_parameters: Vec<GenericParameterInfo>,
+    /// Substituted type arguments of an instantiation, in parameter order.
+    pub generic_arguments: Vec<TypeId>,
+    /// The generic declaration this type instantiated, if any.
+    pub template: Option<TypeDefId>,
+    /// Lexical scope the declaration appeared in (constraint lookups).
+    pub decl_scope: usize,
     /// Fields, in declaration order (structures/classes).
     pub fields: Vec<FieldInfo>,
     /// Field initializers, parallel to `fields` (§3.8.1).
@@ -177,6 +281,19 @@ pub struct FunctionInfo {
     pub return_type: Option<TypeId>,
     /// Mangled symbol name (§13.2).
     pub mangled: String,
+    /// External symbol name for `linkable` declarations, if written.
+    pub exposed_symbol: Option<String>,
+    /// Generic parameters declared by a generic function (template only, §10.1).
+    pub generic_parameters: Vec<GenericParameterInfo>,
+    /// Substituted type arguments of a generic function instance.
+    pub generic_arguments: Vec<TypeId>,
+    /// The generic function this instance was created from, if any.
+    pub template: Option<u32>,
+    /// Lexical scope of the declaration (constraint lookups).
+    pub decl_scope: usize,
+    /// Substitution environment active when the function was created, i.e. the
+    /// generic arguments of its enclosing instantiated type (§10.1).
+    pub generic_env: HashMap<String, TypeId>,
     /// Locals declared in the body, in declaration order.
     pub locals: Vec<LocalInfo>,
     /// Span of the declaration, for diagnostics.
@@ -545,25 +662,35 @@ pub(crate) struct Scope {
 pub(crate) enum Symbol {
     Type(TypeId),
     Functions(Vec<u32>),
+    /// Generic function templates; callable only through a monomorphization
+    /// expression (§10.2).
+    GenericFunctions(Vec<u32>),
     Local(LocalId),
     Global(u32),
     Module(usize),
-    This { owner: TypeId },
+    This {
+        owner: TypeId,
+    },
 }
 
 /// Runs semantic analysis over one parsed file.
 ///
 /// Errors are reported through `engine`; the returned result is still usable for
 /// code generation when `error_count` is zero.
-pub fn analyze(ast: &Ast, sources: &SourceManager, engine: &mut DiagnosticEngine) -> SemaResult {
+pub fn analyze(
+    ast: &mut Ast,
+    sources: &SourceManager,
+    engine: &mut DiagnosticEngine,
+) -> SemaResult {
+    let node_count = ast.nodes.len();
     let mut sema = Sema {
         ast,
         sources,
         engine,
         result: SemaResult {
             types: TypeStore::new(),
-            node_types: vec![None; ast.nodes.len()],
-            resolutions: vec![None; ast.nodes.len()],
+            node_types: vec![None; node_count],
+            resolutions: vec![None; node_count],
             ..SemaResult::default()
         },
         scopes: vec![Scope::default()],
@@ -574,6 +701,11 @@ pub fn analyze(ast: &Ast, sources: &SourceManager, engine: &mut DiagnosticEngine
         loop_labels: Vec::new(),
         pending_accessors: Vec::new(),
         trap_contexts: Vec::new(),
+        generic_env: Vec::new(),
+        type_instantiations: HashMap::new(),
+        instances_by_template: HashMap::new(),
+        function_instantiations: HashMap::new(),
+        pending_generic_extensions: Vec::new(),
     };
     sema.run();
     sema.result.error_count = sema.engine.error_count();
@@ -581,7 +713,7 @@ pub fn analyze(ast: &Ast, sources: &SourceManager, engine: &mut DiagnosticEngine
 }
 
 pub(crate) struct Sema<'a> {
-    pub(crate) ast: &'a Ast,
+    pub(crate) ast: &'a mut Ast,
     pub(crate) sources: &'a SourceManager,
     pub(crate) engine: &'a mut DiagnosticEngine,
     pub(crate) result: SemaResult,
@@ -592,9 +724,19 @@ pub(crate) struct Sema<'a> {
     pub(crate) suppress_errors: u32,
     pub(crate) loop_labels: Vec<Option<String>>,
     /// Accessor declarations waiting for their owner's field layout.
-    pub(crate) pending_accessors: Vec<(NodeId, TypeId)>,
+    pub(crate) pending_accessors: Vec<PendingAccessor>,
     /// Lexical trap context stack for validating `throw` (§5.10).
     pub(crate) trap_contexts: Vec<TrapContextKind>,
+    /// Active generic substitution environments (§10.1); outer scopes first.
+    pub(crate) generic_env: Vec<HashMap<String, TypeId>>,
+    /// Instantiated generic types, keyed by declaration node and arguments.
+    pub(crate) type_instantiations: HashMap<(NodeId, Vec<TypeId>), TypeId>,
+    /// Instantiation arguments of every generic type, by declaration node.
+    pub(crate) instances_by_template: HashMap<NodeId, Vec<Vec<TypeId>>>,
+    /// Instantiated generic functions, keyed by declaration node and arguments.
+    pub(crate) function_instantiations: HashMap<(NodeId, Vec<TypeId>), u32>,
+    /// Module-level extensions with generic targets (§3.8.3).
+    pub(crate) pending_generic_extensions: Vec<PendingGenericExtension>,
 }
 
 impl<'a> Sema<'a> {
@@ -657,6 +799,27 @@ impl<'a> Sema<'a> {
         self.scopes[scope].symbols.insert(name, symbol);
     }
 
+    /// Declares a generic function template so that it can be found by name and
+    /// instantiated by a monomorphization expression (§10.2).
+    pub(crate) fn declare_generic_functions(&mut self, name: String, function: u32) {
+        let scope = self.current_scope();
+        match self.scopes[scope].symbols.get_mut(&name) {
+            Some(Symbol::GenericFunctions(list)) => list.push(function),
+            Some(_) => {
+                let span = self.result.functions[function as usize].span;
+                self.error(
+                    span,
+                    format!("'{name}' mixes generic and non-generic declarations in one scope"),
+                );
+            }
+            None => {
+                self.scopes[scope]
+                    .symbols
+                    .insert(name, Symbol::GenericFunctions(vec![function]));
+            }
+        }
+    }
+
     pub(crate) fn declare_functions(&mut self, name: String, function: u32) {
         let scope = self.current_scope();
         match self.scopes[scope].symbols.get_mut(&name) {
@@ -706,6 +869,10 @@ impl<'a> Sema<'a> {
         self.build_vtables();
         self.check_function_bodies();
         self.check_global_initializers();
+        // Monomorphization can happen while bodies and initializers are checked;
+        // instances created there still need layouts and virtual dispatch.
+        self.finalize_variant_union_layouts();
+        self.build_vtables();
     }
 
     /// Declares the Built-In Library exception class hierarchy (§15.2):
@@ -726,6 +893,10 @@ impl<'a> Sema<'a> {
                 qualified_name: name.to_string(),
                 kind: TypeDefKind::Class,
                 node: NodeId::default(),
+                generic_parameters: Vec::new(),
+                generic_arguments: Vec::new(),
+                template: None,
+                decl_scope: 0,
                 fields: Vec::new(),
                 field_initializers: Vec::new(),
                 methods: std::collections::HashMap::new(),
@@ -810,6 +981,26 @@ impl<'a> Sema<'a> {
     }
 
     fn declare_named_type(&mut self, node: NodeId, name: String, kind: TypeDefKind) {
+        let generic_parameters: Vec<GenericParameterInfo> = match self.node_kind(node) {
+            NodeKind::Class(declaration)
+            | NodeKind::Structure(declaration)
+            | NodeKind::Interface(declaration) => declaration
+                .generics
+                .iter()
+                .map(GenericParameterInfo::from_ast)
+                .collect(),
+            NodeKind::Variant(declaration) => declaration
+                .generics
+                .iter()
+                .map(GenericParameterInfo::from_ast)
+                .collect(),
+            NodeKind::Union(declaration) => declaration
+                .generics
+                .iter()
+                .map(GenericParameterInfo::from_ast)
+                .collect(),
+            _ => Vec::new(),
+        };
         let qualified_name = if self.scope_path.is_empty() {
             name.clone()
         } else {
@@ -821,6 +1012,10 @@ impl<'a> Sema<'a> {
             qualified_name,
             kind,
             node,
+            generic_parameters,
+            generic_arguments: Vec::new(),
+            template: None,
+            decl_scope: self.current_scope(),
             fields: Vec::new(),
             field_initializers: Vec::new(),
             methods: std::collections::HashMap::new(),
@@ -852,6 +1047,11 @@ impl<'a> Sema<'a> {
     /// Pass 2: resolve declared type bodies and signatures.
     fn resolve_declarations(&mut self, nodes: &[NodeId]) {
         for &node in nodes {
+            // Generic declarations are templates: their members are resolved
+            // per instantiation (§10.1).
+            if self.is_generic_type_declaration(node) {
+                continue;
+            }
             match self.node_kind(node) {
                 NodeKind::Module(declaration) => {
                     self.enter_module_scope(&declaration.name);
@@ -875,9 +1075,19 @@ impl<'a> Sema<'a> {
                 NodeKind::Variant(_declaration) => self.resolve_variant(node),
                 NodeKind::Union(_declaration) => self.resolve_union(node),
                 NodeKind::Interface(_declaration) => self.resolve_interface(node),
-                NodeKind::Fixed(declaration) => self.resolve_function_signature(node, &declaration),
+                NodeKind::Fixed(declaration) => {
+                    if declaration.generics.is_empty() {
+                        self.resolve_function_signature(node, &declaration);
+                    } else {
+                        self.declare_generic_function(node, &declaration);
+                    }
+                }
                 NodeKind::Linkable(declaration) => {
-                    self.resolve_linkable_signature(node, &declaration);
+                    if declaration.generics.is_empty() {
+                        self.resolve_linkable_signature(node, &declaration);
+                    } else {
+                        self.declare_generic_linkable(node, &declaration);
+                    }
                 }
                 NodeKind::Local(_) => self.resolve_global_local(node),
                 NodeKind::Extension(_) => self.resolve_extension_declaration(node, None),

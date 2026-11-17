@@ -15,6 +15,7 @@
 #![forbid(unsafe_code)]
 
 pub mod ast;
+mod ast_clone;
 pub mod codegen;
 pub mod diagnostics;
 pub mod driver;

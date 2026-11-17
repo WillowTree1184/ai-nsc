@@ -1931,6 +1931,11 @@ impl<'a> Parser<'a> {
             let case_start = self.position;
             if self.expect(TokenKind::Case, "'case'").is_none() {
                 self.synchronize();
+                // Recovery must make progress even when the current token is
+                // one the synchronizer does not consume.
+                if self.position == case_start {
+                    self.bump();
+                }
                 continue;
             }
             let pattern = self.parse_match_pattern();
@@ -1958,6 +1963,11 @@ impl<'a> Parser<'a> {
                 body,
                 span: self.span_between(case_start, self.position),
             });
+            // Guarantee progress on malformed input: recovery that does not
+            // consume a token must not spin forever.
+            if self.position == case_start {
+                self.bump();
+            }
         }
         self.expect(TokenKind::RightBrace, "'}'");
         let span = self.span_between(start_token, self.position);
@@ -2064,7 +2074,7 @@ impl<'a> Parser<'a> {
                 let text = self.source[span.start as usize..span.end as usize]
                     .split_whitespace()
                     .collect::<String>();
-                Some(IsTarget::Identifier(text))
+                Some(IsTarget::Identifier { text, node })
             }
         }
     }

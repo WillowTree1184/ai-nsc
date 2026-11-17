@@ -71,17 +71,60 @@ impl<'a> Sema<'a> {
                 )
             }
             NodeKind::NamedType(named) => {
+                // A generic parameter is substituted by the active instantiation
+                // environment and shadows outer names (§10.1).
+                if named.arguments.is_none() {
+                    if let NodeKind::Name(name) = self.node_kind(named.name) {
+                        if let Some(substituted) = self.lookup_generic_parameter(&name.name) {
+                            return Some(substituted);
+                        }
+                    }
+                }
                 let symbol = self.resolve_name_node(named.name)?;
                 match symbol {
                     Symbol::Type(type_id) => {
-                        if named.arguments.is_some() {
-                            self.unsupported(
-                                self.span_of(node),
-                                "generic instantiation (monomorphization)",
-                            );
-                            return None;
+                        let type_index = match self.result.types.get(type_id) {
+                            Type::Named(index) => Some(*index),
+                            _ => None,
+                        };
+                        let generic_parameters = type_index
+                            .map(|index| {
+                                self.result.type_defs[index as usize]
+                                    .generic_parameters
+                                    .clone()
+                            })
+                            .unwrap_or_default();
+                        match named.arguments {
+                            Some(arguments) => {
+                                if generic_parameters.is_empty() {
+                                    self.error(
+                                        self.span_of(node),
+                                        format!(
+                                            "'{}' does not declare generic parameters",
+                                            self.spelling(type_id)
+                                        ),
+                                    );
+                                    return None;
+                                }
+                                let template_node = type_index
+                                    .map(|index| self.result.type_defs[index as usize].node)?;
+                                let arguments = self.resolve_type_arguments(&arguments)?;
+                                self.instantiate_type(template_node, arguments, self.span_of(node))
+                            }
+                            None => {
+                                if !generic_parameters.is_empty() {
+                                    self.error(
+                                        self.span_of(node),
+                                        format!(
+                                            "generic type '{}' requires type arguments",
+                                            self.spelling(type_id)
+                                        ),
+                                    );
+                                    return None;
+                                }
+                                Some(type_id)
+                            }
                         }
-                        Some(type_id)
                     }
                     _ => {
                         self.error(self.span_of(named.name), "expected a type name");
@@ -184,6 +227,19 @@ impl<'a> Sema<'a> {
     // ==================================================================
     // Declaration resolution (pass 2)
     // ==================================================================
+
+    /// Merges the active generic substitution environments (§10.1), innermost
+    /// layer last. The result is stored on functions so that bodies can be
+    /// checked after the environment stack has been unwound.
+    pub(crate) fn captured_generic_env(&self) -> std::collections::HashMap<String, TypeId> {
+        let mut merged = std::collections::HashMap::new();
+        for layer in &self.generic_env {
+            for (name, ty) in layer {
+                merged.insert(name.clone(), *ty);
+            }
+        }
+        merged
+    }
 
     pub(crate) fn resolve_structure_like(
         &mut self,
@@ -394,7 +450,7 @@ impl<'a> Sema<'a> {
         }
     }
 
-    fn types_of(&self, ty: TypeId) -> Type {
+    pub(crate) fn types_of(&self, ty: TypeId) -> Type {
         self.result.types.get(ty).clone()
     }
 
@@ -473,9 +529,23 @@ impl<'a> Sema<'a> {
         let NodeKind::Extension(declaration) = self.node_kind(node) else {
             return;
         };
-        let target = match declaration.target {
-            Some(target) => self.resolve_extension_target(target),
-            None => owner,
+        // An `extension for Generic<T>` records a template that is instantiated
+        // together with the targeted type (§3.8.3).
+        if owner.is_none() {
+            if let Some(target) = declaration.target {
+                if matches!(
+                    self.node_kind(target),
+                    NodeKind::ExtensionTarget(ExtensionTarget::Generic { .. })
+                ) {
+                    self.register_generic_extension(node, target);
+                    return;
+                }
+            }
+        }
+        let target = match (owner, declaration.target) {
+            (Some(owner), _) => Some(owner),
+            (None, Some(target)) => self.resolve_extension_target(target),
+            (None, None) => None,
         };
         let Some(target) = target else {
             self.error(self.span_of(node), "extension requires a target type");
@@ -510,7 +580,11 @@ impl<'a> Sema<'a> {
                     self.create_method(member, &declaration, target);
                 }
                 NodeKind::Accessor(_) => {
-                    self.pending_accessors.push((member, target));
+                    self.pending_accessors.push(PendingAccessor {
+                        node: member,
+                        owner: target,
+                        generic_env: self.captured_generic_env(),
+                    });
                 }
                 NodeKind::Operator(_) => {
                     self.resolve_operator_declaration(member, Some(target));
@@ -631,6 +705,8 @@ impl<'a> Sema<'a> {
             .collect();
         let mangled = mangle_function(&scope, &declaration.name, &spellings);
         let index = self.result.functions.len() as u32;
+        let generic_env = self.captured_generic_env();
+        let decl_scope = self.current_scope();
         self.result.functions.push(FunctionInfo {
             name: declaration.name.clone(),
             scope,
@@ -644,6 +720,12 @@ impl<'a> Sema<'a> {
             is_abstract,
             return_type,
             mangled,
+            exposed_symbol: None,
+            generic_parameters: Vec::new(),
+            generic_arguments: Vec::new(),
+            template: None,
+            decl_scope,
+            generic_env,
             locals: Vec::new(),
             span: self.span_of(node),
         });
@@ -1166,6 +1248,8 @@ impl<'a> Sema<'a> {
             .collect();
         let mangled = mangle_function(&scope, name, &spellings);
         let index = self.result.functions.len() as u32;
+        let generic_env = self.captured_generic_env();
+        let decl_scope = self.current_scope();
         self.result.functions.push(FunctionInfo {
             name: name.to_string(),
             scope,
@@ -1179,6 +1263,12 @@ impl<'a> Sema<'a> {
             is_abstract: body.is_none(),
             return_type,
             mangled,
+            exposed_symbol: None,
+            generic_parameters: Vec::new(),
+            generic_arguments: Vec::new(),
+            template: None,
+            decl_scope,
+            generic_env,
             locals: Vec::new(),
             span,
         });
@@ -1198,9 +1288,11 @@ impl<'a> Sema<'a> {
 
     /// Resolves accessors that were waiting for their owner's field layout.
     pub(crate) fn resolve_pending_accessors(&mut self) {
-        let pending: Vec<(NodeId, TypeId)> = std::mem::take(&mut self.pending_accessors);
-        for (node, owner) in pending {
-            self.resolve_accessor_declaration(node, Some(owner));
+        let pending: Vec<PendingAccessor> = std::mem::take(&mut self.pending_accessors);
+        for entry in pending {
+            self.generic_env.push(entry.generic_env);
+            self.resolve_accessor_declaration(entry.node, Some(entry.owner));
+            self.generic_env.pop();
         }
     }
 
@@ -1368,6 +1460,8 @@ impl<'a> Sema<'a> {
             .collect();
         let mangled = mangle_function(&scope, &method_name, &spellings);
         let index = self.result.functions.len() as u32;
+        let generic_env = self.captured_generic_env();
+        let decl_scope = self.current_scope();
         self.result.functions.push(FunctionInfo {
             name: method_name.clone(),
             scope,
@@ -1381,6 +1475,12 @@ impl<'a> Sema<'a> {
             is_abstract: body.is_none(),
             return_type,
             mangled,
+            exposed_symbol: None,
+            generic_parameters: Vec::new(),
+            generic_arguments: Vec::new(),
+            template: None,
+            decl_scope,
+            generic_env,
             locals: Vec::new(),
             span,
         });
@@ -1664,7 +1764,7 @@ impl<'a> Sema<'a> {
         });
     }
 
-    fn resolve_parameters(
+    pub(crate) fn resolve_parameters(
         &mut self,
         function: &crate::ast::FunctionType,
     ) -> Option<Vec<ParameterInfo>> {
@@ -1707,8 +1807,12 @@ impl<'a> Sema<'a> {
             .iter()
             .map(|parameter| self.spelling(parameter.ty))
             .collect();
-        let mangled = exposed_symbol.unwrap_or_else(|| mangle_function(&scope, &name, &spellings));
+        let mangled = exposed_symbol
+            .clone()
+            .unwrap_or_else(|| mangle_function(&scope, &name, &spellings));
         let index = self.result.functions.len() as u32;
+        let generic_env = self.captured_generic_env();
+        let decl_scope = self.current_scope();
         self.result.functions.push(FunctionInfo {
             name: name.clone(),
             scope,
@@ -1722,6 +1826,12 @@ impl<'a> Sema<'a> {
             is_abstract: false,
             return_type,
             mangled,
+            exposed_symbol: None,
+            generic_parameters: Vec::new(),
+            generic_arguments: Vec::new(),
+            template: None,
+            decl_scope,
+            generic_env,
             locals: Vec::new(),
             span: self.span_of(node),
         });
@@ -1767,6 +1877,14 @@ impl<'a> Sema<'a> {
     /// Builds the virtual dispatch tables after all declarations are resolved.
     pub(crate) fn build_vtables(&mut self) {
         for index in 0..self.result.type_defs.len() as u32 {
+            // Generic declarations are templates; only their instances get
+            // layouts and virtual dispatch tables (§10.1).
+            if !self.result.type_defs[index as usize]
+                .generic_parameters
+                .is_empty()
+            {
+                continue;
+            }
             if self.result.type_defs[index as usize].kind == TypeDefKind::Class {
                 self.build_vtable(index);
             }
@@ -2117,9 +2235,15 @@ pub(crate) fn fits_integer(value: i128, signed: bool, bytes: u8) -> bool {
 
 impl<'a> Sema<'a> {
     pub(crate) fn check_function_bodies(&mut self) {
-        for index in 0..self.result.functions.len() {
+        // Instantiating a generic type or function can add functions while
+        // bodies are being checked (§10.2), so the loop follows the growing
+        // function list instead of a snapshot.
+        let mut index = 0;
+        while index < self.result.functions.len() {
+            let current = index;
+            index += 1;
             let (body, parameters, method_of, span, is_abstract) = {
-                let function = &self.result.functions[index];
+                let function = &self.result.functions[current];
                 (
                     function.body,
                     function.parameters.clone(),
@@ -2132,9 +2256,11 @@ impl<'a> Sema<'a> {
                 continue;
             }
             let body = body.expect("body checked above");
-            self.current_function = Some(index as u32);
+            let generic_env = self.result.functions[current].generic_env.clone();
+            self.current_function = Some(current as u32);
             self.loop_labels.clear();
             self.push_scope();
+            self.generic_env.push(generic_env);
             let mut llvm_parameter_index = 0u32;
             if let Some(owner) = method_of {
                 self.declare("this".to_string(), Symbol::This { owner }, span);
@@ -2161,6 +2287,7 @@ impl<'a> Sema<'a> {
                 }
                 FunctionBody::BackingGet { .. } | FunctionBody::BackingSet { .. } => {}
             }
+            self.generic_env.pop();
             self.pop_scope();
             self.current_function = None;
         }
@@ -2250,7 +2377,7 @@ impl<'a> Sema<'a> {
         matches!(self.result.types.get(ty), Type::Boolean)
     }
 
-    fn is_assignable(&self, from: TypeId, to: TypeId) -> bool {
+    pub(crate) fn is_assignable(&self, from: TypeId, to: TypeId) -> bool {
         if from == to {
             return true;
         }
@@ -2915,8 +3042,11 @@ impl<'a> Sema<'a> {
             return;
         };
         match target {
-            IsTarget::Identifier(text) => {
-                let Some(resolved) = self.resolve_is_target_name(match_node, text) else {
+            IsTarget::Identifier {
+                text,
+                node: target_node,
+            } => {
+                let Some(resolved) = self.resolve_is_target(match_node, *target_node, text) else {
                     return;
                 };
                 match resolved {
@@ -3088,9 +3218,30 @@ impl<'a> Sema<'a> {
                 self.unsupported(self.span_of(node), "function literals (lambdas)");
                 None
             }
-            NodeKind::Monomorphization(_) => {
-                self.unsupported(self.span_of(node), "monomorphization expressions");
-                None
+            NodeKind::Monomorphization(monomorphization) => {
+                match self.check_monomorphization(node, &monomorphization) {
+                    Some(MonomorphizedTarget::Function(index)) => {
+                        let parameters = self.result.functions[index as usize]
+                            .parameters
+                            .iter()
+                            .map(|parameter| parameter.ty)
+                            .collect::<Vec<_>>();
+                        let return_type = self.result.functions[index as usize].return_type;
+                        Some(
+                            self.result
+                                .types
+                                .function(parameters, false, None, return_type),
+                        )
+                    }
+                    Some(MonomorphizedTarget::Type(_)) => {
+                        self.error(
+                            self.span_of(node),
+                            "a type name cannot be used as a value here",
+                        );
+                        None
+                    }
+                    None => None,
+                }
             }
             NodeKind::This => {
                 let owner = self
@@ -3365,6 +3516,16 @@ impl<'a> Sema<'a> {
                         .function(parameters, false, None, return_type),
                 )
             }
+            Symbol::GenericFunctions(_) => {
+                self.error(
+                    self.span_of(node),
+                    format!(
+                        "'{}' is a generic function; type arguments are required",
+                        name.name
+                    ),
+                );
+                None
+            }
             Symbol::Type(type_id) => {
                 self.result.resolutions[node as usize] = Some(Resolution::Type(type_id));
                 self.error(
@@ -3601,7 +3762,15 @@ impl<'a> Sema<'a> {
     }
 
     /// Resolves a name chain to a symbol without reporting an error.
-    fn try_resolve_name(&mut self, node: NodeId) -> Option<Symbol> {
+    pub(crate) fn try_resolve_name(&mut self, node: NodeId) -> Option<Symbol> {
+        // A monomorphized name resolves to the instantiated type or function
+        // (§10.2), so `Box<integer(4)>.Member` works like `Box.Member`.
+        if let NodeKind::Monomorphization(monomorphization) = self.node_kind(node).clone() {
+            return match self.check_monomorphization(node, &monomorphization)? {
+                MonomorphizedTarget::Type(type_id) => Some(Symbol::Type(type_id)),
+                MonomorphizedTarget::Function(index) => Some(Symbol::Functions(vec![index])),
+            };
+        }
         match self.node_kind(node).clone() {
             NodeKind::Name(name) => self.lookup(&name.name).cloned(),
             NodeKind::MemberAccess(access) => {
@@ -4082,8 +4251,11 @@ impl<'a> Sema<'a> {
     fn check_is_expression(&mut self, node: NodeId, is_expression: &IsExpr) -> Option<TypeId> {
         let value_type = self.check_expr(is_expression.value, None)?;
         match &is_expression.target {
-            IsTarget::Identifier(name) => {
-                let resolved = self.resolve_is_target_name(node, name);
+            IsTarget::Identifier {
+                text,
+                node: target_node,
+            } => {
+                let resolved = self.resolve_is_target(node, *target_node, text);
                 match resolved {
                     Some(IsTargetResolved::Type(target_type)) => {
                         let value_kind = self.types_of(value_type);
@@ -4139,6 +4311,60 @@ impl<'a> Sema<'a> {
 
     /// Resolves the target of an `is` expression or pattern: a class type or a
     /// variant state (`Variant.State`).
+    /// Resolves an `is` target, preferring the parsed name chain so that
+    /// monomorphized targets (`Variant<Arguments>.State`, §10.2) resolve.
+    fn resolve_is_target(
+        &mut self,
+        report_node: NodeId,
+        target_node: NodeId,
+        text: &str,
+    ) -> Option<IsTargetResolved> {
+        if let NodeKind::MemberAccess(access) = self.node_kind(target_node).clone() {
+            if let NodeKind::Monomorphization(monomorphization) =
+                self.node_kind(access.base).clone()
+            {
+                return match self.check_monomorphization(access.base, &monomorphization) {
+                    Some(MonomorphizedTarget::Type(type_id)) => {
+                        let state = match self.types_of(type_id) {
+                            Type::Named(index)
+                                if self.result.type_defs[index as usize].kind
+                                    == TypeDefKind::Variant =>
+                            {
+                                self.result.type_defs[index as usize]
+                                    .variant_states
+                                    .iter()
+                                    .position(|state| state.name == access.name)
+                            }
+                            _ => None,
+                        };
+                        match state {
+                            Some(state) => Some(IsTargetResolved::VariantState {
+                                type_id,
+                                state: state as u32,
+                            }),
+                            None => {
+                                self.error(
+                                    self.span_of(report_node),
+                                    format!("'{text}' is not a variant state"),
+                                );
+                                None
+                            }
+                        }
+                    }
+                    Some(MonomorphizedTarget::Function(_)) => {
+                        self.error(
+                            self.span_of(report_node),
+                            "a generic function cannot be used as an is-target",
+                        );
+                        None
+                    }
+                    None => None,
+                };
+            }
+        }
+        self.resolve_is_target_name(report_node, text)
+    }
+
     fn resolve_is_target_name(&mut self, node: NodeId, text: &str) -> Option<IsTargetResolved> {
         let parts: Vec<&str> = text.split('.').collect();
         if parts.is_empty() {
@@ -4279,6 +4505,18 @@ impl<'a> Sema<'a> {
     }
 
     fn check_call(&mut self, node: NodeId, call: &CallExpr) -> Option<TypeId> {
+        // Monomorphized call or construction: `Generic<Arguments>(...)` (§10.2).
+        if let NodeKind::Monomorphization(monomorphization) = self.node_kind(call.callee).clone() {
+            return match self.check_monomorphization(call.callee, &monomorphization) {
+                Some(MonomorphizedTarget::Type(type_id)) => {
+                    self.check_construction(node, type_id, &call.arguments)
+                }
+                Some(MonomorphizedTarget::Function(index)) => {
+                    self.resolve_overload(node, &[index], &call.arguments)
+                }
+                None => None,
+            };
+        }
         // Method call: `value.Method(arguments)` (§8.4).
         if let NodeKind::MemberAccess(access) = self.node_kind(call.callee) {
             let namespace = matches!(

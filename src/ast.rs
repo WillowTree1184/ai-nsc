@@ -823,7 +823,13 @@ pub enum Pattern {
 #[derive(Clone, Debug)]
 pub enum IsTarget {
     /// A named type (or special float target).
-    Identifier(String),
+    Identifier {
+        /// Source text of the target (`Type`, `Module.Type`, `Variant.State`).
+        text: String,
+        /// The parsed name/member-access chain; lets monomorphized targets such
+        /// as `Box<integer(4)>.Some` resolve (§10.2).
+        node: NodeId,
+    },
     /// `illegal`
     Illegal,
     /// `infinite` / `-infinite`

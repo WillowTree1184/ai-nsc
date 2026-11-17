@@ -1135,3 +1135,295 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 3);
 }
+
+// ----------------------------------------------------------------------
+// Generics and monomorphization (§10)
+// ----------------------------------------------------------------------
+
+#[test]
+fn generic_structure_method_works_for_two_instantiations() {
+    let source = "\
+structure Box<T>
+{
+    public Value: T;
+
+    extension
+    {
+        public fixed Get(this: &Box<T>): T
+        {
+            return this.Value;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local box: Box<integer(4)>;
+    box.Value = 42;
+    local other: Box<cardinal(8)>;
+    other.Value = 7;
+    local sum: integer(8) = Cast<integer(8)>(other.Value);
+    return box.Get() + Cast<integer(4)>(sum);
+}";
+    assert_eq!(run_program(source), 49);
+}
+
+#[test]
+fn generic_function_instantiations_coexist() {
+    let source = "\
+fixed Echo<T>(value: T): T
+{
+    return value;
+}
+
+fixed Main(): integer(4)
+{
+    local a: integer(4) = Echo<integer(4)>(7);
+    local b: cardinal(8) = Echo<cardinal(8)>(5);
+    return a + Cast<integer(4)>(b);
+}";
+    assert_eq!(run_program(source), 12);
+}
+
+#[test]
+fn generic_class_construction_and_fields() {
+    let source = "\
+class Box<T>
+{
+    public Value: T;
+
+    extension
+    {
+        public fixed Construct(this: &Box<T>, value: T)
+        {
+            this.Value = value;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local box: Box<integer(4)> = Box<integer(4)>(33);
+    local other: Box<cardinal(8)> = Box<cardinal(8)>(9);
+    return box.Value;
+}";
+    assert_eq!(run_program(source), 33);
+}
+
+#[test]
+fn generic_extension_target_adds_members() {
+    let source = "\
+structure Box<T>
+{
+    public Value: T;
+}
+
+extension for Box<T>
+{
+    public fixed Get(this: &Box<T>): T
+    {
+        return this.Value;
+    }
+
+    public fixed Set(this: &Box<T>, value: T)
+    {
+        this.Value = value;
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local box: Box<integer(4)>;
+    box.Set(11);
+    return box.Get();
+}";
+    assert_eq!(run_program(source), 11);
+}
+
+#[test]
+fn generic_interface_dispatches_to_the_implementation() {
+    let source = "\
+interface IComparable<T>
+{
+    extension
+    {
+        public fixed Compare(this: &IComparable<T>, other: T): integer(4);
+    }
+}
+
+class IntBox : IComparable<integer(4)>
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &IntBox, value: integer(4))
+        {
+            this.Value = value;
+        }
+
+        public fixed Compare(this: &IntBox, other: integer(4)): integer(4)
+        {
+            return this.Value - other;
+        }
+    }
+}
+
+fixed Describe(value: IComparable<integer(4)>): integer(4)
+{
+    return value.Compare(5);
+}
+
+fixed Main(): integer(4)
+{
+    local box: IntBox = IntBox(9);
+    return Describe(box);
+}";
+    assert_eq!(run_program(source), 4);
+}
+
+#[test]
+fn generic_variant_construction_and_match() {
+    let source = "\
+variant Maybe<T>
+{
+    Nothing;
+    Some: T;
+
+    extension
+    {
+        public fixed UnwrapOr(this: &Maybe<T>, fallback: T): T
+        {
+            match this
+            {
+                case is value:Maybe<T>.Some { return value; }
+                case wildcard { return fallback; }
+            }
+            return fallback;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local value: Maybe<integer(4)> = Maybe<integer(4)>.Some(12);
+    return value.UnwrapOr(3);
+}";
+    assert_eq!(run_program(source), 12);
+}
+
+#[test]
+fn generic_base_class_dispatches_virtually() {
+    let source = "\
+class Holder<T>
+{
+    public Value: T;
+
+    extension
+    {
+        public virtual fixed Describe(this: &Holder<T>): integer(4)
+        {
+            return 1;
+        }
+    }
+}
+
+class IntHolder : Holder<integer(4)>
+{
+    extension
+    {
+        public override fixed Describe(this: &IntHolder): integer(4)
+        {
+            return 2;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local derived: IntHolder = IntHolder();
+    local base_value: Holder<integer(4)> = derived;
+    return base_value.Describe();
+}";
+    assert_eq!(run_program(source), 2);
+}
+
+#[test]
+fn nested_generic_instantiations() {
+    let source = "\
+structure Pair<T; U>
+{
+    public First: T;
+    public Second: U;
+}
+
+structure Nested<T>
+{
+    public Inner: Pair<T; integer(4)>;
+}
+
+fixed Main(): integer(4)
+{
+    local pair: Nested<integer(4)>;
+    pair.Inner.First = 5;
+    pair.Inner.Second = 6;
+    return pair.Inner.First + pair.Inner.Second;
+}";
+    assert_eq!(run_program(source), 11);
+}
+
+#[test]
+fn generic_constraint_kind_accepts_matching_argument() {
+    let source = "\
+structure Point
+{
+    public X: integer(4);
+}
+
+structure Box<T: structure>
+{
+    public Value: T;
+}
+
+fixed Main(): integer(4)
+{
+    local box: Box<Point>;
+    box.Value.X = 8;
+    return box.Value.X;
+}";
+    assert_eq!(run_program(source), 8);
+}
+
+#[test]
+fn generic_constraint_named_type_accepts_implementations() {
+    let source = "\
+interface IValue
+{
+    extension
+    {
+        public fixed Get(this: &IValue): integer(4);
+    }
+}
+
+class Thing : IValue
+{
+    extension
+    {
+        public fixed Get(this: &Thing): integer(4) { return 5; }
+    }
+}
+
+structure Wrapper<T: IValue>
+{
+    public Value: T;
+}
+
+fixed Main(): integer(4)
+{
+    local thing: Thing = Thing();
+    local wrapper: Wrapper<Thing>;
+    wrapper.Value = thing;
+    return wrapper.Value.Get();
+}";
+    assert_eq!(run_program(source), 5);
+}

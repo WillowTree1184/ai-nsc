@@ -145,3 +145,84 @@ fn operator_accessibility_modifier_is_rejected() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("accessibility"), "stderr: {stderr}");
 }
+
+// ----------------------------------------------------------------------
+// Generics diagnostics (§10)
+// ----------------------------------------------------------------------
+
+fn check_source(source: &str) -> String {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-generics-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("main.ns");
+    std::fs::write(&path, source).expect("write program");
+    let output = ai_nsc()
+        .args(["check", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    assert!(!output.status.success(), "expected a diagnostic");
+    String::from_utf8_lossy(&output.stderr).to_string()
+}
+
+#[test]
+fn generic_constraint_violation_is_reported() {
+    let stderr = check_source(
+        "\
+structure Bad<T: class>
+{
+    public Value: T;
+}
+
+fixed Main(): integer(4)
+{
+    local bad: Bad<integer(4)>;
+    return 0;
+}",
+    );
+    assert!(
+        stderr.contains("does not satisfy constraint 'class'"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn generic_type_requires_type_arguments() {
+    let stderr = check_source(
+        "\
+structure Box<T>
+{
+    public Value: T;
+}
+
+fixed Main(): integer(4)
+{
+    local box: Box;
+    return 0;
+}",
+    );
+    assert!(stderr.contains("requires type arguments"), "{stderr}");
+}
+
+#[test]
+fn generic_argument_count_mismatch_is_reported() {
+    let stderr = check_source(
+        "\
+structure Box<T>
+{
+    public Value: T;
+}
+
+fixed Main(): integer(4)
+{
+    local box: Box<integer(4); integer(4)>;
+    return 0;
+}",
+    );
+    assert!(stderr.contains("expects 1 type argument(s)"), "{stderr}");
+}

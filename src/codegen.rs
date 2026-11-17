@@ -256,7 +256,8 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .iter()
             .enumerate()
             .filter(|(_, definition)| {
-                matches!(definition.kind, TypeDefKind::Structure | TypeDefKind::Class)
+                definition.generic_parameters.is_empty()
+                    && matches!(definition.kind, TypeDefKind::Structure | TypeDefKind::Class)
             })
             .map(|(index, _)| index as u32)
             .collect();
@@ -347,6 +348,14 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
 
     fn declare_functions(&mut self) -> Result<(), String> {
         for index in 0..self.sema.functions.len() as u32 {
+            // Generic function templates are only lowered through their
+            // instantiations (§10.1).
+            if !self.sema.functions[index as usize]
+                .generic_parameters
+                .is_empty()
+            {
+                continue;
+            }
             let signature = self.function_type(index)?;
             let mangled = self.sema.functions[index as usize].mangled.clone();
             let function = self.module.add_function(&mangled, signature, None);
@@ -365,7 +374,10 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .iter()
             .enumerate()
             .filter(|(_, definition)| {
-                matches!(definition.kind, TypeDefKind::Class | TypeDefKind::Interface)
+                // Generic declarations are templates and get no metadata of
+                // their own; their instances do (§10.1).
+                definition.generic_parameters.is_empty()
+                    && matches!(definition.kind, TypeDefKind::Class | TypeDefKind::Interface)
             })
             .map(|(index, _)| index as u32)
             .collect();
@@ -627,6 +639,12 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
 
     fn generate_functions(&mut self) -> Result<(), String> {
         for index in 0..self.sema.functions.len() as u32 {
+            if !self.sema.functions[index as usize]
+                .generic_parameters
+                .is_empty()
+            {
+                continue;
+            }
             let function = *self
                 .functions
                 .get(&index)
@@ -4537,7 +4555,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         is_expression: &IsExpr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
         match &is_expression.target {
-            IsTarget::Identifier(_) => match self.sema.resolutions[node as usize].clone() {
+            IsTarget::Identifier { .. } => match self.sema.resolutions[node as usize].clone() {
                 Some(Resolution::VariantState { type_id, state }) => {
                     let value = self.gen_expr(is_expression.value)?;
                     let value_llvm = self.llvm_type(self.type_of(is_expression.value))?;

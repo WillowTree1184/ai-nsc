@@ -268,7 +268,7 @@ fn compile(options: &Options) -> i32 {
     }
 
     // ---- parser --------------------------------------------------------
-    let parsed = parser::parse(file, &source, &lexed.tokens);
+    let mut parsed = parser::parse(file, &source, &lexed.tokens);
     for error in &parsed.errors {
         diagnostics.report_stderr(&sources, Severity::Error, Some(error.span), &error.message);
     }
@@ -280,7 +280,7 @@ fn compile(options: &Options) -> i32 {
     }
 
     // ---- semantic analysis --------------------------------------------
-    let sema_result = sema::analyze(&parsed.ast, &sources, &mut diagnostics);
+    let sema_result = sema::analyze(&mut parsed.ast, &sources, &mut diagnostics);
     if sema_result.error_count > 0 {
         return 1;
     }

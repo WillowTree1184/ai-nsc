@@ -467,3 +467,79 @@ fixed Main(): integer(4)
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("sealed"), "stderr: {stderr}");
 }
+
+#[test]
+fn variants_and_match_is_patterns() {
+    let source = "\
+variant Status
+{
+    Idle;
+    Loading: integer(4);
+    Done;
+}
+
+fixed Describe(status: Status): integer(4)
+{
+    match status
+    {
+        case is Status.Idle { return 1; }
+        case is value:Status.Loading { return value; }
+        case is Status.Done { return 3; }
+        case wildcard { return 0; }
+    }
+    return 0;
+}
+
+fixed Main(): integer(4)
+{
+    local idle: Status = Status.Idle;
+    local loading: Status = Status.Loading(42);
+    local done: Status = Status.Done;
+    return Describe(idle) + Describe(loading) + Describe(done);
+}";
+    assert_eq!(run_program(source), 46);
+}
+
+#[test]
+fn union_member_construction_and_punning() {
+    let source = "\
+union Pixel
+{
+    Packed: cardinal(4);
+    Channels[4]: integer(1);
+}
+
+fixed Main(): integer(4)
+{
+    local pixel: Pixel = Pixel.Packed(0x01020304);
+    local packed: cardinal(4) = pixel.Packed;
+    local first: integer(4) = Cast<integer(4)>(pixel.Channels[0]);
+    local low: integer(4) = Cast<integer(4)>(packed % 256);
+    return low + first;
+}";
+    // Little-endian: the first channel is the low byte 0x04 = 4, so 4 + 4 = 8.
+    assert_eq!(run_program(source), 8);
+}
+
+#[test]
+fn variant_is_expression() {
+    let source = "\
+variant State
+{
+    Empty;
+    Value: integer(4);
+}
+
+fixed Main(): integer(4)
+{
+    local empty: State = State.Empty;
+    local with_value: State = State.Value(7);
+
+    local result: integer(4) = 0;
+    if (empty is State.Empty) { result += 1; }
+    if (with_value is State.Value) { result += 10; }
+    if (with_value is State.Empty) { result += 100; }
+    return result;
+}";
+    assert_eq!(run_program(source), 11);
+}

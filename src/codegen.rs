@@ -27,7 +27,7 @@ use crate::ast::{
 };
 use crate::literal;
 use crate::sema::types::{Type, TypeId};
-use crate::sema::{ParameterInfo, Resolution, SemaResult, Storage, TypeDefKind};
+use crate::sema::{MatchPatternInfo, ParameterInfo, Resolution, SemaResult, Storage, TypeDefKind};
 
 /// Name of the module used by the workspace smoke test.
 pub const SMOKE_MODULE_NAME: &str = "ainsc_smoke";
@@ -202,6 +202,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 }
                 TypeDefKind::Structure => self.struct_type(index)?.into(),
                 TypeDefKind::Class => self.context.ptr_type(AddressSpace::default()).into(),
+                TypeDefKind::Variant | TypeDefKind::Union => self.instance_llvm_type(ty)?,
                 _ => return Err("this type cannot be lowered yet".to_string()),
             },
         })
@@ -715,7 +716,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 self.gen_do_while(&label, body, condition)
             }
             NodeKind::For(statement) => self.gen_for_statement(node, &statement),
-            NodeKind::Match(statement) => self.gen_match_statement(&statement),
+            NodeKind::Match(statement) => self.gen_match_statement(node, &statement),
             NodeKind::Break(statement) => {
                 let target = self.find_loop(statement.label.as_deref())?;
                 self.builder
@@ -836,9 +837,16 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             let is_construction = matches!(
                 self.sema.resolutions[initializer as usize],
                 Some(Resolution::Construct { .. })
+                    | Some(Resolution::ConstructVariant { .. })
+                    | Some(Resolution::ConstructUnion { .. })
             );
             if is_construction {
-                self.gen_construct_into(initializer, storage)?;
+                match self.sema.resolutions[initializer as usize].clone() {
+                    Some(Resolution::Construct { .. }) => {
+                        self.gen_construct_into(initializer, storage)?;
+                    }
+                    _ => self.gen_member_construction_into(initializer, storage)?,
+                }
             } else {
                 let value = self.gen_expr(initializer)?;
                 self.builder
@@ -1415,54 +1423,137 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         }
     }
 
-    fn gen_match_statement(&mut self, statement: &MatchStmt) -> Result<(), String> {
+    fn gen_match_statement(&mut self, node: NodeId, statement: &MatchStmt) -> Result<(), String> {
         let function = self.current_llvm_function()?;
         let end_block = self.context.append_basic_block(function, "match_end");
-        let value = self.gen_expr(statement.value)?;
         let value_type = self.type_of(statement.value);
-        for case in &statement.cases {
+        let value = self.gen_expr(statement.value)?;
+        let llvm_type = self.llvm_type(value_type)?;
+        let value_slot = self
+            .builder
+            .build_alloca(llvm_type, "match_value")
+            .map_err(|error| format!("cannot allocate match value: {error}"))?;
+        self.builder
+            .build_store(value_slot, value)
+            .map_err(|error| format!("cannot store match value: {error}"))?;
+
+        for (case_index, case) in statement.cases.iter().enumerate() {
             let case_block = self.context.append_basic_block(function, "match_case");
             let next_block = self.context.append_basic_block(function, "match_next");
-            let condition: IntValue<'ctx> = match &case.pattern {
-                None | Some(Pattern::Wildcard) => self.context.bool_type().const_int(1, false),
-                Some(Pattern::Equal(expression)) => {
-                    let pattern = self.gen_expr(*expression)?;
-                    self.build_comparison(BinaryOp::Equal, value, pattern, value_type)?
-                }
-                Some(Pattern::Comparison {
-                    operator,
-                    value: pattern_value,
-                    ..
-                }) => {
-                    let pattern = self.gen_expr(*pattern_value)?;
-                    let op = match operator {
-                        crate::lexer::TokenKind::NotEquals => BinaryOp::NotEqual,
-                        crate::lexer::TokenKind::Greater => BinaryOp::Greater,
-                        crate::lexer::TokenKind::Less => BinaryOp::Less,
-                        crate::lexer::TokenKind::GreaterEquals => BinaryOp::GreaterEqual,
-                        crate::lexer::TokenKind::LessEquals => BinaryOp::LessEqual,
-                        _ => return Err("unsupported match comparison".to_string()),
-                    };
-                    self.build_comparison(op, value, pattern, value_type)?
-                }
-                Some(Pattern::Is { .. }) => {
-                    return Err("is patterns are not lowered yet".to_string());
-                }
-            };
-            let condition = match &case.guard {
-                Some(guard) => {
-                    let guard_value = self.gen_expr(*guard)?.into_int_value();
-                    let guard_value = self.as_boolean_i1(guard_value);
-                    self.builder
-                        .build_and(condition, guard_value, "guard")
-                        .map_err(|error| format!("cannot combine condition: {error}"))?
-                }
-                None => condition,
-            };
+            let pattern_info = self
+                .sema
+                .match_patterns
+                .get(&(node, case_index as u32))
+                .cloned();
+            let (condition, binding): (IntValue<'ctx>, Option<MatchPatternInfo>) =
+                match pattern_info.clone() {
+                    Some(MatchPatternInfo::IsVariant { type_id, state, .. }) => {
+                        let Type::Named(index) = self.sema.types.get(type_id).clone() else {
+                            return Err("variant pattern requires a variant".to_string());
+                        };
+                        let tag_type = self.sema.type_defs[index as usize]
+                            .tag_type
+                            .ok_or_else(|| "variant has no tag type".to_string())?;
+                        let tag_llvm = self.llvm_type(tag_type)?.into_int_type();
+                        let tag_address = self.address_with_size(
+                            value_slot,
+                            1,
+                            self.context.i64_type().const_zero(),
+                        )?;
+                        let tag = self
+                            .builder
+                            .build_load(tag_llvm, tag_address, "variant_tag")
+                            .map_err(|error| format!("cannot load variant tag: {error}"))?
+                            .into_int_value();
+                        let condition = self
+                            .builder
+                            .build_int_compare(
+                                IntPredicate::EQ,
+                                tag,
+                                tag_llvm.const_int(u64::from(state), false),
+                                "is_state",
+                            )
+                            .map_err(|error| format!("cannot compare state: {error}"))?;
+                        (condition, pattern_info)
+                    }
+                    Some(MatchPatternInfo::IsClass { type_id, .. }) => {
+                        let pointer_type = self.context.ptr_type(AddressSpace::default());
+                        let instance = self
+                            .builder
+                            .build_load(pointer_type, value_slot, "class_value")
+                            .map_err(|error| format!("cannot load class value: {error}"))?
+                            .into_pointer_value();
+                        let condition = self.emit_type_check(instance, type_id)?;
+                        (condition, pattern_info)
+                    }
+                    None => {
+                        let value = self
+                            .builder
+                            .build_load(llvm_type, value_slot, "match_load")
+                            .map_err(|error| format!("cannot load match value: {error}"))?;
+                        let condition: IntValue<'ctx> = match &case.pattern {
+                            None | Some(Pattern::Wildcard) => {
+                                self.context.bool_type().const_int(1, false)
+                            }
+                            Some(Pattern::Equal(expression)) => {
+                                let pattern = self.gen_expr(*expression)?;
+                                self.build_comparison(BinaryOp::Equal, value, pattern, value_type)?
+                            }
+                            Some(Pattern::Comparison {
+                                operator,
+                                value: pattern_value,
+                                ..
+                            }) => {
+                                let pattern = self.gen_expr(*pattern_value)?;
+                                let op = match operator {
+                                    crate::lexer::TokenKind::NotEquals => BinaryOp::NotEqual,
+                                    crate::lexer::TokenKind::Greater => BinaryOp::Greater,
+                                    crate::lexer::TokenKind::Less => BinaryOp::Less,
+                                    crate::lexer::TokenKind::GreaterEquals => {
+                                        BinaryOp::GreaterEqual
+                                    }
+                                    crate::lexer::TokenKind::LessEquals => BinaryOp::LessEqual,
+                                    _ => {
+                                        return Err("unsupported match comparison".to_string());
+                                    }
+                                };
+                                self.build_comparison(op, value, pattern, value_type)?
+                            }
+                            Some(Pattern::Is { .. }) => {
+                                return Err("unresolved is pattern".to_string());
+                            }
+                        };
+                        (condition, None)
+                    }
+                };
+
             let condition = self.as_boolean_i1(condition);
+            let bind_block = self.context.append_basic_block(function, "match_bind");
             self.builder
-                .build_conditional_branch(condition, case_block, next_block)
+                .build_conditional_branch(condition, bind_block, next_block)
                 .map_err(|error| format!("cannot branch: {error}"))?;
+
+            // Pattern bindings are visible to the guard (§5.9.6).
+            self.builder.position_at_end(bind_block);
+            if let Some(binding) = binding {
+                self.emit_pattern_binding(&binding, value_slot)?;
+            }
+            let mut branch_condition = None;
+            if let Some(guard) = case.guard {
+                let guard_value = self.gen_expr(guard)?.into_int_value();
+                branch_condition = Some(self.as_boolean_i1(guard_value));
+            }
+            match branch_condition {
+                Some(condition) => self
+                    .builder
+                    .build_conditional_branch(condition, case_block, next_block)
+                    .map_err(|error| format!("cannot branch: {error}"))?,
+                None => self
+                    .builder
+                    .build_unconditional_branch(case_block)
+                    .map_err(|error| format!("cannot branch: {error}"))?,
+            };
+
             self.builder.position_at_end(case_block);
             self.gen_block_contents(case.body)?;
             if self
@@ -1481,6 +1572,168 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .map_err(|error| format!("cannot branch: {error}"))?;
         self.builder.position_at_end(end_block);
         Ok(())
+    }
+
+    fn emit_pattern_binding(
+        &mut self,
+        binding: &MatchPatternInfo,
+        value_slot: PointerValue<'ctx>,
+    ) -> Result<(), String> {
+        match binding {
+            MatchPatternInfo::IsVariant {
+                type_id,
+                state,
+                binding,
+            } => {
+                let Some(binding) = binding else {
+                    return Ok(());
+                };
+                let slot = *self
+                    .local_slots
+                    .get(binding)
+                    .ok_or_else(|| "missing binding slot".to_string())?;
+                let Type::Named(index) = self.sema.types.get(*type_id).clone() else {
+                    return Err("variant pattern requires a variant".to_string());
+                };
+                let (payload_type, payload_offset) = {
+                    let state = self.sema.type_defs[index as usize]
+                        .variant_states
+                        .get(*state as usize)
+                        .ok_or_else(|| "missing variant state".to_string())?;
+                    (
+                        state.payload,
+                        self.sema.type_defs[index as usize].payload_offset,
+                    )
+                };
+                let Some(payload_type) = payload_type else {
+                    return Ok(());
+                };
+                let payload_llvm = self.llvm_type(payload_type)?;
+                let payload_address = self.address_with_size(
+                    value_slot,
+                    1,
+                    self.context.i64_type().const_int(payload_offset, false),
+                )?;
+                let payload = self
+                    .builder
+                    .build_load(payload_llvm, payload_address, "payload")
+                    .map_err(|error| format!("cannot load payload: {error}"))?;
+                self.builder
+                    .build_store(slot, payload)
+                    .map_err(|error| format!("cannot bind payload: {error}"))?;
+                Ok(())
+            }
+            MatchPatternInfo::IsClass { binding, .. } => {
+                let Some(binding) = binding else {
+                    return Ok(());
+                };
+                let slot = *self
+                    .local_slots
+                    .get(binding)
+                    .ok_or_else(|| "missing binding slot".to_string())?;
+                let pointer_type = self.context.ptr_type(AddressSpace::default());
+                let instance = self
+                    .builder
+                    .build_load(pointer_type, value_slot, "class_value")
+                    .map_err(|error| format!("cannot load class value: {error}"))?;
+                self.builder
+                    .build_store(slot, instance)
+                    .map_err(|error| format!("cannot bind class value: {error}"))?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Emits an RTTI membership test for a class value, returning an i1.
+    fn emit_type_check(
+        &mut self,
+        instance: PointerValue<'ctx>,
+        target_type: TypeId,
+    ) -> Result<IntValue<'ctx>, String> {
+        let Type::Named(target_index) = self.sema.types.get(target_type).clone() else {
+            return Err("is target must be a class".to_string());
+        };
+        let target_global = *self
+            .typeinfo_globals
+            .get(&target_index)
+            .ok_or_else(|| "missing target type information".to_string())?;
+        let pointer_type = self.context.ptr_type(AddressSpace::default());
+        let current_typeinfo = self.load_pointer_at(instance, 8)?.into_pointer_value();
+        let current_slot = self
+            .builder
+            .build_alloca(pointer_type, "is_current")
+            .map_err(|error| format!("cannot allocate is state: {error}"))?;
+        self.builder
+            .build_store(current_slot, current_typeinfo)
+            .map_err(|error| format!("cannot store is state: {error}"))?;
+        let result_slot = self
+            .builder
+            .build_alloca(self.context.bool_type(), "is_result")
+            .map_err(|error| format!("cannot allocate is result: {error}"))?;
+        self.builder
+            .build_store(result_slot, self.context.bool_type().const_zero())
+            .map_err(|error| format!("cannot store is result: {error}"))?;
+        let function = self.current_llvm_function()?;
+        let loop_block = self.context.append_basic_block(function, "is_loop");
+        let advance_block = self.context.append_basic_block(function, "is_base");
+        let true_block = self.context.append_basic_block(function, "is_true");
+        let end_block = self.context.append_basic_block(function, "is_end");
+        self.builder
+            .build_unconditional_branch(loop_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(loop_block);
+        let current = self
+            .builder
+            .build_load(pointer_type, current_slot, "current")
+            .map_err(|error| format!("cannot load is state: {error}"))?
+            .into_pointer_value();
+        let matches = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                current,
+                target_global.as_pointer_value(),
+                "is_match",
+            )
+            .map_err(|error| format!("cannot compare types: {error}"))?;
+        self.builder
+            .build_conditional_branch(matches, true_block, advance_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(advance_block);
+        let is_null = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                current,
+                pointer_type.const_zero(),
+                "is_null",
+            )
+            .map_err(|error| format!("cannot compare types: {error}"))?;
+        let next_block = self.context.append_basic_block(function, "is_next");
+        self.builder
+            .build_conditional_branch(is_null, end_block, next_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(next_block);
+        let base_typeinfo = self.load_pointer_at(current, 8)?;
+        self.builder
+            .build_store(current_slot, base_typeinfo)
+            .map_err(|error| format!("cannot store is state: {error}"))?;
+        self.builder
+            .build_unconditional_branch(loop_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(true_block);
+        self.builder
+            .build_store(result_slot, self.context.bool_type().const_int(1, false))
+            .map_err(|error| format!("cannot store is result: {error}"))?;
+        self.builder
+            .build_unconditional_branch(end_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(end_block);
+        Ok(self
+            .builder
+            .build_load(self.context.bool_type(), result_slot, "is_result")
+            .map_err(|error| format!("cannot load is result: {error}"))?
+            .into_int_value())
     }
 
     // -- expressions -------------------------------------------------------
@@ -1608,7 +1861,21 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             }
             Some(Resolution::Field { .. }) => self.gen_field_load(node),
             Some(Resolution::This) | Some(Resolution::Base) => self.gen_this_value(),
-            Some(Resolution::Construct { .. }) => self.gen_construction(node),
+            Some(Resolution::Construct { .. })
+            | Some(Resolution::ConstructVariant { .. })
+            | Some(Resolution::ConstructUnion { .. }) => self.gen_construction(node),
+            Some(Resolution::VariantState { type_id, state }) => {
+                self.gen_variant_state_value(type_id, state)
+            }
+            Some(Resolution::UnionMember { .. }) => {
+                let pointer = self
+                    .gen_lvalue(node)?
+                    .ok_or_else(|| "union member is not addressable".to_string())?;
+                let llvm_type = self.llvm_type(self.type_of(node))?;
+                self.builder
+                    .build_load(llvm_type, pointer, "union_member")
+                    .map_err(|error| format!("cannot load union member: {error}"))
+            }
             Some(Resolution::Function(_)) => Err("function values are not lowered yet".to_string()),
             Some(Resolution::Type(_)) | None => Err("name cannot be used as a value".to_string()),
         }
@@ -1734,25 +2001,36 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 }
             }
             NodeKind::MemberAccess(access) => {
-                let Some(Resolution::Field { type_id, index }) =
-                    self.sema.resolutions[node as usize].clone()
-                else {
+                let resolution = self.sema.resolutions[node as usize].clone();
+                let base_type = self.type_of(access.base);
+                if let Some(Resolution::UnionMember { type_id, member }) = resolution {
+                    let Type::Named(index) = self.sema.types.get(type_id).clone() else {
+                        return Err("union member requires a union".to_string());
+                    };
+                    let offset = self.sema.type_defs[index as usize]
+                        .union_members
+                        .get(member as usize)
+                        .map_or(0, |member| member.offset);
+                    let base_pointer = self.struct_or_union_address(access.base, type_id)?;
+                    let address = self.address_with_size(
+                        base_pointer,
+                        1,
+                        self.context.i64_type().const_int(offset, false),
+                    )?;
+                    return Ok(Some(address));
+                }
+                let Some(Resolution::Field { type_id, index }) = resolution else {
                     return Ok(None);
                 };
-                let base_pointer = match self.gen_lvalue(access.base)? {
-                    Some(pointer) => pointer,
-                    None => {
-                        let value = self.gen_expr(access.base)?;
-                        let llvm_type = self.llvm_type(self.type_of(access.base))?;
-                        let slot = self
-                            .builder
-                            .build_alloca(llvm_type, "struct_spill")
-                            .map_err(|error| format!("cannot allocate structure: {error}"))?;
-                        self.builder
-                            .build_store(slot, value)
-                            .map_err(|error| format!("cannot store structure: {error}"))?;
-                        slot
-                    }
+                let base_is_class = matches!(
+                    self.sema.types.get(base_type),
+                    Type::Named(index)
+                        if self.sema.type_defs[*index as usize].kind == TypeDefKind::Class
+                );
+                let base_pointer = if base_is_class {
+                    self.gen_expr(access.base)?.into_pointer_value()
+                } else {
+                    self.struct_or_union_address(access.base, self.type_of(access.base))?
                 };
                 self.struct_field_pointer(base_pointer, type_id, index)
             }
@@ -1839,6 +2117,27 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 .build_int_truncate(value, i64_type, "index64")
                 .map_err(|error| format!("cannot truncate index: {error}"))
         }
+    }
+
+    /// Address of a structure/class/union value: its lvalue, or a spill.
+    fn struct_or_union_address(
+        &mut self,
+        node: NodeId,
+        value_type: TypeId,
+    ) -> Result<PointerValue<'ctx>, String> {
+        if let Some(pointer) = self.gen_lvalue(node)? {
+            return Ok(pointer);
+        }
+        let value = self.gen_expr(node)?;
+        let llvm_type = self.instance_llvm_type(value_type)?;
+        let slot = self
+            .builder
+            .build_alloca(llvm_type, "value_spill")
+            .map_err(|error| format!("cannot allocate value: {error}"))?;
+        self.builder
+            .build_store(slot, value)
+            .map_err(|error| format!("cannot store value: {error}"))?;
+        Ok(slot)
     }
 
     fn struct_field_pointer(
@@ -2025,7 +2324,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         call: &CallExpr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
         match self.sema.resolutions[node as usize].clone() {
-            Some(Resolution::Construct { .. }) => self.gen_construction(node),
+            Some(Resolution::Construct { .. })
+            | Some(Resolution::ConstructVariant { .. })
+            | Some(Resolution::ConstructUnion { .. }) => self.gen_construction(node),
             Some(Resolution::Function(index)) => {
                 let function = *self
                     .functions
@@ -2156,13 +2457,20 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
 
     fn instance_llvm_type(&mut self, ty: TypeId) -> Result<BasicTypeEnum<'ctx>, String> {
         match self.sema.types.get(ty).clone() {
-            Type::Named(index)
-                if matches!(
-                    self.sema.type_defs[index as usize].kind,
-                    TypeDefKind::Structure | TypeDefKind::Class
-                ) =>
-            {
-                Ok(self.struct_type(index)?.into())
+            Type::Named(index) => {
+                let definition = &self.sema.type_defs[index as usize];
+                match definition.kind {
+                    TypeDefKind::Structure | TypeDefKind::Class => {
+                        let struct_type = self.struct_type(index)?;
+                        Ok(struct_type.into())
+                    }
+                    TypeDefKind::Variant | TypeDefKind::Union => {
+                        let size = u32::try_from(definition.instance_size)
+                            .map_err(|_| "instance is too large".to_string())?;
+                        Ok(self.context.i8_type().array_type(size.max(1)).into())
+                    }
+                    _ => Err("this type has no instance layout".to_string()),
+                }
             }
             _ => Err("this type has no instance layout".to_string()),
         }
@@ -2253,16 +2561,156 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         Ok(())
     }
 
-    fn gen_construction(&mut self, node: NodeId) -> Result<BasicValueEnum<'ctx>, String> {
-        let Some(Resolution::Construct { type_id, .. }) =
-            self.sema.resolutions[node as usize].clone()
-        else {
-            return Err("expected a construction expression".to_string());
-        };
+    fn gen_variant_state_value(
+        &mut self,
+        type_id: TypeId,
+        state: u32,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let instance_type = self.instance_llvm_type(type_id)?;
+        let storage = self
+            .builder
+            .build_alloca(instance_type, "variant_state")
+            .map_err(|error| format!("cannot allocate variant: {error}"))?;
+        self.builder
+            .build_store(storage, instance_type.const_zero())
+            .map_err(|error| format!("cannot initialize variant: {error}"))?;
+        self.gen_variant_into(storage, type_id, state, None)?;
+        self.builder
+            .build_load(instance_type, storage, "variant_value")
+            .map_err(|error| format!("cannot load variant: {error}"))
+    }
+
+    fn gen_variant_into(
+        &mut self,
+        storage: PointerValue<'ctx>,
+        type_id: TypeId,
+        state: u32,
+        payload: Option<BasicValueEnum<'ctx>>,
+    ) -> Result<(), String> {
         let Type::Named(index) = self.sema.types.get(type_id).clone() else {
+            return Err("variant construction requires a variant".to_string());
+        };
+        let (tag_type, payload_offset) = {
+            let definition = &self.sema.type_defs[index as usize];
+            (
+                definition
+                    .tag_type
+                    .ok_or_else(|| "variant has no tag type".to_string())?,
+                definition.payload_offset,
+            )
+        };
+        let tag_llvm = self.llvm_type(tag_type)?.into_int_type();
+        let tag_address =
+            self.address_with_size(storage, 1, self.context.i64_type().const_zero())?;
+        self.builder
+            .build_store(tag_address, tag_llvm.const_int(u64::from(state), false))
+            .map_err(|error| format!("cannot store variant tag: {error}"))?;
+        if let Some(payload) = payload {
+            let payload_address = self.address_with_size(
+                storage,
+                1,
+                self.context.i64_type().const_int(payload_offset, false),
+            )?;
+            self.builder
+                .build_store(payload_address, payload)
+                .map_err(|error| format!("cannot store variant payload: {error}"))?;
+        }
+        Ok(())
+    }
+
+    /// Lowers a member construction (`Variant.State(value)` / `Union.Member(value)`).
+    fn gen_member_construction_into(
+        &mut self,
+        node: NodeId,
+        storage: PointerValue<'ctx>,
+    ) -> Result<(), String> {
+        let argument = match self.ast.node(node).kind.clone() {
+            NodeKind::Call(call) => call
+                .arguments
+                .first()
+                .map(|argument| argument.value)
+                .ok_or_else(|| "member construction requires a value".to_string())?,
+            _ => return Err("expected a member construction".to_string()),
+        };
+        match self.sema.resolutions[node as usize].clone() {
+            Some(Resolution::ConstructVariant { type_id, state }) => {
+                let Type::Named(index) = self.sema.types.get(type_id).clone() else {
+                    return Err("variant construction requires a variant".to_string());
+                };
+                let payload_type = self.sema.type_defs[index as usize]
+                    .variant_states
+                    .get(state as usize)
+                    .and_then(|state| state.payload);
+                let payload = match payload_type {
+                    Some(_) => Some(self.gen_expr(argument)?),
+                    None => None,
+                };
+                self.gen_variant_into(storage, type_id, state, payload)
+            }
+            Some(Resolution::ConstructUnion { type_id, member }) => {
+                let Type::Named(index) = self.sema.types.get(type_id).clone() else {
+                    return Err("union construction requires a union".to_string());
+                };
+                let (offset, member_type) = {
+                    let entry = self.sema.type_defs[index as usize]
+                        .union_members
+                        .get(member as usize)
+                        .ok_or_else(|| "missing union member".to_string())?;
+                    (entry.offset, entry.ty)
+                };
+                let value = self.gen_expr(argument)?;
+                let address = self.address_with_size(
+                    storage,
+                    1,
+                    self.context.i64_type().const_int(offset, false),
+                )?;
+                let _ = member_type;
+                self.builder
+                    .build_store(address, value)
+                    .map_err(|error| format!("cannot store union member: {error}"))?;
+                Ok(())
+            }
+            _ => Err("expected a member construction".to_string()),
+        }
+    }
+
+    fn gen_construction(&mut self, node: NodeId) -> Result<BasicValueEnum<'ctx>, String> {
+        let resolution = self.sema.resolutions[node as usize].clone();
+        let (type_id, kind) = match resolution.clone() {
+            Some(Resolution::Construct { type_id, .. }) => {
+                let Type::Named(index) = self.sema.types.get(type_id).clone() else {
+                    return Err("construction requires a named type".to_string());
+                };
+                (type_id, self.sema.type_defs[index as usize].kind)
+            }
+            Some(Resolution::ConstructVariant { type_id, .. })
+            | Some(Resolution::ConstructUnion { type_id, .. }) => {
+                let Type::Named(index) = self.sema.types.get(type_id).clone() else {
+                    return Err("construction requires a named type".to_string());
+                };
+                (type_id, self.sema.type_defs[index as usize].kind)
+            }
+            _ => return Err("expected a construction expression".to_string()),
+        };
+        let Type::Named(_index) = self.sema.types.get(type_id).clone() else {
             return Err("construction requires a named type".to_string());
         };
-        let is_class = self.sema.type_defs[index as usize].kind == TypeDefKind::Class;
+        if matches!(kind, TypeDefKind::Variant | TypeDefKind::Union) {
+            let instance_type = self.instance_llvm_type(type_id)?;
+            let storage = self
+                .builder
+                .build_alloca(instance_type, "member_construction")
+                .map_err(|error| format!("cannot allocate value: {error}"))?;
+            self.builder
+                .build_store(storage, instance_type.const_zero())
+                .map_err(|error| format!("cannot initialize value: {error}"))?;
+            self.gen_member_construction_into(node, storage)?;
+            return self
+                .builder
+                .build_load(instance_type, storage, "member_value")
+                .map_err(|error| format!("cannot load value: {error}"));
+        }
+        let is_class = kind == TypeDefKind::Class;
         let instance_type = self.instance_llvm_type(type_id)?;
         let storage = self
             .builder
@@ -2823,101 +3271,54 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         is_expression: &IsExpr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
         match &is_expression.target {
-            IsTarget::Identifier(_) => {
-                let target_type = match self.sema.resolutions[node as usize].clone() {
-                    Some(Resolution::Type(target_type)) => target_type,
-                    _ => return Err("missing is target type".to_string()),
-                };
-                let Type::Named(target_index) = self.sema.types.get(target_type).clone() else {
-                    return Err("is target must be a class".to_string());
-                };
-                let target_typeinfo = *self
-                    .typeinfo_globals
-                    .get(&target_index)
-                    .ok_or_else(|| "missing target type information".to_string())?;
-                let pointer_type = self.context.ptr_type(AddressSpace::default());
-                let value = self.gen_expr(is_expression.value)?;
-                let instance = value.into_pointer_value();
-                let current_typeinfo = self.load_pointer_at(instance, 8)?.into_pointer_value();
-                let current_slot = self
-                    .builder
-                    .build_alloca(pointer_type, "is_current")
-                    .map_err(|error| format!("cannot allocate is state: {error}"))?;
-                self.builder
-                    .build_store(current_slot, current_typeinfo)
-                    .map_err(|error| format!("cannot store is state: {error}"))?;
-                let result_slot = self
-                    .builder
-                    .build_alloca(self.context.i8_type(), "is_result")
-                    .map_err(|error| format!("cannot allocate is result: {error}"))?;
-                self.builder
-                    .build_store(result_slot, self.context.i8_type().const_zero())
-                    .map_err(|error| format!("cannot store is result: {error}"))?;
-
-                let function = self.current_llvm_function()?;
-                let loop_block = self.context.append_basic_block(function, "is_loop");
-                let advance_block = self.context.append_basic_block(function, "is_base");
-                let true_block = self.context.append_basic_block(function, "is_true");
-                let end_block = self.context.append_basic_block(function, "is_end");
-                self.builder
-                    .build_unconditional_branch(loop_block)
-                    .map_err(|error| format!("cannot branch: {error}"))?;
-
-                self.builder.position_at_end(loop_block);
-                let current = self
-                    .builder
-                    .build_load(pointer_type, current_slot, "current")
-                    .map_err(|error| format!("cannot load is state: {error}"))?
-                    .into_pointer_value();
-                let matches = self
-                    .builder
-                    .build_int_compare(
-                        IntPredicate::EQ,
-                        current,
-                        target_typeinfo.as_pointer_value(),
-                        "is_match",
-                    )
-                    .map_err(|error| format!("cannot compare types: {error}"))?;
-                self.builder
-                    .build_conditional_branch(matches, true_block, advance_block)
-                    .map_err(|error| format!("cannot branch: {error}"))?;
-
-                self.builder.position_at_end(advance_block);
-                let is_null = self
-                    .builder
-                    .build_int_compare(
-                        IntPredicate::EQ,
-                        current,
-                        pointer_type.const_zero(),
-                        "is_null",
-                    )
-                    .map_err(|error| format!("cannot compare types: {error}"))?;
-                let next_block = self.context.append_basic_block(function, "is_next");
-                self.builder
-                    .build_conditional_branch(is_null, end_block, next_block)
-                    .map_err(|error| format!("cannot branch: {error}"))?;
-                self.builder.position_at_end(next_block);
-                let base_typeinfo = self.load_pointer_at(current, 8)?;
-                self.builder
-                    .build_store(current_slot, base_typeinfo)
-                    .map_err(|error| format!("cannot store is state: {error}"))?;
-                self.builder
-                    .build_unconditional_branch(loop_block)
-                    .map_err(|error| format!("cannot branch: {error}"))?;
-
-                self.builder.position_at_end(true_block);
-                self.builder
-                    .build_store(result_slot, self.context.i8_type().const_int(1, false))
-                    .map_err(|error| format!("cannot store is result: {error}"))?;
-                self.builder
-                    .build_unconditional_branch(end_block)
-                    .map_err(|error| format!("cannot branch: {error}"))?;
-
-                self.builder.position_at_end(end_block);
-                self.builder
-                    .build_load(self.context.i8_type(), result_slot, "is_result")
-                    .map_err(|error| format!("cannot load is result: {error}"))
-            }
+            IsTarget::Identifier(_) => match self.sema.resolutions[node as usize].clone() {
+                Some(Resolution::VariantState { type_id, state }) => {
+                    let value = self.gen_expr(is_expression.value)?;
+                    let value_llvm = self.llvm_type(self.type_of(is_expression.value))?;
+                    let slot = self
+                        .builder
+                        .build_alloca(value_llvm, "is_variant")
+                        .map_err(|error| format!("cannot allocate variant: {error}"))?;
+                    self.builder
+                        .build_store(slot, value)
+                        .map_err(|error| format!("cannot store variant: {error}"))?;
+                    let Type::Named(index) = self.sema.types.get(type_id).clone() else {
+                        return Err("variant is-target requires a variant".to_string());
+                    };
+                    let tag_type = self.sema.type_defs[index as usize]
+                        .tag_type
+                        .ok_or_else(|| "variant has no tag type".to_string())?;
+                    let tag_llvm = self.llvm_type(tag_type)?.into_int_type();
+                    let tag_address =
+                        self.address_with_size(slot, 1, self.context.i64_type().const_zero())?;
+                    let tag = self
+                        .builder
+                        .build_load(tag_llvm, tag_address, "variant_tag")
+                        .map_err(|error| format!("cannot load variant tag: {error}"))?
+                        .into_int_value();
+                    let condition = self
+                        .builder
+                        .build_int_compare(
+                            IntPredicate::EQ,
+                            tag,
+                            tag_llvm.const_int(u64::from(state), false),
+                            "is_state",
+                        )
+                        .map_err(|error| format!("cannot compare state: {error}"))?;
+                    self.boolean_from_i1(condition)
+                }
+                Some(Resolution::Type(target_type)) => {
+                    let Type::Named(target_index) = self.sema.types.get(target_type).clone() else {
+                        return Err("is target must be a class".to_string());
+                    };
+                    let value = self.gen_expr(is_expression.value)?;
+                    let instance = value.into_pointer_value();
+                    let condition = self.emit_type_check(instance, target_type)?;
+                    let _ = target_index;
+                    self.boolean_from_i1(condition)
+                }
+                _ => Err("missing is target type".to_string()),
+            },
             IsTarget::Illegal => {
                 let value = self.gen_expr(is_expression.value)?.into_float_value();
                 let is_nan = self

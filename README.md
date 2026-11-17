@@ -35,12 +35,15 @@ Implemented today:
   field flattening), class reference semantics, `heap` and `dispose` (destructor + free)
 - **Polymorphism**: `virtual`/`override` with vtables, `sealed` classes/methods, `base.M()`
   non-dispatched base calls, and RTTI-backed `is` checks over class hierarchies
+- **Variants and unions**: state/payload layout (smallest usable tag, aligned payload space),
+  union overlap layout with `aligned(N)`, member construction (`Variant.State(value)`,
+  `Union.Member(value)`), payload-less variant states, union type punning, `is` checks for
+  variant states, and `match` `is` patterns with guards and payload binding
 - **Name mangling** per §13.2, including the spec's worked example as a unit test
-- 77 tests: 36 unit, 8 CLI, 2 LLVM smoke, 20 end-to-end execution, 10 parser, 1 spec
+- 80 tests: 36 unit, 8 CLI, 2 LLVM smoke, 23 end-to-end execution, 10 parser, 1 spec
   conformance; `cargo fmt` + `clippy -D warnings` clean
 
-Not implemented yet (rejected with a clear diagnostic): interfaces, variants and unions,
-member construction (`T.Member(...)`), `is` patterns in `match`, accessors and operator
+Not implemented yet (rejected with a clear diagnostic): interfaces, accessors and operator
 definitions, generics/monomorphization, function literals and closures,
 `trap`/`throw`/`finally` (runtime exception model), compile-time execution (`#(...)`,
 `#{...}`, `#if`), references (`&`/`&T`) beyond `this`, `??`, NOLAA, and the Built-In

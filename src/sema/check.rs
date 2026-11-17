@@ -455,7 +455,11 @@ impl<'a> Sema<'a> {
         };
         if !matches!(
             target_kind,
-            TypeDefKind::Structure | TypeDefKind::Class | TypeDefKind::Interface
+            TypeDefKind::Structure
+                | TypeDefKind::Class
+                | TypeDefKind::Interface
+                | TypeDefKind::Variant
+                | TypeDefKind::Union
         ) {
             self.error(
                 self.span_of(node),
@@ -608,6 +612,138 @@ impl<'a> Sema<'a> {
             definition.method_list.push(index);
         }
         Some(index)
+    }
+
+    pub(crate) fn resolve_variant(&mut self, node: NodeId) {
+        let NodeKind::Variant(declaration) = self.node_kind(node) else {
+            return;
+        };
+        let Some(type_id) = self.type_id_for_node(node) else {
+            return;
+        };
+        let mut states = Vec::new();
+        for member in &declaration.members {
+            let payload = match member.payload {
+                Some(payload_node) => self.resolve_type(payload_node),
+                None => None,
+            };
+            states.push(VariantStateInfo {
+                name: member.name.clone(),
+                payload,
+            });
+        }
+        if let Type::Named(index) = self.result.types.get(type_id).clone() {
+            self.result.type_defs[index as usize].variant_states = states;
+        }
+        for extension in &declaration.extensions {
+            self.resolve_extension_declaration(*extension, Some(type_id));
+        }
+    }
+
+    pub(crate) fn resolve_union(&mut self, node: NodeId) {
+        let NodeKind::Union(declaration) = self.node_kind(node) else {
+            return;
+        };
+        let Some(type_id) = self.type_id_for_node(node) else {
+            return;
+        };
+        let mut members = Vec::new();
+        for member in &declaration.members {
+            let Some(ty) = self.resolve_type(member.ty) else {
+                continue;
+            };
+            members.push(UnionMemberInfo {
+                name: member.name.clone(),
+                ty,
+                offset: 0,
+                aligned: member.modifiers.aligned,
+            });
+        }
+        if let Type::Named(index) = self.result.types.get(type_id).clone() {
+            self.result.type_defs[index as usize].union_members = members;
+        }
+        for extension in &declaration.extensions {
+            self.resolve_extension_declaration(*extension, Some(type_id));
+        }
+    }
+
+    /// Computes variant and union layouts once every member type is resolved.
+    pub(crate) fn finalize_variant_union_layouts(&mut self) {
+        let count = self.result.type_defs.len();
+        for index in 0..count {
+            match self.result.type_defs[index].kind {
+                TypeDefKind::Variant => self.finalize_variant_layout(index),
+                TypeDefKind::Union => self.finalize_union_layout(index),
+                _ => {}
+            }
+        }
+    }
+
+    fn finalize_variant_layout(&mut self, index: usize) {
+        let states = self.result.type_defs[index].variant_states.clone();
+        // State space: the smallest unsigned integer type that can hold the
+        // state count (§3.7.5).
+        let state_count = states.len().max(1) as u64;
+        let tag_bytes: u8 = if state_count <= 256 {
+            1
+        } else if state_count <= 65_536 {
+            2
+        } else if state_count <= u32::MAX as u64 {
+            4
+        } else {
+            8
+        };
+        let tag_type = self.result.types.integer(false, tag_bytes);
+        let mut payload_size = 0u64;
+        let mut payload_align = 1u64;
+        for state in &states {
+            if let Some(payload) = state.payload {
+                let (size, align) = self.size_align(payload);
+                payload_size = payload_size.max(size);
+                payload_align = payload_align.max(align);
+            }
+        }
+        let tag_size = u64::from(tag_bytes);
+        let payload_offset = round_up(tag_size, payload_align);
+        let total = payload_offset + payload_size;
+        let alignment = tag_size.max(payload_align);
+        let definition = &mut self.result.type_defs[index];
+        definition.tag_type = Some(tag_type);
+        definition.payload_offset = payload_offset;
+        definition.payload_size = payload_size;
+        definition.instance_size = round_up(total, alignment);
+        definition.instance_align = alignment;
+        definition.size = definition.instance_size;
+        definition.align = alignment;
+    }
+
+    fn finalize_union_layout(&mut self, index: usize) {
+        let members = self.result.type_defs[index].union_members.clone();
+        let mut offset = 0u64;
+        let mut alignment = 1u64;
+        let mut layout = Vec::with_capacity(members.len());
+        for member in &members {
+            let (size, member_align) = self.size_align(member.ty);
+            let (member_offset, effective_align) = match member.aligned {
+                Some(0) => (0, member_align),
+                Some(requested) => (u64::from(requested), member_align.max(u64::from(requested))),
+                None => (0, member_align),
+            };
+            offset = offset.max(member_offset + size);
+            alignment = alignment.max(effective_align);
+            layout.push(UnionMemberInfo {
+                name: member.name.clone(),
+                ty: member.ty,
+                offset: member_offset,
+                aligned: member.aligned,
+            });
+        }
+        let definition = &mut self.result.type_defs[index];
+        definition.union_members = layout;
+        definition.instance_size = round_up(offset, alignment);
+        definition.instance_align = alignment;
+        definition.size = definition.instance_size;
+        definition.align = alignment;
     }
 
     pub(crate) fn resolve_enumeration(&mut self, node: NodeId, _name: String) {
@@ -1335,7 +1471,7 @@ impl<'a> Sema<'a> {
                 self.check_condition(loop_statement.condition);
             }
             NodeKind::For(for_statement) => self.check_for_statement(node, &for_statement),
-            NodeKind::Match(match_statement) => self.check_match_statement(&match_statement),
+            NodeKind::Match(match_statement) => self.check_match_statement(node, &match_statement),
             NodeKind::Break(statement) => {
                 if self.loop_labels.is_empty() {
                     self.error(self.span_of(node), "'break' is only allowed inside a loop");
@@ -1686,10 +1822,11 @@ impl<'a> Sema<'a> {
         self.pop_scope();
     }
 
-    fn check_match_statement(&mut self, statement: &MatchStmt) {
+    fn check_match_statement(&mut self, node: NodeId, statement: &MatchStmt) {
         let value_type = self.check_expr(statement.value, None);
         self.loop_labels.push(statement.label.clone());
-        for case in &statement.cases {
+        for (case_index, case) in statement.cases.iter().enumerate() {
+            self.push_scope();
             if let Some(pattern) = &case.pattern {
                 match pattern {
                     Pattern::Equal(expression) => {
@@ -1716,8 +1853,8 @@ impl<'a> Sema<'a> {
                             self.expect_assignable(self.span_of(*value), ty, value_type);
                         }
                     }
-                    Pattern::Is { .. } => {
-                        self.unsupported(self.span_of(statement.value), "is patterns")
+                    Pattern::Is { name, target } => {
+                        self.check_is_pattern(node, case_index, name.clone(), target, value_type)
                     }
                     Pattern::Wildcard => {}
                 }
@@ -1726,8 +1863,107 @@ impl<'a> Sema<'a> {
                 self.check_condition(guard);
             }
             self.check_block(case.body);
+            self.pop_scope();
         }
         self.loop_labels.pop();
+    }
+
+    /// Checks an `is` pattern and binds its payload/narrowed value.
+    fn check_is_pattern(
+        &mut self,
+        match_node: NodeId,
+        case_index: usize,
+        binding_name: Option<String>,
+        target: &IsTarget,
+        value_type: Option<TypeId>,
+    ) {
+        let Some(value_type) = value_type else {
+            return;
+        };
+        match target {
+            IsTarget::Identifier(text) => {
+                let Some(resolved) = self.resolve_is_target_name(match_node, text) else {
+                    return;
+                };
+                match resolved {
+                    IsTargetResolved::Type(target_type) => {
+                        let target_is_class = matches!(
+                            self.types_of(target_type),
+                            Type::Named(index)
+                                if self.result.type_defs[index as usize].kind == TypeDefKind::Class
+                        );
+                        if !target_is_class {
+                            self.unsupported(
+                                self.span_of(match_node),
+                                "is patterns over non-class types",
+                            );
+                            return;
+                        }
+                        let binding = binding_name.map(|name| {
+                            self.add_local(
+                                name,
+                                target_type,
+                                false,
+                                None,
+                                Storage::Value,
+                                self.span_of(match_node),
+                            )
+                        });
+                        self.result.match_patterns.insert(
+                            (match_node, case_index as u32),
+                            MatchPatternInfo::IsClass {
+                                type_id: target_type,
+                                binding,
+                            },
+                        );
+                    }
+                    IsTargetResolved::VariantState { type_id, state } => {
+                        if self.types_of(value_type) != self.types_of(type_id) {
+                            self.error(
+                                self.span_of(match_node),
+                                "the matched value is not the pattern's variant type",
+                            );
+                            return;
+                        }
+                        let Type::Named(index) = self.types_of(type_id) else {
+                            return;
+                        };
+                        let payload_type = self.result.type_defs[index as usize].variant_states
+                            [state as usize]
+                            .payload;
+                        let binding = match (binding_name, payload_type) {
+                            (Some(name), Some(payload)) => Some(self.add_local(
+                                name,
+                                payload,
+                                false,
+                                None,
+                                Storage::Value,
+                                self.span_of(match_node),
+                            )),
+                            (Some(_), None) => {
+                                self.error(
+                                    self.span_of(match_node),
+                                    "this state has no payload to bind",
+                                );
+                                None
+                            }
+                            (None, _) => None,
+                        };
+                        self.result.match_patterns.insert(
+                            (match_node, case_index as u32),
+                            MatchPatternInfo::IsVariant {
+                                type_id,
+                                state,
+                                binding,
+                            },
+                        );
+                    }
+                }
+            }
+            IsTarget::Illegal | IsTarget::Infinite { .. } => {
+                self.unsupported(self.span_of(match_node), "is patterns over special floats");
+            }
+        }
     }
 }
 
@@ -2160,39 +2396,79 @@ impl<'a> Sema<'a> {
             }
         }
 
-        // Enumeration member: `Status.Running` (§3.7.4).
+        // Type-qualified member access: `Status.Running`, `Optional.Value`,
+        // `Pixel.RGBA` (§3.7.4-3.7.6).
         if let Some(Symbol::Type(type_id)) = self.try_resolve_name(access.base) {
             let Type::Named(index) = self.type_of(type_id) else {
                 self.error(self.span_of(node), "type is not a namespace");
                 return None;
             };
             let definition = &self.result.type_defs[index as usize];
-            if definition.kind != TypeDefKind::Enumeration {
-                self.error(
-                    self.span_of(node),
-                    "only enumeration members can be accessed through a type name",
-                );
-                return None;
+            match definition.kind {
+                TypeDefKind::Enumeration => {
+                    if let Some(member_index) = definition
+                        .enum_members
+                        .iter()
+                        .position(|(name, _)| *name == access.name)
+                    {
+                        self.result.resolutions[node as usize] = Some(Resolution::EnumMember {
+                            type_id,
+                            index: member_index as u32,
+                        });
+                        return Some(type_id);
+                    }
+                    self.error(
+                        self.span_of(node),
+                        format!(
+                            "'{}' is not a member of '{}'",
+                            access.name, definition.qualified_name
+                        ),
+                    );
+                    return None;
+                }
+                TypeDefKind::Variant => {
+                    if let Some(state) = definition
+                        .variant_states
+                        .iter()
+                        .position(|state| state.name == access.name)
+                    {
+                        if definition.variant_states[state].payload.is_some() {
+                            self.error(
+                                self.span_of(node),
+                                "a state with a payload must be constructed with 'State(value)'",
+                            );
+                            return None;
+                        }
+                        self.result.resolutions[node as usize] = Some(Resolution::VariantState {
+                            type_id,
+                            state: state as u32,
+                        });
+                        return Some(type_id);
+                    }
+                    self.error(
+                        self.span_of(node),
+                        format!(
+                            "'{}' is not a state of '{}'",
+                            access.name, definition.qualified_name
+                        ),
+                    );
+                    return None;
+                }
+                TypeDefKind::Union => {
+                    self.error(
+                        self.span_of(node),
+                        "union members are read through an instance, not the type name",
+                    );
+                    return None;
+                }
+                _ => {
+                    self.error(
+                        self.span_of(node),
+                        "only enumeration, variant and union members can be accessed through a type name",
+                    );
+                    return None;
+                }
             }
-            if let Some(member_index) = definition
-                .enum_members
-                .iter()
-                .position(|(name, _)| *name == access.name)
-            {
-                self.result.resolutions[node as usize] = Some(Resolution::EnumMember {
-                    type_id,
-                    index: member_index as u32,
-                });
-                return Some(type_id);
-            }
-            self.error(
-                self.span_of(node),
-                format!(
-                    "'{}' is not a member of '{}'",
-                    access.name, definition.qualified_name
-                ),
-            );
-            return None;
         }
 
         // Field access on a value.
@@ -2224,9 +2500,10 @@ impl<'a> Sema<'a> {
         match self.type_of(base_type) {
             Type::Named(index) => {
                 let definition = &self.result.type_defs[index as usize];
-                if definition.kind != TypeDefKind::Structure
-                    && definition.kind != TypeDefKind::Class
-                {
+                if !matches!(
+                    definition.kind,
+                    TypeDefKind::Structure | TypeDefKind::Class | TypeDefKind::Union
+                ) {
                     self.error(
                         self.span_of(node),
                         format!("'{}' has no fields", definition.qualified_name),
@@ -2243,6 +2520,19 @@ impl<'a> Sema<'a> {
                         index: field_index as u32,
                     });
                     return Some(definition.fields[field_index].ty);
+                }
+                if definition.kind == TypeDefKind::Union {
+                    if let Some(member_index) = definition
+                        .union_members
+                        .iter()
+                        .position(|member| member.name == access.name)
+                    {
+                        self.result.resolutions[node as usize] = Some(Resolution::UnionMember {
+                            type_id: self.result.types.intern(Type::Named(index)),
+                            member: member_index as u32,
+                        });
+                        return Some(definition.union_members[member_index].ty);
+                    }
                 }
                 self.error(
                     self.span_of(node),
@@ -2554,20 +2844,38 @@ impl<'a> Sema<'a> {
         let value_type = self.check_expr(is_expression.value, None)?;
         match &is_expression.target {
             IsTarget::Identifier(name) => {
-                let target_type = self.resolve_type_name_text(name)?;
-                let value_kind = self.types_of(value_type);
-                let target_kind = self.types_of(target_type);
-                let value_is_class = matches!(&value_kind, Type::Named(index) if self.result.type_defs[*index as usize].kind == TypeDefKind::Class);
-                let target_is_class = matches!(&target_kind, Type::Named(index) if self.result.type_defs[*index as usize].kind == TypeDefKind::Class);
-                if !value_is_class || !target_is_class {
-                    self.unsupported(
-                        self.span_of(node),
-                        "is checks are only implemented for class values",
-                    );
-                    return None;
+                let resolved = self.resolve_is_target_name(node, name);
+                match resolved {
+                    Some(IsTargetResolved::Type(target_type)) => {
+                        let value_kind = self.types_of(value_type);
+                        let target_kind = self.types_of(target_type);
+                        let value_is_class = matches!(&value_kind, Type::Named(index) if self.result.type_defs[*index as usize].kind == TypeDefKind::Class);
+                        let target_is_class = matches!(&target_kind, Type::Named(index) if self.result.type_defs[*index as usize].kind == TypeDefKind::Class);
+                        if !value_is_class || !target_is_class {
+                            self.unsupported(
+                                self.span_of(node),
+                                "is checks are only implemented for class values",
+                            );
+                            return None;
+                        }
+                        self.result.resolutions[node as usize] =
+                            Some(Resolution::Type(target_type));
+                        Some(TypeId::BOOLEAN)
+                    }
+                    Some(IsTargetResolved::VariantState { type_id, state }) => {
+                        if !self.is_assignable(value_type, type_id) {
+                            self.error(
+                                self.span_of(node),
+                                "the checked value is not a variant instance",
+                            );
+                            return None;
+                        }
+                        self.result.resolutions[node as usize] =
+                            Some(Resolution::VariantState { type_id, state });
+                        Some(TypeId::BOOLEAN)
+                    }
+                    None => None,
                 }
-                self.result.resolutions[node as usize] = Some(Resolution::Type(target_type));
-                Some(TypeId::BOOLEAN)
             }
             IsTarget::Illegal => {
                 if !matches!(self.types_of(value_type), Type::Float { .. }) {
@@ -2590,27 +2898,145 @@ impl<'a> Sema<'a> {
         }
     }
 
-    /// Resolves a dotted type name written as text (used by `is` targets).
-    fn resolve_type_name_text(&mut self, text: &str) -> Option<TypeId> {
-        let mut parts = text.split('.');
-        let first = parts.next()?;
-        let mut symbol = self.lookup(first).cloned();
-        for part in parts {
+    /// Resolves the target of an `is` expression or pattern: a class type or a
+    /// variant state (`Variant.State`).
+    fn resolve_is_target_name(&mut self, node: NodeId, text: &str) -> Option<IsTargetResolved> {
+        let parts: Vec<&str> = text.split('.').collect();
+        if parts.is_empty() {
+            return None;
+        }
+        if let Some(Symbol::Type(type_id)) = self.resolve_symbol_path(&parts) {
+            return Some(IsTargetResolved::Type(type_id));
+        }
+        if parts.len() >= 2 {
+            let type_parts = &parts[..parts.len() - 1];
+            if let Some(Symbol::Type(type_id)) = self.resolve_symbol_path(type_parts) {
+                if let Type::Named(index) = self.types_of(type_id) {
+                    let definition = &self.result.type_defs[index as usize];
+                    if definition.kind == TypeDefKind::Variant {
+                        let state_name = parts[parts.len() - 1];
+                        if let Some(state) = definition
+                            .variant_states
+                            .iter()
+                            .position(|state| state.name == state_name)
+                        {
+                            return Some(IsTargetResolved::VariantState {
+                                type_id,
+                                state: state as u32,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        self.error(self.span_of(node), format!("unknown is-target '{text}'"));
+        None
+    }
+
+    fn resolve_symbol_path(&mut self, parts: &[&str]) -> Option<Symbol> {
+        let mut symbol = self.lookup(parts.first()?).cloned();
+        for part in parts.iter().skip(1) {
             symbol = match symbol {
                 Some(Symbol::Module(scope)) => self.lookup_in(scope, part).cloned(),
                 _ => None,
             };
         }
-        match symbol {
-            Some(Symbol::Type(type_id)) => Some(type_id),
-            _ => {
-                self.error(
-                    Span::default(),
-                    format!("unknown type '{text}' in is expression"),
-                );
-                None
-            }
+        symbol
+    }
+
+    fn check_variant_construction(
+        &mut self,
+        node: NodeId,
+        type_id: TypeId,
+        state_name: &str,
+        arguments: &[Argument],
+    ) -> Option<TypeId> {
+        let Type::Named(index) = self.types_of(type_id) else {
+            return None;
+        };
+        let definition = &self.result.type_defs[index as usize];
+        let Some(state) = definition
+            .variant_states
+            .iter()
+            .position(|state| state.name == state_name)
+        else {
+            self.error(
+                self.span_of(node),
+                format!(
+                    "'{state_name}' is not a state of '{}'",
+                    definition.qualified_name
+                ),
+            );
+            return None;
+        };
+        let payload = definition.variant_states[state].payload;
+        let Some(payload_type) = payload else {
+            self.error(
+                self.span_of(node),
+                "a state without a payload is not constructed with a value",
+            );
+            return None;
+        };
+        if arguments.len() != 1 {
+            self.error(
+                self.span_of(node),
+                "a variant state with a payload takes exactly one value",
+            );
+            return None;
         }
+        let argument_type = self.check_expr(arguments[0].value, Some(payload_type));
+        if let Some(argument_type) = argument_type {
+            self.expect_assignable(arguments[0].span, argument_type, payload_type);
+        }
+        self.result.resolutions[node as usize] = Some(Resolution::ConstructVariant {
+            type_id,
+            state: state as u32,
+        });
+        Some(type_id)
+    }
+
+    fn check_union_construction(
+        &mut self,
+        node: NodeId,
+        type_id: TypeId,
+        member_name: &str,
+        arguments: &[Argument],
+    ) -> Option<TypeId> {
+        let Type::Named(index) = self.types_of(type_id) else {
+            return None;
+        };
+        let definition = &self.result.type_defs[index as usize];
+        let Some(member) = definition
+            .union_members
+            .iter()
+            .position(|member| member.name == member_name)
+        else {
+            self.error(
+                self.span_of(node),
+                format!(
+                    "'{member_name}' is not a member of '{}'",
+                    definition.qualified_name
+                ),
+            );
+            return None;
+        };
+        let member_type = definition.union_members[member].ty;
+        if arguments.len() != 1 {
+            self.error(
+                self.span_of(node),
+                "a union member construction takes exactly one value",
+            );
+            return None;
+        }
+        let argument_type = self.check_expr(arguments[0].value, Some(member_type));
+        if let Some(argument_type) = argument_type {
+            self.expect_assignable(arguments[0].span, argument_type, member_type);
+        }
+        self.result.resolutions[node as usize] = Some(Resolution::ConstructUnion {
+            type_id,
+            member: member as u32,
+        });
+        Some(type_id)
     }
 
     fn check_call(&mut self, node: NodeId, call: &CallExpr) -> Option<TypeId> {
@@ -2626,6 +3052,32 @@ impl<'a> Sema<'a> {
                         self.try_method_call(node, base_type, &access.name, &call.arguments)
                     {
                         return result;
+                    }
+                }
+            }
+        }
+        // Member construction: `Variant.State(value)` / `Union.Member(value)`.
+        if let NodeKind::MemberAccess(access) = self.node_kind(call.callee) {
+            if let Some(Symbol::Type(type_id)) = self.try_resolve_name(access.base) {
+                if let Type::Named(index) = self.types_of(type_id) {
+                    match self.result.type_defs[index as usize].kind {
+                        TypeDefKind::Variant => {
+                            return self.check_variant_construction(
+                                node,
+                                type_id,
+                                &access.name,
+                                &call.arguments,
+                            );
+                        }
+                        TypeDefKind::Union => {
+                            return self.check_union_construction(
+                                node,
+                                type_id,
+                                &access.name,
+                                &call.arguments,
+                            );
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -2799,6 +3251,13 @@ impl<'a> Sema<'a> {
                 self.error(
                     self.span_of(node),
                     "enumeration values are written as members, not constructed",
+                );
+                return None;
+            }
+            TypeDefKind::Variant | TypeDefKind::Union => {
+                self.error(
+                    self.span_of(node),
+                    "variants and unions are constructed through a member construction expression",
                 );
                 return None;
             }
@@ -3130,4 +3589,17 @@ fn binary_op_spelling(op: BinaryOp) -> &'static str {
         BinaryOp::LogicalAnd => "&&",
         BinaryOp::LogicalOr => "||",
     }
+}
+
+/// The resolved target of an `is` expression or pattern.
+enum IsTargetResolved {
+    /// A declared type (class checks).
+    Type(TypeId),
+    /// A variant state check.
+    VariantState {
+        /// Variant type.
+        type_id: TypeId,
+        /// State index.
+        state: u32,
+    },
 }

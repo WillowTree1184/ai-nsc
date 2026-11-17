@@ -55,6 +55,28 @@ pub struct FieldInfo {
     pub offset: u64,
 }
 
+/// One state of a variant (§3.7.5).
+#[derive(Clone, Debug)]
+pub struct VariantStateInfo {
+    /// State name.
+    pub name: String,
+    /// Payload type; `None` for a payload-less state.
+    pub payload: Option<TypeId>,
+}
+
+/// One member of a union (§3.7.6).
+#[derive(Clone, Debug)]
+pub struct UnionMemberInfo {
+    /// Member name.
+    pub name: String,
+    /// Member type.
+    pub ty: TypeId,
+    /// Offset from the start of the instance.
+    pub offset: u64,
+    /// Explicit `aligned(N)` modifier, if any.
+    pub aligned: Option<u32>,
+}
+
 /// A declared type.
 #[derive(Debug)]
 pub struct TypeDef {
@@ -82,6 +104,16 @@ pub struct TypeDef {
     pub vtable_ready: bool,
     /// Base class, if any.
     pub base: Option<TypeId>,
+    /// Variant states, in declaration order.
+    pub variant_states: Vec<VariantStateInfo>,
+    /// Union members with their offsets.
+    pub union_members: Vec<UnionMemberInfo>,
+    /// Underlying type of a variant's state space.
+    pub tag_type: Option<TypeId>,
+    /// Offset of a variant's payload space.
+    pub payload_offset: u64,
+    /// Size of a variant's payload space.
+    pub payload_size: u64,
     /// Size of an instance including the class header (classes) and inherited
     /// fields; equals `size` for structures.
     pub instance_size: u64,
@@ -217,12 +249,61 @@ pub enum Resolution {
         /// Selected constructor.
         method: Option<u32>,
     },
+    /// A member construction of a variant state (`Variant.State(value)`).
+    ConstructVariant {
+        /// Variant type.
+        type_id: TypeId,
+        /// State index.
+        state: u32,
+    },
+    /// A member construction of a union (`Union.Member(value)`).
+    ConstructUnion {
+        /// Union type.
+        type_id: TypeId,
+        /// Member index.
+        member: u32,
+    },
+    /// A variant instance of a payload-less state (`Variant.State`).
+    VariantState {
+        /// Variant type.
+        type_id: TypeId,
+        /// State index.
+        state: u32,
+    },
+    /// A union member access (`unionValue.Member`).
+    UnionMember {
+        /// Union type.
+        type_id: TypeId,
+        /// Member index.
+        member: u32,
+    },
     /// A structure or class field.
     Field {
         /// The declaring type.
         type_id: TypeId,
         /// Index into the type's field list.
         index: u32,
+    },
+}
+
+/// Type information recorded for a checked `match` pattern.
+#[derive(Clone, Debug)]
+pub enum MatchPatternInfo {
+    /// `is name: Variant.State` pattern.
+    IsVariant {
+        /// Variant type.
+        type_id: TypeId,
+        /// State index.
+        state: u32,
+        /// Local receiving the payload, if the pattern binds one.
+        binding: Option<LocalId>,
+    },
+    /// `is name: Class` pattern over a class hierarchy.
+    IsClass {
+        /// Target class type.
+        type_id: TypeId,
+        /// Local receiving the narrowed reference, if bound.
+        binding: Option<LocalId>,
     },
 }
 
@@ -245,6 +326,8 @@ pub struct SemaResult {
     pub local_declarations: HashMap<NodeId, Vec<LocalId>>,
     /// The binding local of a `for` statement, by statement node.
     pub loop_bindings: HashMap<NodeId, LocalId>,
+    /// Type-checked `is` patterns, keyed by match statement node and case index.
+    pub match_patterns: HashMap<(NodeId, u32), MatchPatternInfo>,
     /// Number of errors reported.
     pub error_count: u32,
 }
@@ -461,6 +544,7 @@ impl<'a> Sema<'a> {
         self.resolve_declarations(&roots);
 
         // Pass 3: check bodies and initializers.
+        self.finalize_variant_union_layouts();
         self.build_vtables();
         self.check_function_bodies();
         self.check_global_initializers();
@@ -530,6 +614,11 @@ impl<'a> Sema<'a> {
             vtable: Vec::new(),
             vtable_ready: false,
             base: None,
+            variant_states: Vec::new(),
+            union_members: Vec::new(),
+            tag_type: None,
+            payload_offset: 0,
+            payload_size: 0,
             instance_size: 0,
             instance_align: 1,
             enum_members: Vec::new(),
@@ -564,12 +653,8 @@ impl<'a> Sema<'a> {
                 NodeKind::Enumeration(declaration) => {
                     self.resolve_enumeration(node, declaration.name.clone());
                 }
-                NodeKind::Variant(_declaration) => {
-                    self.unsupported(self.span_of(node), "variant declarations");
-                }
-                NodeKind::Union(_declaration) => {
-                    self.unsupported(self.span_of(node), "union declarations");
-                }
+                NodeKind::Variant(_declaration) => self.resolve_variant(node),
+                NodeKind::Union(_declaration) => self.resolve_union(node),
                 NodeKind::Interface(_declaration) => {
                     self.unsupported(self.span_of(node), "interface declarations");
                 }

@@ -36,7 +36,7 @@ only after the reproduction is re-run and its regression test is green.
 | 14 | MED | §5.6 | `use` statement is a no-op/error; imported members are not visible | fixed (0ec3a18: module members imported per scope; module-level `use` applies to later declarations) |
 | 15 | MED | §8.2 | `&` parameters other than `this` unsupported (spec example `Scale(value: &integer(4), …)` rejected) | open |
 | 16 | MED | §3.6.1 | VLAs (dimensions from runtime values) unsupported; dimensions are forced to constants | open |
-| 17 | MED | §3.6.1 | `array(3) array(4) T` and `array(3,4) T` are distinct interned types (no flattening); fixed-array↔fixed-array casts rejected | partial (9c701f0: nested arrays flatten to combined dimensions and are interchangeable; casts between differently-shaped arrays still rejected) |
+| 17 | MED | §3.6.1 | `array(3) array(4) T` and `array(3,4) T` are distinct interned types (no flattening); fixed-array↔fixed-array casts rejected | fixed (9c701f0 flattening; c2217b6 explicit casts between equal-size array shapes, different byte sizes diagnosed) |
 | 18 | MED | §6.3, §8.5, §14.1 | Duplicate declarations mostly undiagnosed (fields, enum members, variants, unions; signatures only at call sites; duplicate `Main`) | fixed (a5cc9cf) |
 | 19 | MED | §9.10, §9.11 | Abstract class instantiation accepted; sealed-base check incomplete for classes without fields | fixed (a5cc9cf) |
 | 20 | MED | §5.4 | Heap: type inference from the initializer missing; allocator expression ignored (always `malloc`) | partial (151ab56 type inference implemented; ecc4940 the allocator form is now an explicit 'not implemented yet' diagnostic instead of being silently ignored) |

@@ -2203,35 +2203,43 @@ impl<'a> Sema<'a> {
                     }
                 })
             }
-            NodeKind::Name(name) => match self.lookup(&name.name).cloned() {
-                Some(Symbol::Local(_)) | Some(Symbol::Functions(_)) => {
-                    self.error(
-                        self.span_of(node),
-                        "constant expression cannot use a local variable",
-                    );
-                    None
-                }
-                Some(Symbol::Global(global)) => {
-                    let info = &self.result.globals[global as usize];
-                    match info.init {
-                        Some(initializer) => self.eval_const_int(initializer),
-                        None => {
-                            self.error(
-                                self.span_of(node),
-                                "constant expression uses an uninitialized global",
-                            );
-                            None
-                        }
+            NodeKind::Name(name) => {
+                // Compile-time block locals act as constants (§11.4).
+                for scope in self.compile_time_constants.iter().rev() {
+                    if let Some(value) = scope.get(&name.name) {
+                        return Some(*value);
                     }
                 }
-                _ => {
-                    self.error(
-                        self.span_of(node),
-                        "constant expression must be an integer expression",
-                    );
-                    None
+                match self.lookup(&name.name).cloned() {
+                    Some(Symbol::Local(_)) | Some(Symbol::Functions(_)) => {
+                        self.error(
+                            self.span_of(node),
+                            "constant expression cannot use a local variable",
+                        );
+                        None
+                    }
+                    Some(Symbol::Global(global)) => {
+                        let info = &self.result.globals[global as usize];
+                        match info.init {
+                            Some(initializer) => self.eval_const_int(initializer),
+                            None => {
+                                self.error(
+                                    self.span_of(node),
+                                    "constant expression uses an uninitialized global",
+                                );
+                                None
+                            }
+                        }
+                    }
+                    _ => {
+                        self.error(
+                            self.span_of(node),
+                            "constant expression must be an integer expression",
+                        );
+                        None
+                    }
                 }
-            },
+            }
             _ => {
                 self.error(
                     self.span_of(node),
@@ -2421,6 +2429,7 @@ impl<'a> Sema<'a> {
                         .all(|catch| self.block_always_returns(catch.body))
             }
             NodeKind::DoWhile(statement) => self.block_always_returns(statement.body),
+            NodeKind::CompileTimeBlock(block) => self.block_always_returns(block),
             _ => false,
         }
     }
@@ -2820,7 +2829,13 @@ impl<'a> Sema<'a> {
             NodeKind::Use(statement) => {
                 self.resolve_use_statement(&statement);
             }
-            NodeKind::CompileTimeBlock(block) => self.check_block(block),
+            NodeKind::CompileTimeBlock(block) => {
+                // Locals declared here are compile-time constants (§11.4).
+                self.compile_time_constants
+                    .push(std::collections::HashMap::new());
+                self.check_block(block);
+                self.compile_time_constants.pop();
+            }
             NodeKind::CompileTimeIf(statement) => {
                 self.check_expr(statement.condition, Some(TypeId::BOOLEAN));
                 let taken = self
@@ -2920,6 +2935,20 @@ impl<'a> Sema<'a> {
                     continue;
                 }
             };
+            // Inside a compile-time block the declared value is a compile-time
+            // constant usable by later constant expressions (§11.4).
+            if !self.compile_time_constants.is_empty() {
+                if let Some(initializer) = item.init {
+                    self.suppress_errors += 1;
+                    let constant = self.eval_const_int(initializer);
+                    self.suppress_errors -= 1;
+                    if let Some(constant) = constant {
+                        if let Some(scope) = self.compile_time_constants.last_mut() {
+                            scope.insert(item.name.clone(), constant);
+                        }
+                    }
+                }
+            }
             let local = self.add_local(
                 item.name.clone(),
                 ty,

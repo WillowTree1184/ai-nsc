@@ -2031,3 +2031,19 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 7);
 }
+
+#[test]
+fn compile_time_block_locals_are_constants() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    #{
+        local size: integer(4) = 3;
+        local values: array(size) integer(4);
+        values[0] = 5;
+        values[size - 1] = 2;
+        return values[0] * 10 + values[size - 1];
+    }
+}";
+    assert_eq!(run_program(source), 52);
+}

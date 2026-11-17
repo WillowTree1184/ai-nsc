@@ -804,6 +804,7 @@ pub fn analyze(
         function_instantiations: HashMap::new(),
         pending_generic_extensions: Vec::new(),
         disposed_locals: std::collections::HashSet::new(),
+        compile_time_constants: Vec::new(),
         initializer_depth: 0,
     };
     sema.run();
@@ -839,6 +840,9 @@ pub(crate) struct Sema<'a> {
     /// Locals that a `dispose` statement already disposed (§5.8), for the
     /// double-dispose warning.
     pub(crate) disposed_locals: std::collections::HashSet<LocalId>,
+    /// Constant values of locals declared inside compile-time blocks (§11.4);
+    /// inner blocks are searched first.
+    pub(crate) compile_time_constants: Vec<HashMap<String, i128>>,
     /// Nesting depth of storage-initializer expressions; `uninitialized` is only
     /// legal there (§2.7.12).
     pub(crate) initializer_depth: u32,

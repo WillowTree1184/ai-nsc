@@ -2321,6 +2321,88 @@ impl<'a> Sema<'a> {
             self.pop_scope();
             self.current_function = None;
         }
+        self.check_return_paths();
+    }
+
+    /// Diagnoses functions with a non-empty return type that can fall off the end
+    /// of their body (§5.10.2). The judgement is deliberately conservative: a
+    /// construct is only accepted as returning when every path through it returns.
+    fn check_return_paths(&mut self) {
+        for index in 0..self.result.functions.len() {
+            let (body, return_type, span, is_template, is_abstract) = {
+                let function = &self.result.functions[index];
+                (
+                    function.body,
+                    function.return_type,
+                    function.span,
+                    function.is_template(),
+                    function.is_abstract,
+                )
+            };
+            if is_template || is_abstract {
+                continue;
+            }
+            let Some(return_type) = return_type else {
+                continue;
+            };
+            if return_type == TypeId::VOID {
+                continue;
+            }
+            let Some(FunctionBody::Block(block)) = body else {
+                continue;
+            };
+            if self.block_always_returns(block) {
+                continue;
+            }
+            self.error(span, "not all code paths of this function return a value");
+        }
+    }
+
+    fn block_always_returns(&self, node: NodeId) -> bool {
+        match self.node_kind(node) {
+            NodeKind::Block(statements) => statements
+                .last()
+                .is_some_and(|statement| self.statement_always_returns(*statement)),
+            NodeKind::VerbatimBlock(inner) => self.block_always_returns(inner),
+            _ => false,
+        }
+    }
+
+    fn statement_always_returns(&self, node: NodeId) -> bool {
+        match self.node_kind(node) {
+            NodeKind::Return(_) => true,
+            // A bare block used as the last statement of a body/block.
+            NodeKind::Block(_) | NodeKind::VerbatimBlock(_) => self.block_always_returns(node),
+            NodeKind::If(statement) => {
+                let Some(else_block) = statement.else_block else {
+                    return false;
+                };
+                statement
+                    .branches
+                    .iter()
+                    .all(|branch| self.block_always_returns(branch.body))
+                    && self.block_always_returns(else_block)
+            }
+            NodeKind::Match(statement) => {
+                let has_wildcard = statement.cases.iter().any(|case| {
+                    matches!(case.pattern, Some(Pattern::Wildcard)) && case.guard.is_none()
+                });
+                has_wildcard
+                    && statement
+                        .cases
+                        .iter()
+                        .all(|case| case.guard.is_none() && self.block_always_returns(case.body))
+            }
+            NodeKind::Trap(statement) => {
+                self.block_always_returns(statement.body)
+                    && statement
+                        .catches
+                        .iter()
+                        .all(|catch| self.block_always_returns(catch.body))
+            }
+            NodeKind::DoWhile(statement) => self.block_always_returns(statement.body),
+            _ => false,
+        }
     }
 
     pub(crate) fn check_global_initializers(&mut self) {

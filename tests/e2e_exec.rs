@@ -1801,3 +1801,24 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 11);
 }
+
+#[test]
+fn match_and_if_branches_satisfy_the_return_judgement() {
+    let source = "\
+fixed Pick(value: integer(4)): integer(4)
+{
+    match value
+    {
+        case 1 { return 10; }
+        case wildcard { return 20; }
+    }
+}
+
+fixed Choose(flag: boolean): integer(4)
+{
+    if (flag) { return 1; } else { return 2; }
+}
+
+fixed Main(): integer(4) { return Pick(1) + Choose(false); }";
+    assert_eq!(run_program(source), 12);
+}

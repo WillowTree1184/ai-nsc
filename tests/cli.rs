@@ -401,3 +401,16 @@ fixed Main(): integer(4)
     );
     assert!(stderr.contains("'continue' must not appear"), "{stderr}");
 }
+
+#[test]
+fn function_must_return_on_every_path() {
+    let stderr = check_source(
+        "\
+fixed Missing(flag: boolean): integer(4)
+{
+    if (flag) { return 1; }
+}
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(stderr.contains("not all code paths"), "{stderr}");
+}

@@ -13,7 +13,7 @@
   dirty while a concurrent session lands fixes — check `git status` before
   committing.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  — **154 tests green** (40 lib unit including 4 AST-clone tests, 27 CLI,
+  — **155 tests green** (40 lib unit including 4 AST-clone tests, 28 CLI,
   2 codegen/LLVM, 74 end-to-end execution, 10 parser, 1 spec-example conformance).
 - Build flags (required on this host):
   `CARGO_HOME=/tmp/ainsc-cargo LLVM_SYS_181_PREFIX=/usr/lib/llvm-18`

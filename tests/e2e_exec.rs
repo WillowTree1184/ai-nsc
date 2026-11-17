@@ -1908,3 +1908,30 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 10);
 }
+
+#[test]
+fn variant_payload_state_names_elide_the_type() {
+    let source = "\
+variant Maybe
+{
+    Nothing;
+    Some: integer(4);
+}
+
+fixed UnwrapOr(value: Maybe, fallback: integer(4)): integer(4)
+{
+    match value
+    {
+        case is payload: Maybe.Some { return payload; }
+        case wildcard { return fallback; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local present: Maybe = Some(9);
+    local empty: Maybe = Nothing;
+    return UnwrapOr(present, 1) + UnwrapOr(empty, 2);
+}";
+    assert_eq!(run_program(source), 11);
+}

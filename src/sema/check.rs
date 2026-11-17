@@ -3447,7 +3447,14 @@ impl<'a> Sema<'a> {
             NodeKind::MemberAccess(access) => self.check_member_access(node, &access, false),
             NodeKind::PointerMemberAccess(access) => self.check_member_access(node, &access, true),
             NodeKind::Index(index) => self.check_index_expr(node, &index),
-            NodeKind::Call(call) => self.check_call(node, &call),
+            NodeKind::Call(call) => {
+                // Payload-state name elision (§3.7.5):
+                // `local v: Maybe = Some(50);` constructs `Maybe.Some(50)`.
+                if let Some(handled) = self.check_elided_state_construction(node, &call, expected) {
+                    return handled;
+                }
+                self.check_call(node, &call)
+            }
             NodeKind::Cast(cast) => self.check_cast(node, &cast),
             NodeKind::Unary(unary) => self.check_unary(node, &unary, expected),
             NodeKind::Binary(binary) => self.check_binary(node, &binary, expected),
@@ -4926,6 +4933,55 @@ impl<'a> Sema<'a> {
             member: member as u32,
         });
         Some(type_id)
+    }
+
+    /// Handles `State(payload)` where `State` is a variant state name elided in a
+    /// context that expects the variant type (§3.7.5). Returns `None` when the
+    /// callee is not an elided variant state.
+    fn check_elided_state_construction(
+        &mut self,
+        node: NodeId,
+        call: &CallExpr,
+        expected: Option<TypeId>,
+    ) -> Option<Option<TypeId>> {
+        let expected = expected?;
+        let NodeKind::Name(name) = self.node_kind(call.callee) else {
+            return None;
+        };
+        if self.lookup(&name.name).is_some() {
+            return None;
+        }
+        let Type::Named(index) = self.types_of(expected) else {
+            return None;
+        };
+        if self.result.type_defs[index as usize].kind != TypeDefKind::Variant {
+            return None;
+        }
+        let state = self.result.type_defs[index as usize]
+            .variant_states
+            .iter()
+            .position(|state| state.name == name.name)?;
+        let payload_type = self.result.type_defs[index as usize].variant_states[state].payload?;
+        if call.arguments.len() != 1 {
+            self.error(
+                self.span_of(node),
+                format!(
+                    "variant state '{}' expects exactly one payload argument",
+                    name.name
+                ),
+            );
+            return Some(None);
+        }
+        let argument = &call.arguments[0];
+        let value_type = self.check_expr(argument.value, Some(payload_type));
+        if let Some(value_type) = value_type {
+            self.expect_assignable(argument.span, value_type, payload_type);
+        }
+        self.result.resolutions[node as usize] = Some(Resolution::ConstructVariant {
+            type_id: expected,
+            state: state as u32,
+        });
+        Some(Some(expected))
     }
 
     fn check_call(&mut self, node: NodeId, call: &CallExpr) -> Option<TypeId> {

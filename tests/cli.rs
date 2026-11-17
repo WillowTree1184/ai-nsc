@@ -492,3 +492,35 @@ fixed Main(): integer(4)
         "{stderr}"
     );
 }
+
+#[test]
+fn array_pointer_conversion_warns_without_failing() {
+    let directory = std::env::temp_dir().join(format!("ainsc-cli-warn2-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("main.ns");
+    std::fs::write(
+        &path,
+        "\
+fixed Main(): integer(4)
+{
+    local values[3]: integer(4) = { 1, 2, 3 };
+    local p: pointer integer(4) = Cast<pointer integer(4)>(values);
+    return Cast<integer(4)>(p[1]);
+}",
+    )
+    .expect("write program");
+    let output = ai_nsc()
+        .args(["check", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "warnings must not fail the build: {stderr}"
+    );
+    assert!(
+        stderr.contains("warning") && stderr.contains("bounds-check"),
+        "{stderr}"
+    );
+}

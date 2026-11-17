@@ -4243,6 +4243,21 @@ impl<'a> Sema<'a> {
             );
             return None;
         }
+        // Array/pointer conversions are legal but unsafe, so the spec asks for a
+        // warning (§3.6.1).
+        if matches!(
+            (self.types_of(source), self.types_of(target)),
+            (Type::Array { .. }, Type::Pointer { .. }) | (Type::Pointer { .. }, Type::Array { .. })
+        ) {
+            self.warn(
+                self.span_of(node),
+                format!(
+                    "conversion between '{}' and '{}' does not copy or bounds-check",
+                    self.spelling(source),
+                    self.spelling(target)
+                ),
+            );
+        }
         Some(target)
     }
 

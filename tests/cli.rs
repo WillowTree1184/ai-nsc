@@ -678,3 +678,16 @@ fixed Main(): integer(4)
     );
     assert!(stderr.contains("different byte sizes"), "{stderr}");
 }
+
+#[test]
+fn compile_time_parameters_are_diagnosed() {
+    let stderr = check_source(
+        "\
+fixed Repeat(# count: integer(4)): integer(4)
+{
+    return count;
+}
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(stderr.contains("compile-time ('#') parameters"), "{stderr}");
+}

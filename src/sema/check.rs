@@ -690,6 +690,10 @@ impl<'a> Sema<'a> {
 
         let mut parameters = Vec::new();
         for (index, parameter) in function.parameters.iter().enumerate() {
+            if parameter.compile_time {
+                self.unsupported(parameter.span, "compile-time ('#') parameters");
+                return None;
+            }
             let Some(parameter_type_node) = parameter.ty else {
                 self.error(parameter.span, "method parameter requires a type");
                 return None;
@@ -1200,6 +1204,10 @@ impl<'a> Sema<'a> {
     ) -> Option<Vec<ParameterInfo>> {
         let mut resolved = Vec::new();
         for (index, parameter) in parameters.iter().enumerate() {
+            if parameter.compile_time {
+                self.unsupported(parameter.span, "compile-time ('#') parameters");
+                return None;
+            }
             let Some(parameter_type_node) = parameter.ty else {
                 self.error(parameter.span, "operator parameters require a type");
                 return None;
@@ -1805,6 +1813,10 @@ impl<'a> Sema<'a> {
     ) -> Option<Vec<ParameterInfo>> {
         let mut parameters = Vec::new();
         for (index, parameter) in function.parameters.iter().enumerate() {
+            if parameter.compile_time {
+                self.unsupported(parameter.span, "compile-time ('#') parameters");
+                return None;
+            }
             let Some(parameter_type_node) = parameter.ty else {
                 self.error(parameter.span, "parameter requires a type");
                 return None;

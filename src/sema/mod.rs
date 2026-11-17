@@ -798,6 +798,7 @@ pub fn analyze(
         instances_by_template: HashMap::new(),
         function_instantiations: HashMap::new(),
         pending_generic_extensions: Vec::new(),
+        initializer_depth: 0,
     };
     sema.run();
     sema.result.error_count = sema.engine.error_count();
@@ -829,6 +830,9 @@ pub(crate) struct Sema<'a> {
     pub(crate) function_instantiations: HashMap<(NodeId, Vec<TypeId>), u32>,
     /// Module-level extensions with generic targets (§3.8.3).
     pub(crate) pending_generic_extensions: Vec<PendingGenericExtension>,
+    /// Nesting depth of storage-initializer expressions; `uninitialized` is only
+    /// legal there (§2.7.12).
+    pub(crate) initializer_depth: u32,
 }
 
 impl<'a> Sema<'a> {

@@ -428,3 +428,17 @@ fixed Main(): integer(4)
     );
     assert!(stderr.contains("class or structure"), "{stderr}");
 }
+
+#[test]
+fn uninitialized_is_rejected_outside_an_initializer() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    local value: integer(4) = 1;
+    value = uninitialized;
+    return value;
+}",
+    );
+    assert!(stderr.contains("storage initial value"), "{stderr}");
+}

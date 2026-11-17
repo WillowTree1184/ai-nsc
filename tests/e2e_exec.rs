@@ -1850,3 +1850,15 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 15);
 }
+
+#[test]
+fn uninitialized_is_a_valid_storage_initial_value() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local buffer: integer(4) = uninitialized;
+    buffer = 7;
+    return buffer;
+}";
+    assert_eq!(run_program(source), 7);
+}

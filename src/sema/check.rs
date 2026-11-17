@@ -2850,17 +2850,21 @@ impl<'a> Sema<'a> {
             let declared_type = item.ty.and_then(|ty| self.resolve_type(ty));
             let ty = match (declared_type, item.init) {
                 (Some(ty), Some(initializer)) => {
+                    self.initializer_depth += 1;
                     let inferred = self.check_expr(initializer, Some(ty));
+                    self.initializer_depth -= 1;
                     if let Some(inferred) = inferred {
                         self.expect_assignable(item.span, inferred, ty);
                     }
                     ty
                 }
                 (Some(ty), None) => ty,
-                (None, Some(initializer)) => match self.check_expr(initializer, None) {
-                    Some(ty) => ty,
-                    None => TypeId::ERROR,
-                },
+                (None, Some(initializer)) => {
+                    self.initializer_depth += 1;
+                    let inferred = self.check_expr(initializer, None);
+                    self.initializer_depth -= 1;
+                    inferred.unwrap_or(TypeId::ERROR)
+                }
                 (None, None) => {
                     self.error(
                         item.span,
@@ -3039,7 +3043,9 @@ impl<'a> Sema<'a> {
             return;
         };
         if let Some(initializer) = declaration.init {
+            self.initializer_depth += 1;
             let inferred = self.check_expr(initializer, Some(ty));
+            self.initializer_depth -= 1;
             if let Some(inferred) = inferred {
                 self.expect_assignable(self.span_of(node), inferred, ty);
             }
@@ -3409,7 +3415,14 @@ impl<'a> Sema<'a> {
                 }
             },
             NodeKind::UninitializedLiteral => match expected {
-                Some(ty) => Some(ty),
+                Some(ty) if self.initializer_depth > 0 => Some(ty),
+                Some(_) => {
+                    self.error(
+                        self.span_of(node),
+                        "'uninitialized' may only be used as a storage initial value",
+                    );
+                    Some(TypeId::ERROR)
+                }
                 None => {
                     self.error(
                         self.span_of(node),

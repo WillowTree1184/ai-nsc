@@ -397,6 +397,11 @@ fn run_clang(ir: &str, output: &Path, compile_only: bool, options: &Options) -> 
     }
     command.arg(format!("-O{}", options.optimization_level));
     command.arg("-o").arg(output);
+    if !compile_only {
+        // Generated code may call libm helpers (for example float remainder
+        // used by out-of-range float-to-integer wrapping, §3.2).
+        command.arg("-lm");
+    }
     let result = command.output();
     let _ = std::fs::remove_file(&ir_path);
     let output_result = result.map_err(|error| format!("cannot run '{clang}': {error}"))?;

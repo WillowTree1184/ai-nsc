@@ -368,6 +368,7 @@ impl<'a> Sema<'a> {
             interfaces: Vec::new(),
             interface_dispatch: Vec::new(),
             sealed: false,
+            is_abstract: false,
             vtable: Vec::new(),
             vtable_ready: false,
             base: None,

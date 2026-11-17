@@ -211,6 +211,8 @@ pub struct TypeDef {
     pub interface_dispatch: Vec<(TypeId, Vec<u32>)>,
     /// Whether the class is sealed (§9.11).
     pub sealed: bool,
+    /// Whether the class is abstract and therefore cannot be instantiated (§9.10).
+    pub is_abstract: bool,
     /// Virtual dispatch table: method id per slot (classes only).
     pub vtable: Vec<u32>,
     /// Whether the vtable has been computed.
@@ -298,6 +300,15 @@ pub struct FunctionInfo {
     pub locals: Vec<LocalInfo>,
     /// Span of the declaration, for diagnostics.
     pub span: Span,
+}
+
+impl FunctionInfo {
+    /// Whether this function is a generic template that is only lowered through
+    /// its instantiations (§10.1).
+    #[must_use]
+    pub fn is_template(&self) -> bool {
+        !self.generic_parameters.is_empty()
+    }
 }
 
 /// The lowered body of a function or method.
@@ -562,6 +573,23 @@ pub enum MatchPatternInfo {
         /// Local receiving the payload, if the pattern binds one.
         binding: Option<LocalId>,
     },
+    /// A value-equality pattern lowered through a user-defined `==` (§5.9.6).
+    Operator {
+        /// Operator implementation.
+        method: u32,
+    },
+    /// A `!=` pattern lowered through a user-defined `==` (§5.9.6).
+    DerivedNotEqual {
+        /// `==` implementation.
+        method: u32,
+    },
+    /// A `<=`/`>=` pattern lowered through user-defined `<`/`>` and `==`.
+    DerivedComparison {
+        /// `<` or `>` implementation.
+        ordering: u32,
+        /// `==` implementation.
+        equality: u32,
+    },
     /// `is name: Class` pattern over a class hierarchy.
     IsClass {
         /// Target class type.
@@ -635,13 +663,74 @@ impl SemaResult {
         &self.type_defs[id as usize]
     }
 
-    /// Returns the canonical spelling of a type, using declared names when
-    /// available.
+    /// Returns the canonical spelling of a type (§13.2), using declared names
+    /// at every nesting depth.
     #[must_use]
     pub fn spelling(&self, ty: TypeId) -> String {
+        let mut out = String::new();
+        self.write_spelling(ty, &mut out);
+        out
+    }
+
+    fn write_spelling(&self, ty: TypeId, out: &mut String) {
+        use std::fmt::Write as _;
         match self.types.get(ty) {
-            Type::Named(index) => self.type_defs[*index as usize].qualified_name.clone(),
-            _ => self.types.spelling(ty),
+            Type::Named(index) => {
+                out.push_str(&self.type_defs[*index as usize].qualified_name);
+            }
+            Type::Array {
+                dimensions,
+                element,
+            } => {
+                out.push_str("array(");
+                for (position, dimension) in dimensions.iter().enumerate() {
+                    if position > 0 {
+                        out.push(',');
+                    }
+                    let _ = write!(out, "{dimension}");
+                }
+                out.push(')');
+                self.write_spelling(*element, out);
+            }
+            Type::Pointer { target } => {
+                out.push_str("pointer");
+                if let Some(target) = target {
+                    self.write_spelling(*target, out);
+                }
+            }
+            Type::Function {
+                parameters,
+                wildcard,
+                calling_convention,
+                return_type,
+            } => {
+                out.push_str("function(");
+                for (position, parameter) in parameters.iter().enumerate() {
+                    if position > 0 {
+                        out.push(',');
+                    }
+                    self.write_spelling(*parameter, out);
+                }
+                if *wildcard {
+                    out.push_str(",wildcard");
+                }
+                if let Some(convention) = calling_convention {
+                    let _ = write!(out, ";{convention}");
+                }
+                out.push(')');
+                if let Some(return_type) = return_type {
+                    self.write_spelling(*return_type, out);
+                }
+            }
+            Type::Error | Type::Void => out.push_str("void"),
+            Type::Boolean => out.push_str("boolean"),
+            Type::Integer { signed, bytes } => {
+                let name = if *signed { "integer" } else { "cardinal" };
+                let _ = write!(out, "{name}({bytes})");
+            }
+            Type::Float { bytes } => {
+                let _ = write!(out, "float({bytes})");
+            }
         }
     }
 }
@@ -822,6 +911,24 @@ impl<'a> Sema<'a> {
 
     pub(crate) fn declare_functions(&mut self, name: String, function: u32) {
         let scope = self.current_scope();
+        // Two functions with the same name and the same parameter types are an
+        // invalid overload set (§8.5).
+        let parameters = self.result.functions[function as usize].parameters.clone();
+        if let Some(Symbol::Functions(list)) = self.scopes[scope].symbols.get(&name) {
+            let duplicate = list.iter().any(|existing| {
+                let existing_parameters =
+                    self.result.functions[*existing as usize].parameters.clone();
+                existing_parameters.len() == parameters.len()
+                    && existing_parameters
+                        .iter()
+                        .zip(parameters.iter())
+                        .all(|(left, right)| left.ty == right.ty)
+            });
+            if duplicate {
+                let span = self.result.functions[function as usize].span;
+                self.error(span, format!("duplicate function declaration '{name}'"));
+            }
+        }
         match self.scopes[scope].symbols.get_mut(&name) {
             Some(Symbol::Functions(list)) => list.push(function),
             Some(_) => {
@@ -873,6 +980,7 @@ impl<'a> Sema<'a> {
         // instances created there still need layouts and virtual dispatch.
         self.finalize_variant_union_layouts();
         self.build_vtables();
+        self.check_entry_point();
     }
 
     /// Declares the Built-In Library exception class hierarchy (§15.2):
@@ -892,7 +1000,9 @@ impl<'a> Sema<'a> {
                 name: name.to_string(),
                 qualified_name: name.to_string(),
                 kind: TypeDefKind::Class,
-                node: NodeId::default(),
+                // Synthetic declaration: must not collide with a real AST node
+                // (which `type_id_for_node` matches on).
+                node: NodeId::MAX,
                 generic_parameters: Vec::new(),
                 generic_arguments: Vec::new(),
                 template: None,
@@ -906,6 +1016,7 @@ impl<'a> Sema<'a> {
                 interfaces: Vec::new(),
                 interface_dispatch: Vec::new(),
                 sealed: false,
+                is_abstract: false,
                 vtable: Vec::new(),
                 vtable_ready: true,
                 base: None,
@@ -931,6 +1042,24 @@ impl<'a> Sema<'a> {
                     if let Type::Named(index) = self.result.types.get(type_id) {
                         self.result.type_defs[*index as usize].base = Some(exception);
                     }
+                }
+            }
+        }
+    }
+
+    /// An executable program declares exactly one `Main` function (§14.1).
+    fn check_entry_point(&mut self) {
+        let mut entry = None;
+        for index in 0..self.result.functions.len() {
+            let function = &self.result.functions[index];
+            if function.is_template() || function.method_of.is_some() || function.name != "Main" {
+                continue;
+            }
+            match entry {
+                None => entry = Some(index),
+                Some(_) => {
+                    let span = function.span;
+                    self.error(span, "a program must declare exactly one 'Main' function");
                 }
             }
         }
@@ -1025,6 +1154,7 @@ impl<'a> Sema<'a> {
             interfaces: Vec::new(),
             interface_dispatch: Vec::new(),
             sealed: false,
+            is_abstract: false,
             vtable: Vec::new(),
             vtable_ready: false,
             base: None,

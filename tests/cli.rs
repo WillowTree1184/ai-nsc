@@ -226,3 +226,52 @@ fixed Main(): integer(4)
     );
     assert!(stderr.contains("expects 1 type argument(s)"), "{stderr}");
 }
+
+#[test]
+fn sealed_base_class_is_rejected_without_fields() {
+    let stderr = check_source(
+        "\
+sealed class Root { }
+class Child: Root { }
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(stderr.contains("sealed"), "{stderr}");
+}
+
+#[test]
+fn abstract_class_cannot_be_instantiated() {
+    let stderr = check_source(
+        "\
+abstract class Service { }
+fixed Main(): integer(4)
+{
+    local service: Service = Service();
+    return 0;
+}",
+    );
+    assert!(stderr.contains("abstract"), "{stderr}");
+}
+
+#[test]
+fn duplicate_entry_point_is_reported() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4) { return 1; }
+fixed Main(value: integer(4)): integer(4) { return 2; }",
+    );
+    assert!(stderr.contains("exactly one 'Main'"), "{stderr}");
+}
+
+#[test]
+fn duplicate_field_is_reported() {
+    let stderr = check_source(
+        "\
+structure Point
+{
+    public X: integer(4);
+    public X: integer(4);
+}
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(stderr.contains("duplicate field"), "{stderr}");
+}

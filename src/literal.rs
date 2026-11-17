@@ -285,7 +285,20 @@ pub fn decode_string(raw: &str) -> Result<DecodedString, String> {
             '\\' => {
                 let (decoded, consumed) = decode_escape(&characters[index + 1..], false, encoding)?;
                 for value in decoded {
-                    encoding.encode_character(value, &mut bytes)?;
+                    match value {
+                        EscapeOutput::Scalar(character) => {
+                            encoding.encode_character(character, &mut bytes)?;
+                        }
+                        EscapeOutput::Byte(byte) => {
+                            if encoding.string_unit_size() == 1 {
+                                // Byte-oriented encodings store the byte verbatim.
+                                bytes.push(byte);
+                            } else {
+                                // Wider encodings store the code point instead.
+                                encoding.encode_character(char::from(byte), &mut bytes)?;
+                            }
+                        }
+                    }
                 }
                 index += 1 + consumed;
             }
@@ -333,7 +346,7 @@ fn decode_character_content(content: &str, encoding: Option<Encoding>) -> Result
             decode_escape(&characters[1..], true, encoding.unwrap_or(Encoding::Utf8))?;
         (decoded, consumed + 1)
     } else {
-        (vec![characters[0]], 1)
+        (vec![EscapeOutput::Scalar(characters[0])], 1)
     };
     if consumed != characters.len() {
         return Err("character literal must contain exactly one character".to_string());
@@ -341,16 +354,29 @@ fn decode_character_content(content: &str, encoding: Option<Encoding>) -> Result
     if decoded.len() != 1 {
         return Err("escape sequence in a character literal must denote one character".to_string());
     }
-    Ok(decoded[0])
+    let character = match decoded[0] {
+        EscapeOutput::Scalar(character) => character,
+        EscapeOutput::Byte(byte) => char::from(byte),
+    };
+    Ok(character)
 }
 
 /// Decodes one escape sequence. Returns the produced characters and how many
 /// input characters were consumed (after the backslash).
+/// One decoded escape sequence: a scalar value or a raw byte (§2.7.7).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum EscapeOutput {
+    /// A Unicode scalar value (`\n`, `\u1234`, ...).
+    Scalar(char),
+    /// A raw byte (`\x` _hh_).
+    Byte(u8),
+}
+
 fn decode_escape(
     rest: &[char],
     in_character: bool,
     encoding: Encoding,
-) -> Result<(Vec<char>, usize), String> {
+) -> Result<(Vec<EscapeOutput>, usize), String> {
     let Some(&marker) = rest.first() else {
         return Err("unterminated escape sequence".to_string());
     };
@@ -369,7 +395,7 @@ fn decode_escape(
         _ => None,
     };
     if let Some(character) = simple {
-        return Ok((vec![character], 1));
+        return Ok((vec![EscapeOutput::Scalar(character)], 1));
     }
 
     let digits = match marker {
@@ -390,24 +416,23 @@ fn decode_escape(
     }
 
     if marker == 'x' {
-        // A byte escape: only meaningful for byte-oriented encodings when used
-        // in a string, and as a scalar value in a character literal.
+        // `\x` _hh_ is a raw byte, not a Unicode scalar value (§2.7.7).
         let byte =
             u8::try_from(value).map_err(|_| "byte escape sequence out of range".to_string())?;
         if in_character {
             let character =
                 char::from_u32(u32::from(byte)).ok_or_else(|| "invalid character".to_string())?;
-            return Ok((vec![character], 1 + digits));
+            if encoding == Encoding::Ascii && byte > 0x7F {
+                return Err("byte is outside the ASCII range".to_string());
+            }
+            return Ok((vec![EscapeOutput::Scalar(character)], 1 + digits));
         }
-        if encoding == Encoding::Ascii && byte > 0x7F {
-            return Err("byte is outside the ASCII range".to_string());
-        }
-        return Ok((vec![char::from(byte)], 1 + digits));
+        return Ok((vec![EscapeOutput::Byte(byte)], 1 + digits));
     }
 
     let character = char::from_u32(value)
         .ok_or_else(|| "escape sequence denotes an invalid Unicode scalar value".to_string())?;
-    Ok((vec![character], 1 + digits))
+    Ok((vec![EscapeOutput::Scalar(character)], 1 + digits))
 }
 
 #[cfg(test)]

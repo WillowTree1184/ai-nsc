@@ -212,12 +212,7 @@ impl<'a> Sema<'a> {
     }
 
     pub(crate) fn spelling(&self, ty: TypeId) -> String {
-        match self.result.types.get(ty) {
-            Type::Named(index) => self.result.type_defs[*index as usize]
-                .qualified_name
-                .clone(),
-            _ => self.result.types.spelling(ty),
-        }
+        self.result.spelling(ty)
     }
 
     pub(crate) fn size_align(&self, ty: TypeId) -> (u64, u64) {
@@ -303,9 +298,14 @@ impl<'a> Sema<'a> {
         // Register the base and sealed flags before processing members, so that
         // extension methods can validate `override` against the base chain.
         {
+            let abstract_class = match self.node_kind(node) {
+                NodeKind::Class(declaration) => declaration.modifiers.abstract_,
+                _ => false,
+            };
             let definition = &mut self.result.type_defs[type_index as usize];
             definition.base = base_type;
             definition.sealed = sealed_class;
+            definition.is_abstract = abstract_class;
             definition.interfaces = interfaces.clone();
         }
 
@@ -352,6 +352,12 @@ impl<'a> Sema<'a> {
                     if alignment != 0 {
                         offset = round_up(offset, alignment);
                         max_align = max_align.max(alignment);
+                    }
+                    if fields.iter().any(|existing| existing.name == field.name) {
+                        self.error(
+                            self.span_of(*member),
+                            format!("duplicate field '{}'", field.name),
+                        );
                     }
                     fields.push(FieldInfo {
                         name: field.name.clone(),
@@ -1553,12 +1559,19 @@ impl<'a> Sema<'a> {
         let Some(type_id) = self.type_id_for_node(node) else {
             return;
         };
-        let mut states = Vec::new();
+        let mut states: Vec<VariantStateInfo> = Vec::new();
         for member in &declaration.members {
             let payload = match member.payload {
                 Some(payload_node) => self.resolve_type(payload_node),
                 None => None,
             };
+            if states.iter().any(|state| state.name == member.name) {
+                self.error(
+                    member.span,
+                    format!("duplicate variant state '{}'", member.name),
+                );
+                continue;
+            }
             states.push(VariantStateInfo {
                 name: member.name.clone(),
                 payload,
@@ -1579,11 +1592,18 @@ impl<'a> Sema<'a> {
         let Some(type_id) = self.type_id_for_node(node) else {
             return;
         };
-        let mut members = Vec::new();
+        let mut members: Vec<UnionMemberInfo> = Vec::new();
         for member in &declaration.members {
             let Some(ty) = self.resolve_type(member.ty) else {
                 continue;
             };
+            if members.iter().any(|existing| existing.name == member.name) {
+                self.error(
+                    self.span_of(member.ty),
+                    format!("duplicate union member '{}'", member.name),
+                );
+                continue;
+            }
             members.push(UnionMemberInfo {
                 name: member.name.clone(),
                 ty,
@@ -1697,7 +1717,7 @@ impl<'a> Sema<'a> {
             }
         };
 
-        let mut members = Vec::new();
+        let mut members: Vec<(String, i128)> = Vec::new();
         let mut next_value: i128 = 0;
         for member in &declaration.members {
             let value = match member.value {
@@ -1712,6 +1732,13 @@ impl<'a> Sema<'a> {
                 self.error(
                     member.span,
                     "enumeration member value does not fit the underlying type",
+                );
+                continue;
+            }
+            if members.iter().any(|(name, _)| *name == member.name) {
+                self.error(
+                    member.span,
+                    format!("duplicate enumeration member '{}'", member.name),
                 );
                 continue;
             }
@@ -2373,6 +2400,14 @@ impl<'a> Sema<'a> {
         )
     }
 
+    /// Whether `==` is defined for `ty` without a user-defined operator.
+    fn has_builtin_equality(&self, ty: TypeId) -> bool {
+        self.is_numeric(ty)
+            || self.is_boolean(ty)
+            || matches!(self.type_of(ty), Type::Pointer { .. })
+            || matches!(self.type_of(ty), Type::Named(index) if self.result.type_defs[index as usize].underlying.is_some())
+    }
+
     fn is_boolean(&self, ty: TypeId) -> bool {
         matches!(self.result.types.get(ty), Type::Boolean)
     }
@@ -2994,24 +3029,97 @@ impl<'a> Sema<'a> {
                         if let Some(value_type) = value_type {
                             let ty = self.check_expr(*expression, Some(value_type));
                             if let Some(ty) = ty {
-                                self.expect_assignable(self.span_of(*expression), ty, value_type);
+                                // Value equality patterns are the equality
+                                // expression of the pattern expression (§5.9.6),
+                                // so a user-defined `==` overload is used when
+                                // the type has no built-in equality.
+                                if self.has_builtin_equality(value_type) {
+                                    self.expect_assignable(
+                                        self.span_of(*expression),
+                                        ty,
+                                        value_type,
+                                    );
+                                } else {
+                                    match self.find_operator(value_type, ty, OperatorKind::Equal) {
+                                        Some(method) => {
+                                            self.result.match_patterns.insert(
+                                                (node, case_index as u32),
+                                                MatchPatternInfo::Operator { method },
+                                            );
+                                        }
+                                        None => self.error(
+                                            self.span_of(*expression),
+                                            "no '==' overload matches the match pattern",
+                                        ),
+                                    }
+                                }
                             }
                         } else {
                             self.check_expr(*expression, None);
                         }
                     }
-                    Pattern::Comparison { value, .. } => {
+                    Pattern::Comparison {
+                        operator, value, ..
+                    } => {
                         let ty = self.check_expr(*value, value_type);
-                        if let Some(value_type) = value_type {
-                            if !self.is_numeric(value_type) {
-                                self.error(
-                                    self.span_of(*value),
-                                    "comparison patterns require a numeric value type",
-                                );
+                        let op = match operator {
+                            crate::lexer::TokenKind::NotEquals => Some(BinaryOp::NotEqual),
+                            crate::lexer::TokenKind::Greater => Some(BinaryOp::Greater),
+                            crate::lexer::TokenKind::Less => Some(BinaryOp::Less),
+                            crate::lexer::TokenKind::GreaterEquals => Some(BinaryOp::GreaterEqual),
+                            crate::lexer::TokenKind::LessEquals => Some(BinaryOp::LessEqual),
+                            _ => None,
+                        };
+                        let Some(value_type) = value_type else { return };
+                        let Some(ty) = ty else { return };
+                        let comparison = match op {
+                            Some(BinaryOp::NotEqual) => self
+                                .find_operator(value_type, ty, OperatorKind::Equal)
+                                .map(|method| MatchPatternInfo::DerivedNotEqual { method }),
+                            Some(BinaryOp::Greater) => self
+                                .find_operator(value_type, ty, OperatorKind::Greater)
+                                .map(|method| MatchPatternInfo::Operator { method }),
+                            Some(BinaryOp::Less) => self
+                                .find_operator(value_type, ty, OperatorKind::Less)
+                                .map(|method| MatchPatternInfo::Operator { method }),
+                            Some(BinaryOp::GreaterEqual) => self
+                                .find_operator(value_type, ty, OperatorKind::Greater)
+                                .and_then(|ordering| {
+                                    self.find_operator(value_type, ty, OperatorKind::Equal).map(
+                                        |equality| MatchPatternInfo::DerivedComparison {
+                                            ordering,
+                                            equality,
+                                        },
+                                    )
+                                }),
+                            Some(BinaryOp::LessEqual) => self
+                                .find_operator(value_type, ty, OperatorKind::Less)
+                                .and_then(|ordering| {
+                                    self.find_operator(value_type, ty, OperatorKind::Equal).map(
+                                        |equality| MatchPatternInfo::DerivedComparison {
+                                            ordering,
+                                            equality,
+                                        },
+                                    )
+                                }),
+                            _ => None,
+                        };
+                        match comparison {
+                            Some(info) => {
+                                self.result
+                                    .match_patterns
+                                    .insert((node, case_index as u32), info);
                             }
-                        }
-                        if let (Some(ty), Some(value_type)) = (ty, value_type) {
-                            self.expect_assignable(self.span_of(*value), ty, value_type);
+                            None => {
+                                if self.is_numeric(value_type) {
+                                    self.expect_assignable(self.span_of(*value), ty, value_type);
+                                } else {
+                                    self.error(
+                                        self.span_of(*value),
+                                        "no comparison overload matches the match pattern",
+                                    );
+                                }
+                            }
                         }
                     }
                     Pattern::Is { name, target } => {
@@ -4742,6 +4850,14 @@ impl<'a> Sema<'a> {
                 self.unsupported(self.span_of(node), "construction of this type");
                 return None;
             }
+        }
+        if self.result.type_defs[index as usize].is_abstract {
+            let class_name = self.result.type_defs[index as usize].qualified_name.clone();
+            self.error(
+                self.span_of(node),
+                format!("cannot instantiate the abstract class '{class_name}'"),
+            );
+            return None;
         }
         let candidates = self.collect_methods(type_id, "Construct");
         if candidates.is_empty() {

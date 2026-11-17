@@ -1041,7 +1041,11 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             return Ok(global.as_pointer_value());
         }
         let index = self.type_key_globals.len();
-        let key_type = self.context.i8_type().array_type(1);
+        // Keys are laid out like type information so that catch matching can walk
+        // them safely: every slot is null, so a class or interface walk stops
+        // immediately instead of reading garbage (§5.10.4).
+        let pointer_type = self.context.ptr_type(AddressSpace::default());
+        let key_type = pointer_type.array_type(4);
         let global = self
             .module
             .add_global(key_type, None, &format!("nsc.typekey.{index}"));
@@ -2149,6 +2153,54 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                             .map_err(|error| format!("cannot compare state: {error}"))?;
                         (condition, pattern_info)
                     }
+                    Some(MatchPatternInfo::Operator { method })
+                    | Some(MatchPatternInfo::DerivedNotEqual { method }) => {
+                        let expression =
+                            match &case.pattern {
+                                Some(Pattern::Equal(expression)) => *expression,
+                                Some(Pattern::Comparison { value, .. }) => *value,
+                                _ => return Err(
+                                    "operator pattern requires an equality or comparison pattern"
+                                        .to_string(),
+                                ),
+                            };
+                        let value = self
+                            .builder
+                            .build_load(llvm_type, value_slot, "match_load")
+                            .map_err(|error| format!("cannot load match value: {error}"))?;
+                        let pattern = self.gen_expr(expression)?;
+                        let result = self.gen_operator_call(method, vec![value, pattern])?;
+                        let negated =
+                            matches!(pattern_info, Some(MatchPatternInfo::DerivedNotEqual { .. }));
+                        let result = if negated {
+                            self.negate_boolean(result)?
+                        } else {
+                            result
+                        };
+                        (result.into_int_value(), None)
+                    }
+                    Some(MatchPatternInfo::DerivedComparison { ordering, equality }) => {
+                        let expression = match &case.pattern {
+                            Some(Pattern::Comparison { value, .. }) => *value,
+                            _ => {
+                                return Err(
+                                    "derived comparison pattern requires a comparison pattern"
+                                        .to_string(),
+                                )
+                            }
+                        };
+                        let value = self
+                            .builder
+                            .build_load(llvm_type, value_slot, "match_load")
+                            .map_err(|error| format!("cannot load match value: {error}"))?;
+                        let pattern = self.gen_expr(expression)?;
+                        let ordering_result =
+                            self.gen_operator_call(ordering, vec![value, pattern])?;
+                        let equality_result =
+                            self.gen_operator_call(equality, vec![value, pattern])?;
+                        let combined = self.or_booleans(ordering_result, equality_result)?;
+                        (combined.into_int_value(), None)
+                    }
                     Some(MatchPatternInfo::IsClass { type_id, .. }) => {
                         let pointer_type = self.context.ptr_type(AddressSpace::default());
                         let instance = self
@@ -2170,7 +2222,13 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                             }
                             Some(Pattern::Equal(expression)) => {
                                 let pattern = self.gen_expr(*expression)?;
-                                self.build_comparison(BinaryOp::Equal, value, pattern, value_type)?
+                                self.gen_pattern_comparison(
+                                    BinaryOp::Equal,
+                                    value,
+                                    pattern,
+                                    value_type,
+                                    *expression,
+                                )?
                             }
                             Some(Pattern::Comparison {
                                 operator,
@@ -2190,7 +2248,13 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                                         return Err("unsupported match comparison".to_string());
                                     }
                                 };
-                                self.build_comparison(op, value, pattern, value_type)?
+                                self.gen_pattern_comparison(
+                                    op,
+                                    value,
+                                    pattern,
+                                    value_type,
+                                    *pattern_value,
+                                )?
                             }
                             Some(Pattern::Is { .. }) => {
                                 return Err("unresolved is pattern".to_string());
@@ -2228,7 +2292,16 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             };
 
             self.builder.position_at_end(case_block);
+            // A `match` is a logical control flow statement (§5.9.1): `break`
+            // leaves the match and `continue` skips the rest of the case and
+            // retries the following cases (§5.9.6).
+            self.loops.push(LoopInfo {
+                label: statement.label.clone(),
+                break_block: end_block,
+                continue_block: next_block,
+            });
             self.gen_block_contents(case.body)?;
+            self.loops.pop();
             if self
                 .builder
                 .get_insert_block()
@@ -2253,6 +2326,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         value_slot: PointerValue<'ctx>,
     ) -> Result<(), String> {
         match binding {
+            MatchPatternInfo::Operator { .. }
+            | MatchPatternInfo::DerivedNotEqual { .. }
+            | MatchPatternInfo::DerivedComparison { .. } => Ok(()),
             MatchPatternInfo::IsVariant {
                 type_id,
                 state,
@@ -2523,6 +2599,22 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .build_load(pointer_type, table_slot, "table")
             .map_err(|error| format!("cannot load interface table: {error}"))?
             .into_pointer_value();
+        let table_is_null = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                table,
+                pointer_type.const_zero(),
+                "iface_table_null",
+            )
+            .map_err(|error| format!("cannot compare interface table: {error}"))?;
+        let table_present = self
+            .context
+            .append_basic_block(function, "iface_table_present");
+        self.builder
+            .build_conditional_branch(table_is_null, table_next_type, table_present)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(table_present);
         let entry = self.load_pointer_at(table, 0)?.into_pointer_value();
         let is_null = self
             .builder
@@ -2804,7 +2896,11 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             }
             Some(Resolution::EnumMember { type_id, index }) => {
                 let underlying = self.enum_underlying(type_id)?;
-                let value = self.sema.type_defs[type_id.0 as usize].enum_members[index as usize].1;
+                let Type::Named(type_index) = self.sema.types.get(type_id) else {
+                    return Err("enumeration member requires an enumeration type".to_string());
+                };
+                let value =
+                    self.sema.type_defs[*type_index as usize].enum_members[index as usize].1;
                 let llvm_type = self.llvm_type(underlying)?;
                 Ok(llvm_type
                     .into_int_type()
@@ -3124,6 +3220,24 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     self.struct_or_union_address(access.base, self.type_of(access.base))?
                 };
                 self.struct_field_pointer(base_pointer, type_id, index)
+            }
+            // An array cast to a pointer refers to the array's own storage and a
+            // pointer cast to an array refers to the pointee (§3.6.1), so both
+            // stay addressable instead of producing a copy.
+            NodeKind::Cast(cast) => {
+                let source = self.type_of(cast.value);
+                let target = self.type_of(node);
+                match (
+                    self.sema.types.get(source).clone(),
+                    self.sema.types.get(target).clone(),
+                ) {
+                    (Type::Array { .. }, Type::Pointer { .. }) => self.gen_lvalue(cast.value),
+                    (Type::Pointer { .. }, Type::Array { .. }) => {
+                        let pointer = self.gen_expr(cast.value)?.into_pointer_value();
+                        Ok(Some(pointer))
+                    }
+                    _ => Ok(None),
+                }
             }
             NodeKind::PointerMemberAccess(access) => {
                 let Some(Resolution::Field { type_id, index }) =
@@ -3531,7 +3645,10 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     None => Ok(self.context.i8_type().const_zero().into()),
                 }
             }
-            _ => Err("call target is not a direct function yet".to_string()),
+            _ => Err(format!(
+                "call target is not a direct function yet: node {node} span {:?}",
+                self.ast.node(node).span
+            )),
         }
     }
 
@@ -3948,9 +4065,18 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         node: NodeId,
         cast: &CastExpr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
-        let value = self.gen_expr(cast.value)?;
         let source_type = self.type_of(cast.value);
         let target_type = self.type_of(node);
+        // An array converts to a pointer to its first element without copying
+        // (§3.6.1), so the address of the array itself is the conversion result.
+        if matches!(self.sema.types.get(source_type), Type::Array { .. })
+            && matches!(self.sema.types.get(target_type), Type::Pointer { .. })
+        {
+            if let Some(address) = self.gen_lvalue(cast.value)? {
+                return Ok(address.into());
+            }
+        }
+        let value = self.gen_expr(cast.value)?;
         self.convert(value, source_type, target_type)
     }
 
@@ -4046,15 +4172,67 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .map_err(|error| format!("cannot convert: {error}"))?
                     .into())
             }
-            (Type::Float { .. }, Type::Integer { signed, .. }) => {
+            (Type::Float { .. }, Type::Integer { signed, bytes }) => {
+                // Out-of-range values must wrap (§3.2), so reduce the value
+                // modulo 2^bits before the (undefined-behaviour) float-to-int
+                // conversion.
                 let from = value.into_float_value();
-                let target_int = target_llvm.into_int_type();
-                let result = if *signed {
-                    self.builder
-                        .build_float_to_signed_int(from, target_int, "cast")
+                let f64_type = self.context.f64_type();
+                let wide = if from.get_type() == f64_type {
+                    from
                 } else {
                     self.builder
-                        .build_float_to_unsigned_int(from, target_int, "cast")
+                        .build_float_ext(from, f64_type, "cast_f64")
+                        .map_err(|error| format!("cannot convert: {error}"))?
+                };
+                let bits = u32::from(*bytes) * 8;
+                let modulus = f64_type.const_float((2.0f64).powi(bits as i32));
+                let reduced = self
+                    .builder
+                    .build_float_rem(wide, modulus, "cast_mod")
+                    .map_err(|error| format!("cannot convert: {error}"))?;
+                // Move negative remainders into [0, 2^bits).
+                let is_negative = self
+                    .builder
+                    .build_float_compare(
+                        FloatPredicate::OLT,
+                        reduced,
+                        f64_type.const_zero(),
+                        "cast_neg",
+                    )
+                    .map_err(|error| format!("cannot convert: {error}"))?;
+                let shifted = self
+                    .builder
+                    .build_float_add(reduced, modulus, "cast_shift")
+                    .map_err(|error| format!("cannot convert: {error}"))?;
+                let wrapped = self
+                    .builder
+                    .build_select(is_negative, shifted, reduced, "cast_wrap")
+                    .map_err(|error| format!("cannot convert: {error}"))?
+                    .into_float_value();
+                let target_int = target_llvm.into_int_type();
+                let result = if *signed {
+                    // Reinterpret the unsigned remainder as a two's-complement
+                    // value of the target width.
+                    let half = f64_type.const_float((2.0f64).powi(bits.saturating_sub(1) as i32));
+                    let above_half = self
+                        .builder
+                        .build_float_compare(FloatPredicate::OGE, wrapped, half, "cast_signed")
+                        .map_err(|error| format!("cannot convert: {error}"))?;
+                    let signed_value = self
+                        .builder
+                        .build_float_sub(wrapped, modulus, "cast_twos")
+                        .map_err(|error| format!("cannot convert: {error}"))?;
+                    let chosen = self
+                        .builder
+                        .build_select(above_half, signed_value, wrapped, "cast_signed_value")
+                        .map_err(|error| format!("cannot convert: {error}"))?
+                        .into_float_value();
+                    self.builder
+                        .build_float_to_signed_int(chosen, target_int, "cast")
+                } else {
+                    self.builder
+                        .build_float_to_unsigned_int(wrapped, target_int, "cast")
                 };
                 Ok(result
                     .map_err(|error| format!("cannot convert: {error}"))?
@@ -4079,7 +4257,37 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .build_load(array_type, value.into_pointer_value(), "array_cast")
                     .map_err(|error| format!("cannot convert pointer: {error}"))
             }
-            (Type::Named(_), Type::Integer { .. }) => Ok(value),
+            // Enumerations convert explicitly to and from integer types through
+            // their underlying type (§3.7.4).
+            (Type::Named(index), Type::Integer { .. }) => {
+                let underlying = self.sema.type_defs[*index as usize]
+                    .underlying
+                    .ok_or_else(|| "only enumerations can be cast to integers".to_string())?;
+                self.convert(value, underlying, target)
+            }
+            (Type::Integer { .. }, Type::Named(index)) => {
+                let underlying = self.sema.type_defs[*index as usize]
+                    .underlying
+                    .ok_or_else(|| "only enumerations can be cast from integers".to_string())?;
+                self.convert(value, source, underlying)
+            }
+            // Class and interface values are references (§3.4): converting
+            // between them reuses the reference, which sema has already checked.
+            (Type::Named(left), Type::Named(right)) => {
+                let left_kind = self.sema.type_defs[*left as usize].kind;
+                let right_kind = self.sema.type_defs[*right as usize].kind;
+                if matches!(left_kind, TypeDefKind::Class | TypeDefKind::Interface)
+                    && matches!(right_kind, TypeDefKind::Class | TypeDefKind::Interface)
+                {
+                    Ok(value)
+                } else {
+                    Err(format!(
+                        "unsupported cast from '{}' to '{}'",
+                        self.sema.spelling(source),
+                        self.sema.spelling(target)
+                    ))
+                }
+            }
             _ => Err(format!(
                 "unsupported cast from '{}' to '{}'",
                 self.sema.spelling(source),
@@ -4431,6 +4639,37 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             )
             .map_err(|error| format!("cannot convert boolean: {error}"))?
             .into())
+    }
+
+    /// Lowers one value-equality or comparison match pattern (§5.9.6): a
+    /// user-defined operator when sema resolved one, built-in comparison
+    /// otherwise.
+    fn gen_pattern_comparison(
+        &mut self,
+        op: BinaryOp,
+        left: BasicValueEnum<'ctx>,
+        right: BasicValueEnum<'ctx>,
+        value_type: TypeId,
+        pattern_node: NodeId,
+    ) -> Result<IntValue<'ctx>, String> {
+        match self.sema.resolutions[pattern_node as usize].clone() {
+            Some(Resolution::Operator { method }) => {
+                let result = self.gen_operator_call(method, vec![left, right])?;
+                Ok(result.into_int_value())
+            }
+            Some(Resolution::DerivedNotEqual { method }) => {
+                let result = self.gen_operator_call(method, vec![left, right])?;
+                let negated = self.negate_boolean(result)?;
+                Ok(negated.into_int_value())
+            }
+            Some(Resolution::DerivedComparison { ordering, equality }) => {
+                let ordering_result = self.gen_operator_call(ordering, vec![left, right])?;
+                let equality_result = self.gen_operator_call(equality, vec![left, right])?;
+                let combined = self.or_booleans(ordering_result, equality_result)?;
+                Ok(combined.into_int_value())
+            }
+            _ => self.build_comparison(op, left, right, value_type),
+        }
     }
 
     fn build_comparison(

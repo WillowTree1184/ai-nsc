@@ -1427,3 +1427,211 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 5);
 }
+
+// ----------------------------------------------------------------------
+// Defect regressions (see docs/AUDIT.md)
+// ----------------------------------------------------------------------
+
+#[test]
+fn enumeration_values_and_casts_round_trip() {
+    let source = "\
+enumeration Status: cardinal(2) { Idle; Running; Done = 7; }
+
+fixed ReturnShort(): cardinal(2)
+{
+    return Status.Running;
+}
+
+fixed Main(): integer(4)
+{
+    local state: Status = Status.Done;
+    local raw: cardinal(2) = state;
+    local back: Status = Cast<Status>(raw);
+    return Cast<integer(4)>(ReturnShort())
+        + Cast<integer(4)>(Status.Idle)
+        + Cast<integer(4)>(back);
+}";
+    // Running = 1, Idle = 0, back = Done = 7.
+    assert_eq!(run_program(source), 8);
+}
+
+#[test]
+fn match_break_and_continue_target_the_match() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local result: integer(4) = 0;
+    for i: integer(4) in 1..4
+    {
+        match i
+        {
+            case 2 { continue; }
+            case 3 { break; }
+            case wildcard { result += i; }
+        }
+        result += 10;
+    }
+    return result;
+}";
+    // continue retries the following cases; break leaves the match, not the for.
+    assert_eq!(run_program(source), 47);
+}
+
+#[test]
+fn named_match_label_continues_to_the_next_case() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local result: integer(4) = 0;
+    match 1 : Pick
+    {
+        case 1 { result += 1; continue Pick; }
+        case 2 { result += 2; }
+        case wildcard { result += 4; }
+    }
+    return result;
+}";
+    assert_eq!(run_program(source), 5);
+}
+
+#[test]
+fn match_patterns_use_user_defined_operators() {
+    let source = "\
+structure Vec2
+{
+    public X: integer(4);
+    public Y: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Vec2, x: integer(4), y: integer(4))
+        {
+            this.X = x;
+            this.Y = y;
+        }
+
+        operator ==(left: Vec2, right: Vec2): boolean { return left.X == right.X; }
+        operator <(left: Vec2, right: Vec2): boolean { return left.X < right.X; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local target: Vec2 = Vec2(2, 9);
+    local result: integer(4) = 0;
+    match target
+    {
+        case Vec2(1, 1) { result = 1; }
+        case Vec2(2, 7) { result = 2; }
+        case < Vec2(5, 0) { result += 10; }
+        case wildcard { result += 100; }
+    }
+    return result;
+}";
+    assert_eq!(run_program(source), 2);
+}
+
+#[test]
+fn derived_match_comparison_uses_ordering_and_equality() {
+    let source = "\
+structure Vec2
+{
+    public X: integer(4);
+    public Y: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Vec2, x: integer(4), y: integer(4))
+        {
+            this.X = x;
+            this.Y = y;
+        }
+
+        operator ==(left: Vec2, right: Vec2): boolean { return left.X == right.X; }
+        operator <(left: Vec2, right: Vec2): boolean { return left.X < right.X; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local target: Vec2 = Vec2(2, 9);
+    local result: integer(4) = 0;
+    match target
+    {
+        case < Vec2(1, 0) { result = 1; }
+        case <= Vec2(2, 0) { result = 2; }
+        case wildcard { result = 3; }
+    }
+    return result;
+}";
+    assert_eq!(run_program(source), 2);
+}
+
+#[test]
+fn unmatched_inner_catch_propagates_to_the_outer_trap() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local result: integer(4) = 0;
+    trap
+    {
+        trap
+        {
+            local value: integer(4) = 6;
+            throw value;
+        }
+        catch divided: DivideByZeroException
+        {
+            result = 1;
+        }
+    }
+    catch value: integer(4)
+    {
+        result = value;
+    }
+    catch wildcard
+    {
+        result = 99;
+    }
+    return result;
+}";
+    assert_eq!(run_program(source), 6);
+}
+
+#[test]
+fn array_pointer_casts_reference_the_same_storage() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local values[3]: integer(4) = { 1, 2, 3 };
+    local p: pointer integer(4) = Cast<pointer integer(4)>(values);
+    p[0] = 42;
+    Cast<array(3) integer(4)>(p)[1] = 7;
+    return values[0] + values[1] + p[2];
+}";
+    assert_eq!(run_program(source), 52);
+}
+
+#[test]
+fn float_to_integer_cast_wraps_out_of_range_values() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local wide: float(8) = Cast<float(8)>(300);
+    return Cast<integer(4)>(Cast<integer(1)>(wide));
+}";
+    // 300 wraps modulo 256 to 44 (§3.2).
+    assert_eq!(run_program(source), 44);
+}
+
+#[test]
+fn byte_escapes_are_raw_bytes() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local bytes: array(2) cardinal(1) = \"\\xFF\\x41\";
+    return Cast<integer(4)>(bytes[0]) + Cast<integer(4)>(bytes[1]);
+}";
+    // 0xFF + 0x41 = 320, truncated to the process exit code.
+    assert_eq!(run_program(source), 320 % 256);
+}

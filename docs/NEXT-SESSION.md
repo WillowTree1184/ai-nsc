@@ -2,10 +2,12 @@
 
 ## State
 
-- Branch `master`, clean tree, latest commit `51bd259` (see `git log --oneline`).
+- Branch `master`; latest commit `3a34c91` "Implement generics with compile-time
+  monomorphization" (see `git log --oneline`). Working tree may be dirty while a
+  concurrent session lands fixes — check `git status` before committing.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  — **100 tests green** (36 unit, 9 CLI, 2 LLVM smoke, 42 end-to-end execution,
-  10 parser, 1 spec-example conformance).
+  — **118 tests green** (40 lib unit including 4 AST-clone tests, 12 CLI,
+  2 codegen/LLVM, 52 end-to-end execution, 10 parser, 1 spec-example conformance).
 - Build flags (required on this host):
   `CARGO_HOME=/tmp/ainsc-cargo LLVM_SYS_181_PREFIX=/usr/lib/llvm-18`
 - CLI: `target/debug/ai-nsc check|emit-ir|emit-obj|build|run <file.ns>`.
@@ -13,63 +15,109 @@
 ## Where things live
 
 - `src/lexer.rs`, `src/literal.rs` — tokens and literal decoding.
-- `src/ast.rs` — arena AST; `src/parser/{mod,expr}.rs` — recursive descent.
-- `src/sema/{mod,types,check}.rs` — declarations, layouts, name mangling,
-  `TypeStore`, `SemaResult` (types/resolutions/functions/type_defs), body checks.
+- `src/ast.rs` — arena AST; `src/ast_clone.rs` — deep subtree cloning used by
+  monomorphization; `src/parser/{mod,expr}.rs` — recursive descent.
+- `src/sema/{mod,types,check,generics}.rs` — declarations, layouts, name mangling,
+  `TypeStore`, `SemaResult` (types/resolutions/functions/type_defs), body checks,
+  generic templates and instantiations.
 - `src/codegen.rs` — inkwell lowering: class metadata (typeinfo/vtables/interface
   tables), methods, construction, heap/dispose, operators, accessors, traps,
   runtime exceptions, `#if` branch selection.
 - `docs/COVERAGE.md` — per-spec-section status (✅/🟡/⛔). Keep it current.
+- `docs/AUDIT.md` — reproduced conformance defects; the ordered work list.
 - `docs/ARCHITECTURE.md`, `docs/ROADMAP.md`, `docs/spec-notes/` (spec extracts,
-  examples, known inconsistencies).
+  examples, known inconsistencies; §10 extract in `docs/spec-notes/generics.md`).
 
-## Highest-priority gap: generics / monomorphization
+## How generics work now
 
-Spec §10 and §3.7.7 require generic types/functions to be monomorphized before
-use. Current status: parser accepts `<T; U>` and `Name<Arg; Arg>` syntax; semantic
-analysis reports "not implemented yet".
+The generics implementation is template-based with compile-time
+monomorphization (§10):
 
-Suggested implementation path:
+- **Templates.** Pass 1 declares named types and records their generic parameters
+  (`src/sema/mod.rs::declare_types`/`declare_named_type`); pass 2 records generic
+  `fixed`/`linkable` function templates and, for generic type declarations, skips
+  the body entirely. A template's signature/members/body are deliberately **not**
+  resolved, because they mention generic parameters. Body checking skips them
+  (templates have `body: None`).
+- **Instantiation.** `src/sema/generics.rs::instantiate_type` /
+  `instantiate_function` validate the argument count, check every constraint
+  (`check_generic_constraints`), then deep-clone the declaration's AST subtree
+  (`Sema::clone_declaration` → `src/ast_clone.rs`), grow the per-node
+  `node_types`/`resolutions` tables, and resolve the clone under a substitution
+  environment (`generic_env`, consulted by `resolve_type` via
+  `lookup_generic_parameter`). Each instance therefore owns its nodes, fields,
+  methods, accessors, operators and layouts.
+- **Caching and names.** Instances are cached per
+  `(declaration node, argument list)` (`type_instantiations` /
+  `function_instantiations`), so repeated uses share one instance and distinct
+  argument lists coexist. Instance qualified names include the arguments
+  (`Box<integer(4)>`) and instance methods are mangled from that name plus the
+  parameter spellings, so mangled symbols are per-instance.
+- **Where monomorphization is triggered.** `check_monomorphization` is reached
+  from type positions (`NamedType` with arguments), constructions, calls
+  (`CallExpr.callee`), member constructions and `is` targets. Module-level
+  `extension for Generic<T>` declarations are recorded as
+  `PendingGenericExtension` and applied to existing and future instances
+  (`register_generic_extension` / `apply_generic_extension`).
+- **Passes skip templates.** Pass 2 (`resolve_declarations`) skips template bodies
+  and members, so structure layouts are not computed for templates; vtable building
+  (`build_vtables`), body checking (templates have `body: None`) and codegen
+  (`prepare_struct_types`, `declare_functions`, `build_class_metadata`,
+  `generate_functions`) skip declarations whose `generic_parameters` is non-empty.
+  `finalize_variant_union_layouts` runs over the whole table but is a no-op for
+  templates because their variant/union member lists were never resolved.
+- **Recompute after bodies.** `Sema::run` calls `finalize_variant_union_layouts`
+  and `build_vtables` a second time after body/initializer checking, because
+  checking a body can create new instantiations.
 
-1. Add a substitution environment to `Sema` (`generic_env: Vec<HashMap<String, TypeId>>`)
-   consulted by `resolve_type` for `Name` nodes.
-2. Pass 1: for generic declarations, create a *template* `TypeDef` and record the
-   declaration node + parameter names (extend `TypeDef` with
-   `generic_parameters: Vec<String>`).
-3. Monomorphization: on `Name<Arg;...>`, canonicalize the argument list (interned
-   `TypeId`s), look up/instantiate a `TypeDef` keyed by `(declaration NodeId,
-   Vec<TypeId>)`:
-   - create the `TypeDef` with a mangled qualified name (e.g. `Box<integer(1)>`),
-   - re-run the existing member/extension resolution with `generic_env` pushed,
-   - cache and reuse the instantiation.
-4. Generic functions: instantiate `FunctionInfo` per argument list with the same
-   env; bodies need per-instance type/resolution storage because `node_types` and
-   `resolutions` are per-AST-node arrays. Two viable options:
-   - clone the AST subtree per instantiation (preferred: no key changes), or
-   - add `generic_node_types`/`generic_resolutions` keyed by `(function, node)` and
-     route `set_node_type`/resolution writes through helpers.
-5. Include the monomorphized argument spellings in the name-mangling parameter
-   list (already handled by `mangle_function` once type ids exist).
-6. Tests: generic structure with a method, generic function with `T` parameter and
-   return, two instantiations of the same generic coexisting in one program,
-   constraint diagnostics.
+### Gotchas future work must respect
 
-## Next gaps after generics (see `docs/COVERAGE.md`)
+1. **Never resolve a generic declaration directly.** Its members mention the
+   parameters; only clones resolved under a `generic_env` are valid. When adding
+   a path into `resolve_type`/member resolution, be sure it runs under the
+   environment pushed by `instantiate_type`/`instantiate_function` (and popped
+   afterwards).
+2. **Any new pass that walks type definitions or functions must skip templates.**
+   Test `generic_parameters.is_empty()` on `TypeDef`/`FunctionInfo` before
+   touching layouts, vtables, metadata, mangled symbols or code generation.
+   Instances have empty `generic_parameters` and instead carry `template:
+   Some(...)`, `generic_arguments` and `generic_env`.
 
-- Compile-time execution: `#(...)`, `#{...}` with constant propagation,
-  `Type.SizeOf<T>()`, `Platform`/`CompileTimeError` compiler API.
-- `??` operator + `Optional`/`Result`; complete Built-In Library (Object,
-  containers, iterators, exception hierarchy methods).
-- `implicitable` implicit conversion invocations; NOLAA; static members.
-- `&`/`*` reference expressions, function values/closures, named/default argument
-  lowering; `finally` on `return`/`break`/`continue`; heap allocation-failure
-  exceptions.
+## Next steps
+
+Work `docs/AUDIT.md` in severity order; every item has a reproduction. Fix a
+group, add regression tests, keep the full suite green, then close its rows.
+
+1. **HIGH group** (audit #1–#10): enumeration member codegen panic and
+   integer↔enumeration casts; array↔pointer cast aliasing (both directions);
+   `match` labelled control flow (`break`/`continue`/named labels); `match`
+   operator patterns; base-class constructor call; ABI spelling of named types in
+   mangled names; `catch`→outer-`trap` propagation; float→integer wrapping.
+2. **MED items** (#11–#25), starting with MED/HIGH #11 pointer arithmetic
+   (`p + i`, `p - i`, `p - q`, pointer builtin overloads, `Type.SizeOf<T>()`),
+   then the rest: `\x` escape, `owner`, `use` imports, non-`this` `&`
+   parameters, VLAs, array flattening/casts, duplicate declarations,
+   abstract/sealed, heap inference/allocator, `dispose`, missing-return/`finally`
+   diagnostics, `illegal`/`uninitialized`, variant elision/equality, and the
+   warning subsystem. The LOW items (#26–#31) are lower priority but cheap.
+3. **Only then** the remaining `COVERAGE.md` 🟡/⛔ items: compile-time execution
+   `#(...)`/`#{...}` (incl. use of generic parameters in compile-time code),
+   `??` with `Optional`/`Result`, the Built-In Library, static members,
+   `implicitable`, NOLAA, `&`/`*` reference expressions, function
+   values/closures, and named/default argument lowering. §10 leftovers (generic
+   methods with their own type parameters, array extension targets) are listed in
+   `COVERAGE.md` §10.
 
 ## Conventions
 
 - Never silently miscompile: unsupported constructs must produce an explicit
   "not implemented yet" diagnostic (`Sema::unsupported`).
+- Malformed input must produce diagnostics, never hang: parser recovery must make
+  progress on every iteration (a hang on malformed `match` input was fixed in
+  `3a34c91`; keep regression tests for recovery loops).
 - Draft spec: record divergences/tolerated ambiguities in
   `docs/spec-notes/_inconsistencies.md`; when the spec file changes, re-run the
   spec-example conformance test (`tests/spec_examples.rs`).
-- Keep each round green: fmt + clippy -D warnings + full test suite before commit.
+- Keep each round green: fmt + clippy `-D warnings` + full test suite before
+  commit. Update `docs/COVERAGE.md` and close the matching `docs/AUDIT.md` rows
+  in the same round.

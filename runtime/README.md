@@ -1,8 +1,8 @@
 # libnscrt — NovaSharp runtime support library
 
 Generated code will call into a small C runtime instead of re-implementing
-primitives in every program. This directory will hold its sources and CMake
-target (`libnscrt`, a static library).
+primitives in every program. This directory will hold its sources and the `libnscrt`
+static library target, built with `clang` from `build.rs`.
 
 Planned contents, pending the language spec:
 

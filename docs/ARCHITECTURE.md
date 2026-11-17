@@ -1,33 +1,33 @@
 # ai-nsc architecture
 
-This document describes the intended structure of the NovaSharp compiler. The
-skeleton in this repository is the foundation described under "Current state".
+This document describes the intended structure of the NovaSharp compiler. The crate in
+this repository is the foundation described under "Current state".
 
 ## Current state
 
 ```
-ai-nsc
- ├── Base/SourceLocation      FileID + byte offset, source ranges
- ├── Base/SourceManager       file buffers, line/column mapping, excerpts
- ├── Base/Diagnostics         severity, formatting, counts, caret excerpts
- └── Driver/Driver            argument parsing, action dispatch, exit codes
+src/source.rs        FileId, SourceLocation, Span, SourceManager
+src/diagnostics.rs   Severity, render(), DiagnosticEngine
+src/driver.rs        Action, Options, parse_args(), run()
+src/codegen.rs       LLVM IR generation (inkwell smoke module for now)
+src/lib.rs           crate root, toolchain constants
+src/main.rs          binary entry point
 ```
 
-Everything else is a planned stage. The grammar specification drives the design
-of the lexer, parser, AST and semantic model, so those are deliberately absent
-until it arrives.
+Everything else is a planned stage. The grammar specification drives the design of the
+lexer, parser, AST and semantic model, so those are deliberately absent until it arrives.
 
 ## Pipeline
 
 ```
    source text
-        │  (Base/SourceManager)
+        │  (source.rs: SourceManager)
         ▼
-   ┌─────────┐    tokens with SourceRange spans
+   ┌─────────┐    tokens with Span
    │  Lexer  │──────────────────────────────────┐
    └─────────┘                                  │
                                                 ▼
-   ┌─────────┐    AST (arena-allocated)    ┌──────────┐
+   ┌─────────┐    AST (arena of nodes)      ┌──────────┐
    │ Parser  │────────────────────────────►│ AST dump │  --dump-ast
    └─────────┘                             └──────────┘
         │
@@ -38,15 +38,15 @@ until it arrives.
    └──────────────┘                                            ▼
         │                                                diagnostics
         ▼
-   ┌──────────────┐   llvm::Module
-   │ IR lowering  │─────────────────────────────► llvm::verifyModule
+   ┌──────────────┐   llvm::Module (inkwell)
+   │ IR lowering  │─────────────────────────────► module.verify()
    └──────────────┘                                     │
         │                                               ▼
         ▼                                    ┌──────────────────┐
-   ┌──────────────┐  .ll / .bc / .o / exe     │ LLVM back end    │
-   │  Driver      │◄─────────────────────────│ (target machine) │
-   └──────────────┘                           └──────────────────┘
-        │
+   ┌──────────────┐  .ll / .o / exe           │ clang            │
+   │  Driver      │─────────────────────────►│ (LLVM assembler  │
+   └──────────────┘                          │  and linker)     │
+        │                                    └──────────────────┘
         ▼
    link with runtime support library (libnscrt) + system libraries
 ```
@@ -55,69 +55,72 @@ until it arrives.
 
 | Stage | Input | Output | Fails by |
 |---|---|---|---|
-| Lexer | file buffer | token stream + spans | error diagnostics, recovery at statement boundaries |
-| Parser | token stream | AST + spans | error diagnostics, panic-mode recovery to sync tokens |
+| Lexer | `&str` buffer | `Vec<Token>` with `Span` | error diagnostics, recovery at statement boundaries |
+| Parser | token slice | `AstArena` + root `NodeId` | error diagnostics, panic-mode recovery to sync tokens |
 | Sema | AST | typed HIR | error diagnostics, continues where safe |
-| Codegen | HIR | `llvm::Module` | internal invariant assertion (a bug, not user error) |
+| Codegen | HIR | `inkwell::module::Module` | internal invariant violation (a bug, not user error) |
 | Driver | command line | object/executable | usage errors, propagated compilation failure |
 
 ## Design decisions
 
-1. **Hand-written lexer and recursive-descent parser.** The grammar spec is
-   small enough, and rich diagnostics (error recovery, precise spans, "did you
-   mean ...?") matter more than parser-generator convenience. `bison`/`flex`
-   are available but intentionally unused.
-2. **Spans are byte offsets.** Tokens store `SourceRange`, never line/column.
-   Conversion happens lazily in `SourceManager`; this keeps copying cheap and
-   survives any future source rewrites.
-3. **Arena-allocated AST.** AST nodes are allocated from an arena owned by the
-   parse result, never individually deleted. This removes ownership bugs from
-   the front end.
-4. **Explicit intermediate representation (HIR).** Sema lowers the AST to a
-   typed HIR so codegen never has to re-implement name resolution or implicit
-   conversions. If the language turns out small, this can collapse into a typed
-   AST *only if* it stays simple.
-5. **LLVM IR only in the codegen layer.** The front end remains linkable and
-   testable without LLVM; `llvm::verifyModule` gates every module that leaves
-   codegen.
-6. **Diagnostics are data.** `DiagnosticEngine` counts and prints; it never
-   throws or exits. Exit codes belong to the driver.
-7. **One shared runtime.** `runtime/` builds `libnscrt`, the C library that
-   implements strings, arrays, printing and other primitives the generated code
-   calls. Keeping it in C keeps ABI and startup simple.
-8. **Link with the system toolchain.** The driver shells out to `clang` (or the
-   configured linker) with the emitted object; it does not embed a linker.
+1. **Hand-written lexer and recursive-descent parser.** The grammar is small enough, and
+   rich diagnostics (recovery, precise spans, "did you mean ...?") matter more than parser
+   generator convenience. No parser generators are used.
+2. **Spans are byte offsets.** Tokens and AST nodes store a `Span { file, start, end }`,
+   never line/column pairs. Conversion happens lazily in `SourceManager`, which keeps
+   copying cheap and avoids stale coordinates.
+3. **Arena-allocated AST.** Nodes live in a `Vec<Node>` and are referred to by a small
+   `NodeId`. In Rust this avoids pervasive `Box`/`Rc` and the borrow-checker friction of a
+   pointer-linked tree, while keeping traversal and rewriting trivial.
+4. **Explicit typed HIR.** Sema lowers the AST into a typed HIR, so codegen never
+   re-implements name resolution or implicit conversions. If the language turns out small,
+   this can collapse into a typed AST *only if* it stays simple.
+5. **LLVM IR only in `codegen`.** The front end stays linkable and testable without a code
+   generator. Every module is passed through LLVM's verifier before it is written out.
+6. **`clang` as the assembler/linker driver.** Emitting textual IR (or a module) and
+   invoking `clang` gives us LLVM's optimizer and the system linker without embedding
+   either. Object emission, linking and `-O` flags all flow through one well-tested tool.
+7. **Diagnostics are data.** `DiagnosticEngine` counts diagnostics; `render()` is a pure
+   function returning the exact text. Neither throws nor exits. Exit codes belong to the
+   driver.
+8. **No `unsafe`.** The crate is `#![forbid(unsafe_code)]`; all LLVM interaction goes
+   through inkwell's safe API.
+9. **One shared runtime.** `runtime/` provides `libnscrt`, a C library implementing
+   strings, arrays, printing and other primitives that generated code calls. Keeping it in
+   C keeps the ABI and start-up simple and lets `clang` link it directly.
 
 ## Planned module layout
 
 ```
-include/ainsc/
-  Base/          SourceLocation, SourceManager, Diagnostics, (Token kinds)
-  Lexer/         Lexer, Token
-  Ast/           AST nodes, AstDumper
-  Parser/        Parser, ParseResult
-  Sema/          SymbolTable, Type, HIR
-  Codegen/       Codegen (AST/HIR -> llvm::Module)
-  Driver/        Driver, Options
-runtime/         libnscrt (C)
-tests/e2e/       end-to-end tests driven by scripts/run-e2e.py
+src/
+  lexer.rs       Token, TokenKind, Lexer
+  ast.rs         node arena, node kinds, AstDumper
+  parser.rs      recursive-descent parser, recovery
+  sema/          symbol tables, types, HIR lowering
+  codegen/       HIR -> inkwell IR (types, functions, control flow)
+  driver.rs      actions and pipeline orchestration (extended)
+runtime/         libnscrt sources (C)
+tests/e2e/       end-to-end cases; IR goldens checked with FileCheck-18
 ```
 
 ## Testing strategy
 
-- **Unit tests** (`tests/unit`): self-contained, in-tree harness, no external
-  dependencies. One file per module.
-- **End-to-end tests** (`tests/e2e`): each case is a NovaSharp program plus
-  expected behavior (exit code, stdout, stderr diagnostics, optionally golden IR
-  checked with `FileCheck-18`). A Python runner drives `ai-nsc` and diffs.
-- **IR golden tests**: textual `// CHECK:` markers in NovaSharp programs check
-  the emitted `.ll`; this catches codegen regressions without full execution.
-- **Sanitizer preset**: `cmake --preset asan` for lexer/parser memory bugs.
+- **Unit tests** live next to the code under `#[cfg(test)]`: pure functions are tested
+  directly, with no process spawning or filesystem access unless necessary.
+- **Integration tests** live in `tests/`:
+  - `tests/cli.rs` drives the real binary and asserts stdout/stderr/exit codes.
+  - `tests/codegen.rs` builds IR with inkwell, prints it, and compiles it with `clang` to
+    prove the back end works end to end.
+- **End-to-end language tests** (`tests/e2e/`, planned): each case is a NovaSharp program
+  plus expected output/diagnostics, driven from an integration test or the test script.
+- **IR golden tests**: `// CHECK:` markers verified with `FileCheck-18` against
+  `ai-nsc emit-ir`, catching codegen regressions without full execution.
+- **Fuzzing** (Phase 6): `cargo-fuzz` targets for the lexer and parser.
 
 ## Error handling and limits
 
-- Front-end errors never crash the compiler; codegen relies on sema guarantees
-  and asserts on violations.
+- Front-end errors never crash the compiler; codegen relies on sema guarantees and panics
+  only on internal invariant violations (a compiler bug).
 - A compilation unit is rejected if any error diagnostic was emitted.
-- Recursion in parser/codegen is bounded by the input depth; a nesting limit
-  diagnostic is planned to avoid stack exhaustion on hostile input.
+- Recursion in parser/codegen is bounded by input depth; a nesting limit diagnostic is
+  planned to avoid stack exhaustion on hostile input.

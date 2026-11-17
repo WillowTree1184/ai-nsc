@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
-# Build (if needed) and run the full test suite.
-#
-#   scripts/test.sh [preset]      preset defaults to "dev"
+# Run the full test suite: unit tests plus CLI and codegen integration tests.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-preset="${1:-dev}"
+cd "$root"
 
-cmake --preset "$preset" -S "$root"
-cmake --build --preset "$preset"
-ctest --preset "$preset" --output-on-failure
+cargo test "$@"

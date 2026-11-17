@@ -1,40 +1,20 @@
-# Build trees
-/out/
-/build/
-/build-*/
-/install/
-compile_commands.json
+# Rust build output
+/target/
+/.cargo-home/
 
-# Editor / language server state
-.cache/
-.clangd/
-.vscode/
+# Local tooling state
 .idea/
+.vscode/
 *.swp
 *~
 
-# Compiler and toolchain output
+# Native artifacts from local experiments
 *.o
-*.obj
 *.a
 *.so
 *.dylib
 *.dll
 *.exe
-*.ll
-*.bc
-*.s
-*.gch
-*.pch
 
-# Test artifacts
-*.gcda
-*.gcno
-*.profraw
-*.profdata
-.out
-
-# Misc
+# OS
 .DS_Store
-core
-core.*

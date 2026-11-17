@@ -6,27 +6,26 @@
 |---|---|
 | OS | Ubuntu 24.04.5 LTS (noble), x86-64 |
 | CPUs / RAM | 8 / 15 GiB |
-| CMake | 3.28.3 |
-| Ninja | 1.11.1 |
-| Clang / Clang++ | 18.1.3 |
-| GCC / G++ | 13.3.0 |
-| LLVM (dev) | 18.1.3 — headers, static component libs and shared `libLLVM-18.so` |
+| Rust | 1.98.0 (stable, rustup) |
+| Cargo | 1.98.0 |
+| rustfmt / clippy / rust-analyzer | 1.9.0 / 0.1.98 / 1.98.0 |
+| LLVM (dev) | 18.1.3 — `llvm-config`, headers, `libLLVM-18.so` |
+| Clang | 18.1.3 (used as assembler/linker driver) |
+| inkwell / llvm-sys | 0.11.0 / 181.3.1, dynamic link (`llvm18-1-prefer-dynamic`) |
 | Python | 3.12 |
 
-LLVM 18 is the project baseline. Other LLVM majors (17, 20, 21) are present on
-the machine for other projects but `llvm-18-dev` is the only one with headers
-installed; `CMakeLists.txt` points `AINSC_LLVM_DIR` at
-`/usr/lib/llvm-18/lib/cmake/llvm`.
+LLVM 18 is the project baseline. Other LLVM majors (17, 20, 21) exist on this machine for
+other projects, but only 18 has development files. If `llvm-config` on `PATH` is not 18,
+point the build at the right installation:
 
-To switch LLVM versions later, pass `-DAINSC_LLVM_DIR=/usr/lib/llvm-<N>/lib/cmake/llvm`
-(any LLVM with headers and a CMake package works; the code targets the LLVM 18
-C++ API and would need small adjustments for others).
+```bash
+LLVM_SYS_181_PREFIX=/usr/lib/llvm-18 cargo build
+```
 
-## Already installed (required)
+## Required (already installed)
 
-`cmake`, `ninja-build`, `clang-18`/`g++-13`, `llvm-18-dev` (headers +
-`libLLVM-18.so`), `llvm-18-tools` (`FileCheck-18`, `llc`, `opt`, `llvm-as`,
-`lli`), `lld`, `gdb`, `lldb`, `git`, `python3`.
+`rustup` toolchain with `rustc`, `cargo`, `rustfmt`, `clippy`, `rust-analyzer`; `llvm-18-dev`
+(provides `llvm-config` and `libLLVM-18.so`); `clang-18`; `lld`.
 
 Verify with:
 
@@ -34,69 +33,50 @@ Verify with:
 ./scripts/check-toolchain.sh
 ```
 
-## Recommended apt packages (not required to build)
+## Optional
 
-These improve the day-to-day loop but the build and tests pass without them:
+Present and useful: `llvm-18-tools` (`FileCheck-18` for IR golden tests), `valgrind` (memory
+debugging), `lld`.
 
-```bash
-sudo apt-get update
-sudo apt-get install -y \
-  ccache \
-  clang-format-18 \
-  clang-tidy-18 \
-  clangd-18 \
-  valgrind \
-  doxygen \
-  libgtest-dev
-```
-
-| Package | Why |
-|---|---|
-| `ccache` | fast rebuilds of the C++ front end; enable with `-DCMAKE_CXX_COMPILER_LAUNCHER=ccache` |
-| `clang-format-18` | `scripts/format.sh`; style is checked in `.clang-format` |
-| `clang-tidy-18` | static analysis driven by `.clang-tidy` |
-| `clangd-18` | editor/IDE support using `compile_commands.json` |
-| `valgrind` | memory debugging alternative to the `asan` preset |
-| `doxygen` | API documentation generation (planned) |
-| `libgtest-dev` | only if unit tests migrate from the in-tree harness to GoogleTest |
-
-`graphviz` (already installed) is available for Doxygen graphs.
-
-Note: the agent shell runs with `no_new_privs`, so `sudo` cannot be used from
-inside it; install packages from a normal terminal.
+No longer needed after moving to Rust (installed earlier for a C++ scaffold, harmless to
+keep or remove): `ccache`, `clang-format-18`, `clang-tidy-18`, `clangd-18`, `doxygen`,
+`libgtest-dev`. Rust uses `rustfmt`/`clippy`/`rust-analyzer` instead.
 
 ## Build
 
 ```bash
-cmake --preset dev                 # configure
-cmake --build --preset dev         # build
-ctest --preset dev --output-on-failure
+cargo build                 # debug
+cargo build --release       # optimized
+cargo test                  # unit + integration tests
+./scripts/lint.sh           # rustfmt --check + clippy -D warnings
 ```
 
 Artifacts:
 
-- `out/build/dev/ai-nsc`
-- `out/build/dev/tests/ainsc-unit-tests`
-- `out/build/dev/compile_commands.json`
+- `target/debug/ai-nsc`, `target/release/ai-nsc`
+- `target/debug/ainsc` library used by integration tests
+
+## Why the dynamic LLVM link
+
+Ubuntu's `llvm-18-dev` ships the full set of static component libraries *except* some, and
+inkwell's default static link pulls in components that are not available (e.g. Polly).
+Selecting inkwell's `llvm18-1-prefer-dynamic` feature makes `llvm-sys` link the shared
+`libLLVM-18.so`, which is complete and gives much faster link times.
 
 ## Editor setup
 
-Point clangd at the build directory produced by the preset; it discovers
-`compile_commands.json` there automatically. Optionally create `.clangd`:
-
-```yaml
-CompileFlags:
-  CompilationDatabase: out/build/dev
-```
+`rust-analyzer` works out of the box on a Cargo project; no `compile_commands.json` is
+needed. `rust-toolchain.toml` pins the toolchain to stable with `rustfmt` and `clippy`
+installed.
 
 ## Troubleshooting
 
-- **`LLVMConfig.cmake` not found** — install `llvm-18-dev`, or pass
-  `-DAINSC_LLVM_DIR=<dir containing LLVMConfig.cmake>`.
-- **`llvm/Support/Host.h` not found** — LLVM 18 moved it to
-  `llvm/TargetParser/Host.h`; the code already uses the new location.
-- **Static-link candidate errors** (`libedit`, `libcurl`, `libxml2`) during
-  configure are harmless: the build links the shared `libLLVM-18.so`, so no
-  LLVM-internal dependencies are required.
-- **Link takes seconds** — expected when linking the shared LLVM library; use
-  ccache and Ninja to keep it fast.
+- **`llvm-config` not found or wrong version** — install `llvm-18-dev`, or set
+  `LLVM_SYS_181_PREFIX=/usr/lib/llvm-18` for cargo.
+- **`libLLVM-18.so: cannot open shared object file`** — the binary expects LLVM's library
+  directory in the loader path; use the system `llvm-18-dev` package (the build adds the
+  library directory) and do not move the binary to a machine without LLVM 18.
+- **cargo cannot write `~/.cargo`** — set `CARGO_HOME` to a writable directory. (Only
+  relevant in sandboxed environments; a normal developer machine needs nothing.)
+- **`inkwell` build errors mentioning `Polly`** — the dynamic-link feature above is
+  missing; check `Cargo.toml` still requests `llvm18-1-prefer-dynamic`.

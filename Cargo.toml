@@ -1,0 +1,33 @@
+[package]
+name = "ai-nsc"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "NovaSharp compiler with an LLVM backend"
+publish = false
+
+[[bin]]
+name = "ai-nsc"
+path = "src/main.rs"
+
+[lib]
+name = "ainsc"
+path = "src/lib.rs"
+
+[dependencies]
+# inkwell 0.11 binds LLVM 18.1 through llvm-sys 181. The `prefer-dynamic`
+# variant links the shared libLLVM-18.so that Ubuntu's llvm-18-dev provides;
+# static component libraries are not shipped for every LLVM component.
+inkwell = { version = "0.11", features = ["llvm18-1-prefer-dynamic", "target-x86"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = "warn"

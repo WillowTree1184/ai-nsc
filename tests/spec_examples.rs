@@ -1,0 +1,93 @@
+//! Conformance test: every NovaSharp code example in the language specification
+//! must parse without errors.
+//!
+//! The specification is the source of truth, so this test reads it directly.
+//! Examples that are deliberately invalid are commented out in the spec, so a
+//! clean parse of an uncommented block means the parser covers that syntax.
+
+use std::path::PathBuf;
+
+use ainsc::lexer;
+use ainsc::parser;
+use ainsc::source::SourceManager;
+
+fn spec_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("docs")
+        .join("grammar")
+        .join("Draft 1.12.md")
+}
+
+/// Returns the contents of every ```novasharp fenced block, with its 1-based
+/// starting line in the spec.
+fn nova_examples(spec: &str) -> Vec<(usize, String)> {
+    let mut examples = Vec::new();
+    let mut lines = spec.lines().enumerate();
+    while let Some((index, line)) = lines.next() {
+        if line.trim_start().starts_with("```novasharp") {
+            let start_line = index + 2; // 1-based line of the first content line
+            let mut body = String::new();
+            for (_, content) in lines.by_ref() {
+                if content.trim_start().starts_with("```") {
+                    break;
+                }
+                body.push_str(content);
+                body.push('\n');
+            }
+            examples.push((start_line, body));
+        }
+    }
+    examples
+}
+
+#[test]
+fn every_spec_example_parses() {
+    let spec = std::fs::read_to_string(spec_path()).expect("read the language specification");
+    let examples = nova_examples(&spec);
+    assert!(
+        examples.len() > 80,
+        "expected to find the spec's examples, found {}",
+        examples.len()
+    );
+
+    // Examples that are syntax fragments rather than whole programs.
+    const NON_PROGRAM_FRAGMENTS: &[usize] = &[9220];
+
+    let mut failures = Vec::new();
+    for (line, source) in &examples {
+        if NON_PROGRAM_FRAGMENTS.contains(line) {
+            continue;
+        }
+        let mut sources = SourceManager::new();
+        let file = sources.add_buffer(format!("spec-{line}.ns"), source.clone());
+        let lexed = lexer::tokenize(file, source);
+        if let Some(error) = lexed.errors.first() {
+            let (spec_line, spec_column) = sources
+                .line_col(error.span.start_location())
+                .unwrap_or((0, 0));
+            failures.push(format!(
+                "spec line {line} (+{spec_line}:{spec_column}): lex error: {}\n--- source ---\n{source}",
+                error.message
+            ));
+            continue;
+        }
+        let parsed = parser::parse(file, source, &lexed.tokens);
+        if let Some(error) = parsed.errors.first() {
+            let (spec_line, spec_column) = sources
+                .line_col(error.span.start_location())
+                .unwrap_or((0, 0));
+            failures.push(format!(
+                "spec line {line} (+{spec_line}:{spec_column}): parse error: {}\n--- source ---\n{source}",
+                error.message
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} of {} spec examples failed to parse:\n\n{}",
+        failures.len(),
+        examples.len(),
+        failures.join("\n\n")
+    );
+}

@@ -6,6 +6,7 @@
 //! - [`source`] — file buffers, source locations and the line/column mapping
 //! - [`diagnostics`] — severities, counts and the `file:line:col` renderer
 //! - [`driver`] — command line parsing and action dispatch
+//! - [`lexer`] — token kinds and the hand-written lexer
 //! - [`codegen`] — LLVM IR generation (the only module that touches LLVM)
 //!
 //! The lexer, parser and semantic analysis live in this crate too; they are
@@ -13,9 +14,13 @@
 
 #![forbid(unsafe_code)]
 
+pub mod ast;
 pub mod codegen;
 pub mod diagnostics;
 pub mod driver;
+pub mod lexer;
+pub mod literal;
+pub mod parser;
 pub mod source;
 
 pub use diagnostics::{DiagnosticEngine, Severity};

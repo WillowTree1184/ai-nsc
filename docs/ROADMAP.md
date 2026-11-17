@@ -15,14 +15,15 @@ phases may start early only where they do not depend on the language spec.
 
 Acceptance: `cargo test` and `scripts/lint.sh` are green on a clean checkout.
 
-## Phase 1 — grammar intake and AST design (next)
+## Phase 1 — grammar intake and AST design (in progress)
 
-Depends on: the NovaSharp grammar specification.
+Depends on: the NovaSharp grammar specification (Draft 1.12 available).
 
-- [ ] Formalize the grammar: token inventory, precedence/associativity table, statement and
-      declaration forms, lexical corner cases (comments, literals, escapes, identifiers)
+- [x] Exhaustive per-section extraction of the spec into `docs/spec-notes/` (all EBNF blocks
+      verbatim, line-anchored semantic rules, open questions)
+- [x] Token inventory, precedence table and lexical corner cases (implemented in the lexer)
+- [x] Design the AST node set and the arena layout (`src/ast.rs`)
 - [ ] Write `docs/GRAMMAR.md` as the single source of truth derived from the spec
-- [ ] Design the AST node set and the arena layout (`src/ast.rs`)
 - [ ] Design the type system and semantic model (primitives, value/reference semantics,
       nullability, user types, generics if any)
 - [ ] Define the runtime ABI (string/array/collection representations)
@@ -31,13 +32,14 @@ Depends on: the NovaSharp grammar specification.
 Acceptance: every construct in the spec maps to an AST node; type-system and runtime-ABI
 documents are reviewed before parser code lands.
 
-## Phase 2 — lexer and parser
+## Phase 2 — lexer and parser (in progress)
 
-- [ ] `Lexer` producing tokens with `Span`s (`src/lexer.rs`)
-- [ ] Recursive-descent parser with precedence climbing for expressions (`src/parser.rs`)
-- [ ] Panic-mode recovery at statement/declaration boundaries
-- [ ] `--dump-tokens` and `--dump-ast`
-- [ ] Diagnostics for unexpected tokens, unterminated literals/comments, etc.
+- [x] `Lexer` producing tokens with `Span`s (`src/lexer.rs`), literal decoding (`src/literal.rs`)
+- [x] Recursive-descent parser with precedence climbing (`src/parser/`)
+- [x] Panic-mode recovery at statement/declaration boundaries
+- [x] Conformance test: all 89 program examples in the spec parse
+- [ ] `--dump-tokens` and `--dump-ast` wired into the driver
+- [ ] Diagnostics for unexpected tokens, unterminated literals/comments, etc. (lexer side done)
 - [ ] Snapshot tests for AST dumps and error messages
 
 Acceptance: every grammar example parses; AST dumps match reviewed snapshots; every parser

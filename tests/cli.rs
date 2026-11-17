@@ -565,3 +565,16 @@ fixed Main(): integer(4) { return Describe(Status.Idle); }",
     );
     assert!(stderr.contains("not exhaustive"), "{stderr}");
 }
+
+#[test]
+fn custom_heap_allocators_are_diagnosed() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    heap(DefaultAllocator) value: integer(4) = 1;
+    return value;
+}",
+    );
+    assert!(stderr.contains("custom heap allocators"), "{stderr}");
+}

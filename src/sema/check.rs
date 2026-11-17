@@ -3068,6 +3068,13 @@ impl<'a> Sema<'a> {
     }
 
     fn check_heap_statement(&mut self, node: NodeId, declaration: &HeapDecl) {
+        if declaration.size.is_some() {
+            self.unsupported(
+                self.span_of(node),
+                "custom heap allocators (the 'heap(allocator)' form)",
+            );
+            return;
+        }
         // The type may be omitted when an initializer provides it (§5.4).
         let declared = declaration.ty.map(|type_node| self.resolve_type(type_node));
         let mut ty = match declared {

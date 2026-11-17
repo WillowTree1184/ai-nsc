@@ -7,8 +7,8 @@ Status against `docs/grammar/Draft 1.12.md` (draft). Legend:
 - ⛔ not implemented yet (diagnosed as "not implemented yet", never silently miscompiled)
 
 Verification gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-`cargo test` (131 tests: 40 lib unit including 4 AST-clone tests, 16 CLI, 2 codegen/LLVM,
-62 end-to-end execution, 10 parser, 1 spec-example conformance), plus the CLI
+`cargo test` (134 tests: 40 lib unit including 4 AST-clone tests, 18 CLI, 2 codegen/LLVM,
+63 end-to-end execution, 10 parser, 1 spec-example conformance), plus the CLI
 `ai-nsc check/emit-ir/run` smoke path.
 
 Audit-driven corrections landed in `a5cc9cf` (see `docs/AUDIT.md` for the register):
@@ -32,7 +32,7 @@ area is fixed.
 | §3.6.1 arrays (fixed dimensions), indexing, bounds check, array↔pointer casts | ✅ | e2e arrays; bounds raise `OutOfRangeException`; casts reference the same storage |
 | §3.6.2 pointers | 🟡 | pointer types, member access, built-in pointer arithmetic (`p ± i`, `i + p`, `p - q` with pointee-size unit); `Type.SizeOf<T>()`, `p += i` and `&`/`*` reference expressions pending |
 | §3.6.3 function types / calling conventions | 🟡 | signatures parsed and checked; indirect calls through pointers pending |
-| §3.7.1 classes: layout, inheritance, vtable/RTTI, construction, destructors | 🟡 | layout, construction, virtual dispatch, RTTI, `base`, `base.Construct(...)`, sealed/abstract checks; §3.7.1 constructor-chain diagnostics and statics pending |
+| §3.7.1 classes: layout, inheritance, vtable/RTTI, construction, destructors | 🟡 | layout, construction, virtual dispatch, RTTI, `base`, `base.Construct(...)`, sealed/abstract checks; constructor chains validated (§3.7.1); statics pending |
 | §3.7.2 structures: exact layout | ✅ | layout rules + tests |
 | §3.7.3 interfaces: contracts, dispatch, RTTI | ✅ | e2e interface dispatch/RTTI tests |
 | §3.7.4 enumerations | ✅ | member values, implicit-to-underlying conversion, explicit integer↔enumeration casts |

@@ -26,7 +26,7 @@ only after the reproduction is re-run and its regression test is green.
 | 4 | HIGH | §3.6.1 | Pointer→fixed-array cast copies; writes never reach the pointee | fixed (a5cc9cf) |
 | 5 | HIGH | §5.9.1, §5.9.6 | `match` is not a labelled control flow in codegen; `break`/`continue`/named labels misbehave | fixed (a5cc9cf) |
 | 6 | HIGH | §5.9.6 | `match` value/comparison patterns bypass user-defined `==`/`<`/`>` overloads | fixed (a5cc9cf) |
-| 7 | HIGH | §3.7.1 | Base-class constructor is never called during derived construction | partial (a5cc9cf: `base.Construct(...)` verified; §3.7.1 first-statement diagnostic still missing) |
+| 7 | HIGH | §3.7.1 | Base-class constructor is never called during derived construction | fixed (a5cc9cf + 8c0b507: `base.Construct(...)` verified end-to-end; missing-constructor and first-statement diagnostics added) |
 | 8 | HIGH | ABI §13.2 | Mangled symbols embed internal type ids (`named(<id>)`), so symbols depend on declaration order | fixed (a5cc9cf) |
 | 9 | HIGH | §5.10.4 | An unmatched inner `catch` does not reach the enclosing `trap`; the program aborts | fixed (a5cc9cf) |
 | 10 | HIGH | §3.2 | Float→integer explicit cast emits bare `fptosi`/`fptoui` (UB out of range; spec requires wrapping) | fixed (a5cc9cf) |

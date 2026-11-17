@@ -7,7 +7,7 @@ Status against `docs/grammar/Draft 1.12.md` (draft). Legend:
 - ⛔ not implemented yet (diagnosed as "not implemented yet", never silently miscompiled)
 
 Verification gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-`cargo test` (155 tests: 40 lib unit including 4 AST-clone tests, 28 CLI, 2 codegen/LLVM,
+`cargo test` (156 tests: 40 lib unit including 4 AST-clone tests, 29 CLI, 2 codegen/LLVM,
 74 end-to-end execution, 10 parser, 1 spec-example conformance), plus the CLI
 `ai-nsc check/emit-ir/run` smoke path.
 

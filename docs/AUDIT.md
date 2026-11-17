@@ -44,7 +44,7 @@ only after the reproduction is re-run and its regression test is green.
 | 22 | MED | §5.10.2, §5.10.4 | Missing-return branch not diagnosed; `finally` containing `return`/`break`/`continue` not diagnosed | fixed (bf2416a + bacf958: `finally` control-transfer rejection and a conservative all-paths return judgement; loops are not proven to exit, so a trailing return may be required) |
 | 23 | MED | §2.7.11, §2.7.12, §5.3 | `illegal`/`uninitialized` misuse undiagnosed; `fixed Bad: integer(4);` (no initializer) accepted | fixed (72587df + bf80e9b: constant initialization, illegal comparisons, and the `uninitialized` placement rule) |
 | 24 | MED | §3.7.5 | Variant name-elision sugar missing (`local s: Status = Idle;`, `= Loading(50);`); built-in variant equality missing | partial (9ef2245 + 40d12c7: both elision forms implemented; built-in variant equality still open) |
-| 25 | MED | §3.6.1, §3.8.1, §5.8, §5.9, §12.2 | Warning subsystem unused: zero `Severity::Warning` sites; all spec warnings missing (index out of bounds, array↔pointer cast, match exhaustiveness, dispose warnings, initializer-order adjustment) | open |
+| 25 | MED | §3.6.1, §3.8.1, §5.8, §5.9, §12.2 | Warning subsystem unused: zero `Severity::Warning` sites; all spec warnings missing (index out of bounds, array↔pointer cast, match exhaustiveness, dispose warnings, initializer-order adjustment) | partial (ccb385b: constant out-of-bounds index warning implemented; the other spec warnings are open) |
 | 26 | LOW | §8.2 | Array parameter expansion sugar (`message[length: cardinal(4)]`) missing | open |
 | 27 | LOW | §5.9.1 | `for &ref` element references missing | open |
 | 28 | LOW | §5.7 | Compound-assignment evaluation order not specified/implemented | open |

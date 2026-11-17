@@ -4324,6 +4324,22 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .build_load(array_type, value.into_pointer_value(), "array_cast")
                     .map_err(|error| format!("cannot convert pointer: {error}"))
             }
+            // Reinterpret the same bytes with a different element shape
+            // (§3.6.1); sema only allows equal sizes here.
+            (Type::Array { .. }, Type::Array { .. }) => {
+                let source_type = self.llvm_type(source)?;
+                let target_type = self.llvm_type(target)?;
+                let slot = self
+                    .builder
+                    .build_alloca(source_type, "array_shape")
+                    .map_err(|error| format!("cannot allocate array: {error}"))?;
+                self.builder
+                    .build_store(slot, value)
+                    .map_err(|error| format!("cannot store array: {error}"))?;
+                self.builder
+                    .build_load(target_type, slot, "array_shape_value")
+                    .map_err(|error| format!("cannot convert array: {error}"))
+            }
             // Enumerations convert explicitly to and from integer types through
             // their underlying type (§3.7.4).
             (Type::Named(index), Type::Integer { .. }) => {

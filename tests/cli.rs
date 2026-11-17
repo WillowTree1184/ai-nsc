@@ -664,3 +664,17 @@ fixed Main(): integer(4)
     );
     assert!(stderr.contains("changes only the target type"), "{stderr}");
 }
+
+#[test]
+fn array_cast_between_different_byte_sizes_is_diagnosed() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    local words[2]: cardinal(4) = { 7, 0 };
+    local bytes: array(3) cardinal(2) = Cast<array(3) cardinal(2)>(words);
+    return Cast<integer(4)>(bytes[0]);
+}",
+    );
+    assert!(stderr.contains("different byte sizes"), "{stderr}");
+}

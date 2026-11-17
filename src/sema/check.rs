@@ -4348,6 +4348,17 @@ impl<'a> Sema<'a> {
             self.result.resolutions[node as usize] = Some(Resolution::Conversion { method });
             return Some(target);
         }
+        if matches!(
+            (self.types_of(source), self.types_of(target)),
+            (Type::Array { .. }, Type::Array { .. })
+        ) && self.size_align(source).0 != self.size_align(target).0
+        {
+            self.unsupported(
+                self.span_of(node),
+                "array conversions between different byte sizes",
+            );
+            return None;
+        }
         if !self.can_explicit_cast(source, target) {
             self.error(
                 self.span_of(node),
@@ -4406,6 +4417,11 @@ impl<'a> Sema<'a> {
             // Array <-> pointer conversions (§3.6.2).
             (Type::Array { .. }, Type::Pointer { .. }) => true,
             (Type::Pointer { .. }, Type::Array { .. }) => true,
+            // Fixed arrays are explicitly convertible regardless of shape
+            // (§3.6.1); the conversion reinterprets the same bytes.
+            (Type::Array { .. }, Type::Array { .. }) => {
+                self.size_align(from).0 == self.size_align(to).0
+            }
             // Enumeration <-> underlying numeric type.
             (Type::Named(left), Type::Named(right)) => {
                 let left_kind = self.result.type_defs[*left as usize].kind;

@@ -2019,3 +2019,15 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 19);
 }
+
+#[test]
+fn fixed_array_shapes_convert_explicitly() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local words[2]: cardinal(4) = { 7, 0 };
+    local bytes: array(4) cardinal(2) = Cast<array(4) cardinal(2)>(words);
+    return Cast<integer(4)>(bytes[0]) + Cast<integer(4)>(bytes[1]);
+}";
+    assert_eq!(run_program(source), 7);
+}

@@ -531,6 +531,8 @@ pub enum Resolution {
         /// Member index.
         member: u32,
     },
+    /// A compiler-API call that produces no run-time code (§15.3).
+    CompileTimeNoOp,
     /// `Type.SizeOf<T>()` from the compiler API (§11.8): a compile-time size.
     SizeOf {
         /// The type whose memory size is produced.
@@ -875,6 +877,20 @@ impl<'a> Sema<'a> {
                 &mut stderr,
                 self.sources,
                 Severity::Warning,
+                Some(span),
+                &message.into(),
+            );
+        }
+    }
+
+    /// Reports an informational note.
+    pub(crate) fn note(&mut self, span: Span, message: impl Into<String>) {
+        if self.suppress_errors == 0 {
+            let mut stderr = std::io::stderr();
+            let _ = self.engine.report(
+                &mut stderr,
+                self.sources,
+                Severity::Note,
                 Some(span),
                 &message.into(),
             );

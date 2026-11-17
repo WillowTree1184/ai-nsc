@@ -5271,6 +5271,81 @@ impl<'a> Sema<'a> {
         Some(type_id)
     }
 
+    /// Handles the compile-time diagnostics API (§15.3).
+    fn check_compiler_call(
+        &mut self,
+        node: NodeId,
+        name: String,
+        arguments: &[Argument],
+    ) -> Option<TypeId> {
+        let span = self.span_of(node);
+        if self.compile_time_constants.is_empty() {
+            self.error(
+                span,
+                format!("'Compiler.{name}' is only available in compile-time code"),
+            );
+            return None;
+        }
+        let message = |me: &mut Self, argument: &Argument| -> Option<String> {
+            let NodeKind::StringLiteral(literal) = me.node_kind(argument.value) else {
+                me.unsupported(me.span_of(argument.value), "computed compile-time messages");
+                return None;
+            };
+            match literal::decode_string(&literal.raw) {
+                Ok(decoded) => Some(String::from_utf8_lossy(&decoded.bytes).into_owned()),
+                Err(message) => {
+                    me.error(me.span_of(argument.value), message);
+                    None
+                }
+            }
+        };
+        match name.as_str() {
+            "LogNote" | "LogWarning" | "LogError" => {
+                let Some(argument) = arguments.first() else {
+                    self.error(span, format!("'Compiler.{name}' requires a message"));
+                    return None;
+                };
+                let Some(message) = message(self, argument) else {
+                    return None;
+                };
+                match name.as_str() {
+                    "LogNote" => self.note(span, message),
+                    "LogWarning" => self.warn(span, message),
+                    _ => self.error(span, message),
+                }
+            }
+            "Assert" => {
+                let Some(condition) = arguments.first() else {
+                    self.error(span, "'Compiler.Assert' requires a condition");
+                    return None;
+                };
+                match self.eval_compile_time_bool(condition.value, 0) {
+                    Some(true) => {}
+                    Some(false) => {
+                        let detail = match arguments
+                            .get(1)
+                            .and_then(|argument| message(self, argument))
+                        {
+                            Some(message) => format!("compile-time assertion failed: {message}"),
+                            None => "compile-time assertion failed".to_string(),
+                        };
+                        self.error(span, detail);
+                    }
+                    None => self.unsupported(
+                        self.span_of(condition.value),
+                        "compile-time assertions with non-constant conditions",
+                    ),
+                }
+            }
+            _ => {
+                self.error(span, format!("unknown compiler API function '{name}'"));
+                return None;
+            }
+        }
+        self.result.resolutions[node as usize] = Some(Resolution::CompileTimeNoOp);
+        Some(TypeId::VOID)
+    }
+
     /// Handles `State(payload)` where `State` is a variant state name elided in a
     /// context that expects the variant type (§3.7.5). Returns `None` when the
     /// callee is not an elided variant state.
@@ -5321,6 +5396,11 @@ impl<'a> Sema<'a> {
     }
 
     fn check_call(&mut self, node: NodeId, call: &CallExpr) -> Option<TypeId> {
+        // Compile-time diagnostics: `Compiler.LogNote/LogWarning/LogError/Assert`
+        // (§15.3).
+        if let Some(name) = builtin_compiler_function(self.ast, call.callee) {
+            return self.check_compiler_call(node, name, &call.arguments);
+        }
         // Compiler API: `Type.SizeOf<T>()` yields `T`'s memory size as a
         // `cardinal(8)` value (§11.8).
         if let Some(type_argument) = builtin_size_of_type_argument(self.ast, call.callee) {
@@ -5938,4 +6018,18 @@ fn builtin_size_of_type_argument(ast: &Ast, callee: NodeId) -> Option<NodeId> {
         [Some(argument)] => Some(*argument),
         _ => None,
     }
+}
+
+/// Detects a `Compiler.<name>(...)` call from the compile-time library (§15.3).
+fn builtin_compiler_function(ast: &Ast, callee: NodeId) -> Option<String> {
+    let NodeKind::MemberAccess(access) = ast.node(callee).kind.clone() else {
+        return None;
+    };
+    let NodeKind::Name(namespace) = ast.node(access.base).kind.clone() else {
+        return None;
+    };
+    if namespace.name != "Compiler" {
+        return None;
+    }
+    Some(access.name)
 }

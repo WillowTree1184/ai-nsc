@@ -3003,6 +3003,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .build_load(llvm_type, pointer, "union_member")
                     .map_err(|error| format!("cannot load union member: {error}"))
             }
+            Some(Resolution::CompileTimeNoOp) => Ok(self.context.i8_type().const_zero().into()),
             Some(Resolution::SizeOf { ty }) => {
                 let size = self.sema.size_align(ty).0;
                 let llvm_type = self.llvm_type(self.type_of(node))?.into_int_type();

@@ -2167,3 +2167,17 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 97);
 }
+
+#[test]
+fn compiler_api_diagnostics_run_at_compile_time() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    #{
+        Compiler.Assert(true);
+        Compiler.LogNote(\"checked\");
+    }
+    return 0;
+}";
+    assert_eq!(run_program(source), 0);
+}

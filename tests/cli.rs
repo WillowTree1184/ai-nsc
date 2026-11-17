@@ -691,3 +691,34 @@ fixed Main(): integer(4) { return 0; }",
     );
     assert!(stderr.contains("compile-time ('#') parameters"), "{stderr}");
 }
+
+#[test]
+fn compile_time_assertion_failure_is_reported() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    #{
+        Compiler.Assert(false, \"must be true\");
+    }
+    return 0;
+}",
+    );
+    assert!(stderr.contains("compile-time assertion failed"), "{stderr}");
+}
+
+#[test]
+fn compiler_api_is_rejected_outside_compile_time_code() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    Compiler.Assert(true);
+    return 0;
+}",
+    );
+    assert!(
+        stderr.contains("only available in compile-time code"),
+        "{stderr}"
+    );
+}

@@ -51,6 +51,7 @@ only after the reproduction is re-run and its regression test is green.
 | 29 | LOW | §3.2 | Signed `INT_MIN / -1` sdiv poison possible | open |
 | 30 | LOW | §4.8 | `is` on statically impossible operands should evaluate to false rather than report an error | open |
 | 31 | LOW | §4.8 | `is`-patterns over interface targets missing | open |
+| 32 | MED | §8.2 | `#` compile-time parameters silently treated as runtime parameters | fixed (de34ae0: explicit 'not implemented yet' diagnostic in functions/methods/operators) |
 
 ## HIGH
 

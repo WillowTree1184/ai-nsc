@@ -1128,6 +1128,27 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
     }
 
     fn gen_set_statement(&mut self, statement: &SetStmt) -> Result<(), String> {
+        if let Some(Resolution::Indexer { setter, .. }) =
+            self.sema.resolutions[statement.target as usize].clone()
+        {
+            let setter = setter.ok_or_else(|| "indexer is read-only".to_string())?;
+            let NodeKind::Index(index) = self.ast.node(statement.target).kind.clone() else {
+                return Err("indexer write requires an index expression".to_string());
+            };
+            let receiver = self.gen_instance_pointer(index.base)?;
+            let index_value = self.gen_expr(index.index)?;
+            let value = self.gen_expr(statement.value)?;
+            let function = *self
+                .functions
+                .get(&setter)
+                .ok_or_else(|| "missing indexer setter".to_string())?;
+            let arguments: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+                vec![receiver.into(), index_value.into(), value.into()];
+            self.builder
+                .build_call(function, &arguments, "indexer_set")
+                .map_err(|error| format!("cannot call indexer: {error}"))?;
+            return Ok(());
+        }
         if let Some(Resolution::Accessor { setter, .. }) =
             self.sema.resolutions[statement.target as usize].clone()
         {
@@ -2336,6 +2357,13 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .into())
             }
             Some(Resolution::Field { .. }) => self.gen_field_load(node),
+            Some(Resolution::Operator { .. })
+            | Some(Resolution::DerivedNotEqual { .. })
+            | Some(Resolution::DerivedComparison { .. })
+            | Some(Resolution::Indexer { .. })
+            | Some(Resolution::Conversion { .. }) => {
+                Err("operator resolution is lowered by its enclosing expression".to_string())
+            }
             Some(Resolution::This) | Some(Resolution::Base) => self.gen_this_value(),
             Some(Resolution::Construct { .. })
             | Some(Resolution::ConstructVariant { .. })
@@ -2391,7 +2419,95 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .map_err(|error| format!("cannot load field: {error}"))
     }
 
+    fn negate_boolean(
+        &mut self,
+        value: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let value = value.into_int_value();
+        let width = value.get_type().get_bit_width().max(8);
+        let all_ones = value.get_type().const_all_ones();
+        if width == 8 {
+            let negated = self
+                .builder
+                .build_xor(value, all_ones, "not")
+                .map_err(|error| format!("cannot negate: {error}"))?;
+            return Ok(negated.into());
+        }
+        let extended = self
+            .builder
+            .build_int_z_extend(value, self.context.i8_type(), "bool")
+            .map_err(|error| format!("cannot extend boolean: {error}"))?;
+        self.builder
+            .build_xor(extended, self.context.i8_type().const_all_ones(), "not")
+            .map(Into::into)
+            .map_err(|error| format!("cannot negate: {error}"))
+    }
+
+    fn or_booleans(
+        &mut self,
+        left: BasicValueEnum<'ctx>,
+        right: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let left = self.as_boolean_i1(left.into_int_value());
+        let right = self.as_boolean_i1(right.into_int_value());
+        self.builder
+            .build_or(left, right, "or")
+            .map(Into::into)
+            .map_err(|error| format!("cannot combine booleans: {error}"))
+    }
+
+    /// Calls an operator implementation with the given argument values.
+    fn gen_operator_call(
+        &mut self,
+        method: u32,
+        arguments: Vec<BasicValueEnum<'ctx>>,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let function = *self
+            .functions
+            .get(&method)
+            .ok_or_else(|| "missing operator implementation".to_string())?;
+        let arguments: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+            arguments.into_iter().map(Into::into).collect();
+        let call = self
+            .builder
+            .build_call(function, &arguments, "operator")
+            .map_err(|error| format!("cannot call operator: {error}"))?;
+        match call.try_as_basic_value() {
+            ValueKind::Basic(value) => Ok(value),
+            ValueKind::Instruction(_) => Err("operator produced no value".to_string()),
+        }
+    }
+
     fn gen_index_expr(
+        &mut self,
+        node: NodeId,
+        index: &IndexExpr,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        if let Some(Resolution::Indexer { getter, .. }) =
+            self.sema.resolutions[node as usize].clone()
+        {
+            let getter = getter.ok_or_else(|| "indexer is write-only".to_string())?;
+            let receiver = self.gen_instance_pointer(index.base)?;
+            let index_value = self.gen_expr(index.index)?;
+            let function = *self
+                .functions
+                .get(&getter)
+                .ok_or_else(|| "missing indexer getter".to_string())?;
+            let arguments: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+                vec![receiver.into(), index_value.into()];
+            let call = self
+                .builder
+                .build_call(function, &arguments, "indexer")
+                .map_err(|error| format!("cannot call indexer: {error}"))?;
+            return match call.try_as_basic_value() {
+                ValueKind::Basic(value) => Ok(value),
+                ValueKind::Instruction(_) => Err("indexer produced no value".to_string()),
+            };
+        }
+        self.gen_index_expr_impl(node, index)
+    }
+
+    fn gen_index_expr_impl(
         &mut self,
         node: NodeId,
         _index: &IndexExpr,
@@ -3334,6 +3450,20 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         node: NodeId,
         cast: &CastExpr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
+        if let Some(Resolution::Conversion { method }) =
+            self.sema.resolutions[node as usize].clone()
+        {
+            let value = self.gen_expr(cast.value)?;
+            return self.gen_operator_call(method, vec![value]);
+        }
+        self.gen_cast_expr_impl(node, cast)
+    }
+
+    fn gen_cast_expr_impl(
+        &mut self,
+        node: NodeId,
+        cast: &CastExpr,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
         let value = self.gen_expr(cast.value)?;
         let source_type = self.type_of(cast.value);
         let target_type = self.type_of(node);
@@ -3479,6 +3609,19 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         node: NodeId,
         unary: &UnaryExpr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
+        if let Some(Resolution::Operator { method }) = self.sema.resolutions[node as usize].clone()
+        {
+            let operand = self.gen_expr(unary.operand)?;
+            return self.gen_operator_call(method, vec![operand]);
+        }
+        self.gen_unary_expr_impl(node, unary)
+    }
+
+    fn gen_unary_expr_impl(
+        &mut self,
+        node: NodeId,
+        unary: &UnaryExpr,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
         let operand = self.gen_expr(unary.operand)?;
         let ty = self.type_of(node);
         match unary.op {
@@ -3540,6 +3683,37 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
     }
 
     fn gen_binary_expr(
+        &mut self,
+        node: NodeId,
+        binary: &BinaryExpr,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        match self.sema.resolutions[node as usize].clone() {
+            Some(Resolution::Operator { method }) => {
+                let left = self.gen_expr(binary.left)?;
+                let right = self.gen_expr(binary.right)?;
+                return self.gen_operator_call(method, vec![left, right]);
+            }
+            Some(Resolution::DerivedNotEqual { method }) => {
+                let left = self.gen_expr(binary.left)?;
+                let right = self.gen_expr(binary.right)?;
+                let result = self.gen_operator_call(method, vec![left, right])?;
+                return self.negate_boolean(result);
+            }
+            Some(Resolution::DerivedComparison { ordering, equality }) => {
+                let left = self.gen_expr(binary.left)?;
+                let right = self.gen_expr(binary.right)?;
+                let ordering_result = self.gen_operator_call(ordering, vec![left, right])?;
+                let left = self.gen_expr(binary.left)?;
+                let right = self.gen_expr(binary.right)?;
+                let equality_result = self.gen_operator_call(equality, vec![left, right])?;
+                return self.or_booleans(ordering_result, equality_result);
+            }
+            _ => {}
+        }
+        self.gen_binary_expr_impl(node, binary)
+    }
+
+    fn gen_binary_expr_impl(
         &mut self,
         node: NodeId,
         binary: &BinaryExpr,

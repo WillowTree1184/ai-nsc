@@ -334,7 +334,18 @@ impl<'a> Sema<'a> {
                     }
                 }
                 NodeKind::Operator(_) => {
-                    self.unsupported(self.span_of(*member), "operators in type bodies");
+                    let is_interface = matches!(
+                        self.types_of(type_id),
+                        Type::Named(index) if self.result.type_defs[index as usize].kind == TypeDefKind::Interface
+                    );
+                    if is_interface {
+                        self.resolve_operator_declaration(*member, Some(type_id));
+                    } else {
+                        self.error(
+                            self.span_of(*member),
+                            "operators must be declared in an extension block",
+                        );
+                    }
                 }
                 NodeKind::Class(_)
                 | NodeKind::Structure(_)
@@ -502,7 +513,7 @@ impl<'a> Sema<'a> {
                     self.pending_accessors.push((member, target));
                 }
                 NodeKind::Operator(_) => {
-                    self.unsupported(self.span_of(member), "operator declarations");
+                    self.resolve_operator_declaration(member, Some(target));
                 }
                 NodeKind::Field(_) => {
                     self.error(self.span_of(member), "an extension must not declare fields");
@@ -738,6 +749,9 @@ impl<'a> Sema<'a> {
                 NodeKind::Accessor(_) => {
                     self.resolve_accessor_declaration(member, Some(type_id));
                 }
+                NodeKind::Operator(_) => {
+                    self.resolve_operator_declaration(member, Some(type_id));
+                }
                 NodeKind::Module(_) => {}
                 _ => {
                     self.error(
@@ -760,6 +774,419 @@ impl<'a> Sema<'a> {
     }
 
     /// Resolves accessor declarations into getter/setter methods (§3.8.2).
+    /// Resolves an operator definition into implementation functions (§4.9).
+    pub(crate) fn resolve_operator_declaration(&mut self, node: NodeId, owner: Option<TypeId>) {
+        let NodeKind::Operator(declaration) = self.node_kind(node) else {
+            return;
+        };
+        let Some(owner) = owner else {
+            self.unsupported(self.span_of(node), "operators outside type bodies");
+            return;
+        };
+        let Type::Named(owner_index) = self.types_of(owner) else {
+            return;
+        };
+        let is_interface =
+            self.result.type_defs[owner_index as usize].kind == TypeDefKind::Interface;
+        match &declaration.head {
+            OperatorHead::Indexer {
+                parameters,
+                return_type,
+            } => {
+                let Some(return_ty) = return_type.and_then(|ty| self.resolve_type(ty)) else {
+                    self.error(
+                        self.span_of(node),
+                        "an indexer operator requires a return type",
+                    );
+                    return;
+                };
+                let Some(indices) = self.resolve_operator_parameters(parameters) else {
+                    return;
+                };
+                let members = match &declaration.body {
+                    OperatorBody::AccessorMembers(members) => members.clone(),
+                    OperatorBody::None if is_interface => Vec::new(),
+                    _ => {
+                        self.error(
+                            self.span_of(node),
+                            "an indexer operator body must be an accessor member list",
+                        );
+                        return;
+                    }
+                };
+                let mut getter = None;
+                let mut setter = None;
+                for member in members {
+                    let implementation = match (member.expression, member.body) {
+                        (Some(expression), None) => Some(FunctionBody::Expression(expression)),
+                        (None, Some(block)) => Some(FunctionBody::Block(block)),
+                        (None, None) => None,
+                        (Some(_), Some(_)) => {
+                            self.error(
+                                member.span,
+                                "an accessor member takes either an expression or a block",
+                            );
+                            None
+                        }
+                    };
+                    let body = if is_interface { None } else { implementation };
+                    if !is_interface && body.is_none() {
+                        self.error(
+                            member.span,
+                            "indexer accessor members require an implementation",
+                        );
+                        continue;
+                    }
+                    if member.is_getter {
+                        getter = self.create_operator_method(
+                            owner,
+                            "operator[index]@get",
+                            &indices,
+                            Some(return_ty),
+                            body,
+                            member.span,
+                            true,
+                        );
+                    } else {
+                        let mut value_parameters = indices.clone();
+                        value_parameters.push(ParameterInfo {
+                            name: "value".to_string(),
+                            ty: return_ty,
+                            by_ref: false,
+                        });
+                        setter = self.create_operator_method(
+                            owner,
+                            "operator[index]@set",
+                            &value_parameters,
+                            None,
+                            body,
+                            member.span,
+                            true,
+                        );
+                    }
+                }
+                let definition = &mut self.result.type_defs[owner_index as usize];
+                definition.operators.push(OperatorInfo {
+                    kind: OperatorKind::Index,
+                    method: 0,
+                    getter,
+                    setter,
+                });
+            }
+            OperatorHead::Shorthand {
+                symbol,
+                parameters: _,
+                return_type,
+            }
+            | OperatorHead::Notation {
+                symbol,
+                return_type,
+                ..
+            } => {
+                let parameters = match &declaration.head {
+                    OperatorHead::Shorthand { parameters, .. } => parameters.clone(),
+                    _ => Vec::new(),
+                };
+                let Some(kind) = self.operator_kind(symbol, parameters.len()) else {
+                    return;
+                };
+                let Some(arguments) = self.resolve_operator_parameters(&parameters) else {
+                    return;
+                };
+                let (Some(return_ty), true) =
+                    (return_type.and_then(|ty| self.resolve_type(ty)), true)
+                else {
+                    self.error(
+                        self.span_of(node),
+                        "an operator requires an explicit return type",
+                    );
+                    return;
+                };
+                let body = self.operator_body(&declaration.body, is_interface);
+                let method_name = format!("operator{symbol}");
+                let Some(method) = self.create_operator_method(
+                    owner,
+                    &method_name,
+                    &arguments,
+                    Some(return_ty),
+                    body,
+                    self.span_of(node),
+                    false,
+                ) else {
+                    return;
+                };
+                let definition = &mut self.result.type_defs[owner_index as usize];
+                definition.operators.push(OperatorInfo {
+                    kind,
+                    method,
+                    getter: None,
+                    setter: None,
+                });
+            }
+            OperatorHead::Conversion {
+                type_,
+                parameters,
+                return_type,
+            } => {
+                let Some(target) = self.resolve_type(*type_) else {
+                    return;
+                };
+                // The function-type notation (`operator T: function(from: S) T`)
+                // carries the parameters and return type in the type itself.
+                let declared = return_type.and_then(|ty| self.resolve_type(ty));
+                let function_signature =
+                    declared.and_then(|declared| match self.result.types.get(declared).clone() {
+                        Type::Function {
+                            parameters: function_parameters,
+                            return_type: function_return,
+                            ..
+                        } => Some((function_parameters, function_return)),
+                        _ => None,
+                    });
+                let (arguments, declared_target) = match function_signature {
+                    Some((function_parameters, function_return)) => (
+                        function_parameters
+                            .iter()
+                            .enumerate()
+                            .map(|(index, parameter)| ParameterInfo {
+                                name: format!("argument{index}"),
+                                ty: *parameter,
+                                by_ref: false,
+                            })
+                            .collect::<Vec<_>>(),
+                        function_return,
+                    ),
+                    None => {
+                        let Some(arguments) = self.resolve_operator_parameters(parameters) else {
+                            return;
+                        };
+                        (arguments, Some(target))
+                    }
+                };
+                if let Some(declared_target) = declared_target {
+                    if declared_target != target {
+                        self.error(
+                            self.span_of(node),
+                            "a conversion operator's return type must equal its target type",
+                        );
+                        return;
+                    }
+                }
+                if arguments.iter().any(|parameter| parameter.by_ref) {
+                    self.error(
+                        self.span_of(node),
+                        "a conversion operator must not take by-reference parameters",
+                    );
+                    return;
+                }
+                let body = self.operator_body(&declaration.body, is_interface);
+                let method_name = format!("operator:{}", self.spelling(target));
+                let Some(method) = self.create_operator_method(
+                    owner,
+                    &method_name,
+                    &arguments,
+                    Some(target),
+                    body,
+                    self.span_of(node),
+                    false,
+                ) else {
+                    return;
+                };
+                let definition = &mut self.result.type_defs[owner_index as usize];
+                definition.operators.push(OperatorInfo {
+                    kind: OperatorKind::Conversion,
+                    method,
+                    getter: None,
+                    setter: None,
+                });
+            }
+        }
+    }
+
+    fn operator_kind(&mut self, symbol: &str, parameter_count: usize) -> Option<OperatorKind> {
+        let is_unary = parameter_count == 1;
+        let kind = match symbol {
+            "+" => OperatorKind::Add,
+            "-" => {
+                if is_unary {
+                    OperatorKind::Negate
+                } else {
+                    OperatorKind::Subtract
+                }
+            }
+            "*" => OperatorKind::Multiply,
+            "/" => OperatorKind::Divide,
+            "%" => OperatorKind::Remainder,
+            "==" => OperatorKind::Equal,
+            ">" => OperatorKind::Greater,
+            "<" => OperatorKind::Less,
+            "??" => {
+                self.unsupported(self.span_of(NodeId::default()), "the ?? operator");
+                return None;
+            }
+            "!=" | "<=" | ">=" => {
+                self.error(
+                    self.span_of(NodeId::default()),
+                    "derived operators must not be defined",
+                );
+                return None;
+            }
+            _ => {
+                self.error(
+                    self.span_of(NodeId::default()),
+                    format!("operator '{symbol}' is not overloadable"),
+                );
+                return None;
+            }
+        };
+        if kind == OperatorKind::Add && is_unary {
+            self.error(
+                self.span_of(NodeId::default()),
+                "unary '+' is not overloadable",
+            );
+            return None;
+        }
+        if !matches!(kind, OperatorKind::Negate)
+            && !matches!(kind, OperatorKind::Conversion)
+            && parameter_count != 2
+        {
+            self.error(
+                self.span_of(NodeId::default()),
+                "binary operators take exactly two parameters",
+            );
+            return None;
+        }
+        if kind == OperatorKind::Negate && parameter_count != 1 {
+            self.error(
+                self.span_of(NodeId::default()),
+                "unary '-' takes exactly one parameter",
+            );
+            return None;
+        }
+        Some(kind)
+    }
+
+    fn operator_body(&mut self, body: &OperatorBody, is_interface: bool) -> Option<FunctionBody> {
+        match body {
+            OperatorBody::Expression(expression) => Some(FunctionBody::Expression(*expression)),
+            OperatorBody::Block(block) => Some(FunctionBody::Block(*block)),
+            OperatorBody::None => {
+                if !is_interface {
+                    self.error(
+                        self.span_of(NodeId::default()),
+                        "an operator definition requires a body",
+                    );
+                }
+                None
+            }
+            OperatorBody::AccessorMembers(_) => {
+                self.error(
+                    self.span_of(NodeId::default()),
+                    "accessor members are only allowed for indexer operators",
+                );
+                None
+            }
+        }
+    }
+
+    fn resolve_operator_parameters(
+        &mut self,
+        parameters: &[Parameter],
+    ) -> Option<Vec<ParameterInfo>> {
+        let mut resolved = Vec::new();
+        for (index, parameter) in parameters.iter().enumerate() {
+            let Some(parameter_type_node) = parameter.ty else {
+                self.error(parameter.span, "operator parameters require a type");
+                return None;
+            };
+            if parameter.by_ref {
+                self.error(
+                    parameter.span,
+                    "operator parameters must not be by-reference",
+                );
+                return None;
+            }
+            let ty = self.resolve_type(parameter_type_node)?;
+            let name = parameter
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("argument{index}"));
+            if name == "this" {
+                self.error(parameter.span, "operators must not take a 'this' parameter");
+                return None;
+            }
+            resolved.push(ParameterInfo {
+                name,
+                ty,
+                by_ref: false,
+            });
+        }
+        Some(resolved)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_operator_method(
+        &mut self,
+        owner: TypeId,
+        name: &str,
+        parameters: &[ParameterInfo],
+        return_type: Option<TypeId>,
+        body: Option<FunctionBody>,
+        span: Span,
+        with_this: bool,
+    ) -> Option<u32> {
+        let mut all_parameters = Vec::new();
+        if with_this {
+            all_parameters.push(ParameterInfo {
+                name: "this".to_string(),
+                ty: owner,
+                by_ref: true,
+            });
+        }
+        all_parameters.extend(parameters.iter().cloned());
+        let owner_name = match self.result.types.get(owner) {
+            Type::Named(index) => self.result.type_defs[*index as usize]
+                .qualified_name
+                .clone(),
+            _ => return None,
+        };
+        let scope: Vec<String> = owner_name.split('.').map(str::to_string).collect();
+        let spellings: Vec<String> = all_parameters
+            .iter()
+            .map(|parameter| self.spelling(parameter.ty))
+            .collect();
+        let mangled = mangle_function(&scope, name, &spellings);
+        let index = self.result.functions.len() as u32;
+        self.result.functions.push(FunctionInfo {
+            name: name.to_string(),
+            scope,
+            node: NodeId::default(),
+            body,
+            parameters: all_parameters,
+            method_of: with_this.then_some(owner),
+            is_virtual: false,
+            is_override: false,
+            is_sealed: false,
+            is_abstract: body.is_none(),
+            return_type,
+            mangled,
+            locals: Vec::new(),
+            span,
+        });
+        if with_this {
+            if let Type::Named(owner_index) = self.result.types.get(owner).clone() {
+                let definition = &mut self.result.type_defs[owner_index as usize];
+                definition
+                    .methods
+                    .entry(name.to_string())
+                    .or_default()
+                    .push(index);
+                definition.method_list.push(index);
+            }
+        }
+        Some(index)
+    }
+
     /// Resolves accessors that were waiting for their owner's field layout.
     pub(crate) fn resolve_pending_accessors(&mut self) {
         let pending: Vec<(NodeId, TypeId)> = std::mem::take(&mut self.pending_accessors);
@@ -3058,6 +3485,27 @@ impl<'a> Sema<'a> {
                 None
             }
             _ => {
+                if let Some(indexer) = self.find_indexer(base_type) {
+                    self.result.resolutions[node as usize] = Some(Resolution::Indexer {
+                        getter: indexer.getter,
+                        setter: indexer.setter,
+                    });
+                    let accessor = indexer.getter.or(indexer.setter);
+                    if let Some(accessor) = accessor {
+                        let parameter = self.result.functions[accessor as usize]
+                            .parameters
+                            .get(1)
+                            .map(|parameter| parameter.ty);
+                        if let Some(parameter) = parameter {
+                            let _ = self.check_expr(index.index, Some(parameter));
+                        }
+                    }
+                    let Some(getter) = indexer.getter else {
+                        self.error(self.span_of(node), "indexer is write-only");
+                        return None;
+                    };
+                    return self.result.functions[getter as usize].return_type;
+                }
                 self.error(self.span_of(node), "indexing requires an array or pointer");
                 None
             }
@@ -3067,6 +3515,13 @@ impl<'a> Sema<'a> {
     fn check_cast(&mut self, node: NodeId, cast: &CastExpr) -> Option<TypeId> {
         let target = self.resolve_type(cast.type_)?;
         let source = self.check_expr(cast.value, None)?;
+        if let Some(method) = self
+            .find_conversion_operator(source, source, target)
+            .or_else(|| self.find_conversion_operator(target, source, target))
+        {
+            self.result.resolutions[node as usize] = Some(Resolution::Conversion { method });
+            return Some(target);
+        }
         if !self.can_explicit_cast(source, target) {
             self.error(
                 self.span_of(node),
@@ -3121,6 +3576,12 @@ impl<'a> Sema<'a> {
         match unary.op {
             UnaryOp::Negate => {
                 let ty = self.check_expr(unary.operand, expected)?;
+                if let Some(method) = self.find_operator(ty, ty, OperatorKind::Negate) {
+                    self.result.resolutions[node as usize] = Some(Resolution::Operator { method });
+                    return self.result.functions[method as usize]
+                        .return_type
+                        .or(Some(ty));
+                }
                 if !self.is_numeric(ty) {
                     self.error(self.span_of(node), "unary '-' requires a numeric operand");
                     return None;
@@ -3166,6 +3627,155 @@ impl<'a> Sema<'a> {
                 }
             }
         }
+    }
+
+    /// Attempts to resolve a user-defined operator for the operands (§4.9).
+    fn check_overloaded_binary(
+        &mut self,
+        node: NodeId,
+        op: BinaryOp,
+        left: TypeId,
+        right: TypeId,
+    ) -> Option<TypeId> {
+        let (kind, ordering) = match op {
+            BinaryOp::Add => (OperatorKind::Add, None),
+            BinaryOp::Subtract => (OperatorKind::Subtract, None),
+            BinaryOp::Multiply => (OperatorKind::Multiply, None),
+            BinaryOp::Divide => (OperatorKind::Divide, None),
+            BinaryOp::Remainder => (OperatorKind::Remainder, None),
+            BinaryOp::Equal => (OperatorKind::Equal, None),
+            BinaryOp::Greater => (OperatorKind::Greater, None),
+            BinaryOp::Less => (OperatorKind::Less, None),
+            BinaryOp::NotEqual => (OperatorKind::Equal, Some(true)),
+            BinaryOp::LessEqual => (OperatorKind::Less, Some(false)),
+            BinaryOp::GreaterEqual => (OperatorKind::Greater, Some(false)),
+            _ => return None,
+        };
+        match ordering {
+            Some(negated) => {
+                let method = self.find_operator(left, right, kind)?;
+                if negated {
+                    self.result.resolutions[node as usize] =
+                        Some(Resolution::DerivedNotEqual { method });
+                } else {
+                    let Some(equality) = self.find_operator(left, right, OperatorKind::Equal)
+                    else {
+                        self.error(
+                            self.span_of(node),
+                            "derived comparison requires an '==' overload",
+                        );
+                        return None;
+                    };
+                    self.result.resolutions[node as usize] = Some(Resolution::DerivedComparison {
+                        ordering: method,
+                        equality,
+                    });
+                }
+                Some(TypeId::BOOLEAN)
+            }
+            None => {
+                let method = self
+                    .find_operator(left, right, kind)
+                    .or_else(|| self.find_operator(right, left, kind))?;
+                self.result.resolutions[node as usize] = Some(Resolution::Operator { method });
+                Some(
+                    self.result.functions[method as usize]
+                        .return_type
+                        .unwrap_or(left),
+                )
+            }
+        }
+    }
+
+    /// Finds an operator overload for the argument types along the owner chain.
+    fn find_operator(&self, owner: TypeId, other: TypeId, kind: OperatorKind) -> Option<u32> {
+        let mut current = Some(owner);
+        let mut depth = 0;
+        while let Some(ty) = current {
+            depth += 1;
+            if depth > 32 {
+                break;
+            }
+            let Type::Named(index) = self.types_of(ty) else {
+                break;
+            };
+            let definition = &self.result.type_defs[index as usize];
+            for operator in &definition.operators {
+                if operator.kind != kind || operator.method == 0 {
+                    continue;
+                }
+                let parameters = &self.result.functions[operator.method as usize].parameters;
+                let expected = if kind == OperatorKind::Negate { 1 } else { 2 };
+                if parameters.len() == expected
+                    && self.is_assignable(ty, parameters[0].ty)
+                    && (expected == 1 || self.is_assignable(other, parameters[1].ty))
+                {
+                    return Some(operator.method);
+                }
+            }
+            current = definition.base;
+        }
+        None
+    }
+
+    /// Finds an indexer operator on the owner chain.
+    fn find_indexer(&self, owner: TypeId) -> Option<OperatorInfo> {
+        let mut current = Some(owner);
+        let mut depth = 0;
+        while let Some(ty) = current {
+            depth += 1;
+            if depth > 32 {
+                break;
+            }
+            let Type::Named(index) = self.types_of(ty) else {
+                break;
+            };
+            let definition = &self.result.type_defs[index as usize];
+            if let Some(operator) = definition
+                .operators
+                .iter()
+                .find(|operator| operator.kind == OperatorKind::Index)
+            {
+                return Some(operator.clone());
+            }
+            current = definition.base;
+        }
+        None
+    }
+
+    /// Finds a conversion operator from `source` to `target` on `owner`.
+    fn find_conversion_operator(
+        &self,
+        owner: TypeId,
+        source: TypeId,
+        target: TypeId,
+    ) -> Option<u32> {
+        let mut current = Some(owner);
+        let mut depth = 0;
+        while let Some(ty) = current {
+            depth += 1;
+            if depth > 32 {
+                break;
+            }
+            let Type::Named(index) = self.types_of(ty) else {
+                break;
+            };
+            let definition = &self.result.type_defs[index as usize];
+            for operator in &definition.operators {
+                if operator.kind != OperatorKind::Conversion || operator.method == 0 {
+                    continue;
+                }
+                let function = &self.result.functions[operator.method as usize];
+                if function.return_type == Some(target)
+                    && function.parameters.len() == 1
+                    && self.is_assignable(source, function.parameters[0].ty)
+                {
+                    return Some(operator.method);
+                }
+            }
+            current = definition.base;
+        }
+        None
     }
 
     fn check_binary(
@@ -3220,6 +3830,9 @@ impl<'a> Sema<'a> {
         let (Some(left_type), Some(right_type)) = (left_type, right_type) else {
             return None;
         };
+        if let Some(result) = self.check_overloaded_binary(node, binary.op, left_type, right_type) {
+            return Some(result);
+        }
         if left_type != right_type {
             self.error(
                 self.span_of(node),

@@ -1522,12 +1522,28 @@ impl<'a> Parser<'a> {
             }
         } else {
             let type_ = self.parse_type()?;
+            let mut parameters = Vec::new();
+            if self.eat(TokenKind::LeftParen) {
+                if !self.at(TokenKind::RightParen) {
+                    loop {
+                        parameters.push(self.parse_parameter());
+                        if !self.eat(TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                }
+                self.expect(TokenKind::RightParen, "')' in conversion operator");
+            }
             let return_type = if self.eat(TokenKind::Colon) {
                 self.parse_type()
             } else {
                 None
             };
-            OperatorHead::Conversion { type_, return_type }
+            OperatorHead::Conversion {
+                type_,
+                parameters,
+                return_type,
+            }
         };
 
         let _ = head_start;
@@ -1542,8 +1558,20 @@ impl<'a> Parser<'a> {
             let next_text = self.tokens[next_index].text(self.source);
             let is_accessor_list = matches!(next_text, "get" | "set");
             if is_accessor_list {
-                self.skip_balanced_braces();
-                OperatorBody::AccessorMembers
+                self.bump();
+                let mut members = Vec::new();
+                while !self.at(TokenKind::RightBrace) && !self.at_end() {
+                    if let Some(member) = self.parse_accessor_member() {
+                        members.push(member);
+                    } else {
+                        self.synchronize();
+                    }
+                    if !self.at(TokenKind::RightBrace) {
+                        self.expect_statement_terminator();
+                    }
+                }
+                self.expect(TokenKind::RightBrace, "'}'");
+                OperatorBody::AccessorMembers(members)
             } else {
                 match self.parse_block() {
                     Some(block) => OperatorBody::Block(block),
@@ -1579,25 +1607,6 @@ impl<'a> Parser<'a> {
             _ => return None,
         };
         Some(text.to_string())
-    }
-
-    fn skip_balanced_braces(&mut self) {
-        let mut depth = 0usize;
-        while !self.at_end() {
-            match self.peek_kind() {
-                TokenKind::LeftBrace => depth += 1,
-                TokenKind::RightBrace => {
-                    depth -= 1;
-                    self.bump();
-                    if depth == 0 {
-                        return;
-                    }
-                    continue;
-                }
-                _ => {}
-            }
-            self.bump();
-        }
     }
 
     fn parse_field(&mut self, modifiers: Modifiers) -> Option<NodeId> {

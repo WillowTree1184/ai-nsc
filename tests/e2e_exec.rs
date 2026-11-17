@@ -747,3 +747,123 @@ fixed Main(): integer(4) { return 0; }";
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("implementation"), "stderr: {stderr}");
 }
+
+#[test]
+fn operators_dispatch_to_definitions() {
+    let source = "\
+structure Vec2
+{
+    public X: integer(4);
+    public Y: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Vec2, x: integer(4), y: integer(4))
+        {
+            this.X = x;
+            this.Y = y;
+        }
+
+        public operator +(left: Vec2, right: Vec2): Vec2
+        {
+            return Vec2(left.X + right.X, left.Y + right.Y);
+        }
+
+        public operator ==(left: Vec2, right: Vec2): boolean
+        {
+            return left.X == right.X && left.Y == right.Y;
+        }
+
+        public operator <(left: Vec2, right: Vec2): boolean
+        {
+            return left.X < right.X;
+        }
+
+        public operator -(operand: Vec2): Vec2
+        {
+            return Vec2(-operand.X, -operand.Y);
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local a: Vec2 = Vec2(1, 2);
+    local b: Vec2 = Vec2(3, 4);
+    local c: Vec2 = a + b;
+    local negated: Vec2 = -a;
+
+    local score: integer(4) = c.X * 10 + c.Y + negated.Y;   // 46 - 2 = 44
+    if (a == a) { score += 1; }
+    if (a != b) { score += 2; }
+    if (a < b) { score += 4; }
+    if (a <= a) { score += 8; }
+    return score;   // 44 + 15 = 59
+}";
+    assert_eq!(run_program(source), 59);
+}
+
+#[test]
+fn indexer_operator_reads_and_writes() {
+    let source = "\
+structure Grid
+{
+    private Data[4]: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Grid, a: integer(4), b: integer(4), c: integer(4), d: integer(4))
+        {
+            this.Data[0] = a;
+            this.Data[1] = b;
+            this.Data[2] = c;
+            this.Data[3] = d;
+        }
+
+        public operator [index: integer(4)]: integer(4)
+        {
+            get(this: &Grid) { return this.Data[index]; }
+            set(this: &Grid, value: integer(4)) { this.Data[index] = value; }
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local grid: Grid = Grid(10, 20, 30, 40);
+    grid[1] = grid[1] + 5;
+    return grid[1] + grid[3];   // 25 + 40
+}";
+    assert_eq!(run_program(source), 65);
+}
+
+#[test]
+fn conversion_operator_handles_casts() {
+    let source = "\
+structure Celsius { public Degrees: integer(4); extension {
+    public fixed Construct(this: &Celsius, degrees: integer(4)) { this.Degrees = degrees; }
+} }
+
+structure Fahrenheit
+{
+    public Degrees: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Fahrenheit, degrees: integer(4)) { this.Degrees = degrees; }
+
+        public operator Fahrenheit(value: Celsius): Fahrenheit
+        {
+            return Fahrenheit(value.Degrees * 9 / 5 + 32);
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local celsius: Celsius = Celsius(100);
+    local fahrenheit: Fahrenheit = Cast<Fahrenheit>(celsius);
+    return fahrenheit.Degrees;   // 212
+}";
+    assert_eq!(run_program(source), 212);
+}

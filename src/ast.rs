@@ -545,13 +545,15 @@ pub enum OperatorHead {
     Conversion {
         /// The constructed type name.
         type_: NodeId,
+        /// Parameters.
+        parameters: Vec<Parameter>,
         /// Return type.
         return_type: Option<NodeId>,
     },
 }
 
 /// Body of an operator definition.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum OperatorBody {
     /// No body.
     None,
@@ -559,8 +561,8 @@ pub enum OperatorBody {
     Expression(NodeId),
     /// A block body.
     Block(NodeId),
-    /// Accessor members (not stored separately yet; the block is kept).
-    AccessorMembers,
+    /// Accessor members (indexer `get`/`set`).
+    AccessorMembers(Vec<AccessorMember>),
 }
 
 /// `local Name: Type = value, ...` (§5.2).

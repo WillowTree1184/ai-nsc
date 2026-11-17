@@ -98,6 +98,8 @@ pub struct TypeDef {
     pub method_list: Vec<u32>,
     /// Accessor properties declared in extension blocks.
     pub accessors: Vec<AccessorInfo>,
+    /// Operator definitions declared in extension blocks.
+    pub operators: Vec<OperatorInfo>,
     /// Interfaces this class implements (§3.7.3/§3.7.7).
     pub interfaces: Vec<TypeId>,
     /// Per-interface dispatch tables: implementation method id per interface
@@ -204,6 +206,46 @@ pub enum FunctionBody {
     },
 }
 
+/// The overloadable operator kinds (§4.9.2).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OperatorKind {
+    /// Binary `+`.
+    Add,
+    /// Binary `-`.
+    Subtract,
+    /// Binary `*`.
+    Multiply,
+    /// Binary `/`.
+    Divide,
+    /// Binary `%`.
+    Remainder,
+    /// Binary `==`.
+    Equal,
+    /// Binary `>`.
+    Greater,
+    /// Binary `<`.
+    Less,
+    /// Unary `-`.
+    Negate,
+    /// Indexer `[...]`.
+    Index,
+    /// Conversion operator.
+    Conversion,
+}
+
+/// One operator definition attached to a type (§4.9).
+#[derive(Clone, Debug)]
+pub struct OperatorInfo {
+    /// Operator kind.
+    pub kind: OperatorKind,
+    /// Implementation method (non-indexer operators).
+    pub method: u32,
+    /// Indexer getter.
+    pub getter: Option<u32>,
+    /// Indexer setter.
+    pub setter: Option<u32>,
+}
+
 /// An accessor property (§3.8.2).
 #[derive(Clone, Debug)]
 pub struct AccessorInfo {
@@ -286,6 +328,35 @@ pub enum Resolution {
     This,
     /// The `base` keyword inside a method (§3.7.1).
     Base,
+    /// A user-defined operator invocation (§4.9).
+    Operator {
+        /// Operator implementation.
+        method: u32,
+    },
+    /// `!=` desugared to `!(==)` (§4.9.20).
+    DerivedNotEqual {
+        /// `==` implementation.
+        method: u32,
+    },
+    /// `<=`/`>=` desugared to `<`/`>` or `==` (§4.9.15–4.9.17).
+    DerivedComparison {
+        /// `<` or `>` implementation.
+        ordering: u32,
+        /// `==` implementation.
+        equality: u32,
+    },
+    /// Indexer access (§4.4.3).
+    Indexer {
+        /// Getter.
+        getter: Option<u32>,
+        /// Setter.
+        setter: Option<u32>,
+    },
+    /// Conversion operator invocation (§4.9.12).
+    Conversion {
+        /// Implementation.
+        method: u32,
+    },
     /// An accessor member read or write (§3.8.2).
     Accessor {
         /// Getter method, if readable.
@@ -666,6 +737,7 @@ impl<'a> Sema<'a> {
             methods: std::collections::HashMap::new(),
             method_list: Vec::new(),
             accessors: Vec::new(),
+            operators: Vec::new(),
             interfaces: Vec::new(),
             interface_dispatch: Vec::new(),
             sealed: false,

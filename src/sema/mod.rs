@@ -68,6 +68,17 @@ pub struct TypeDef {
     pub node: NodeId,
     /// Fields, in declaration order (structures/classes).
     pub fields: Vec<FieldInfo>,
+    /// Field initializers, parallel to `fields` (§3.8.1).
+    pub field_initializers: Vec<Option<NodeId>>,
+    /// Methods contributed by extension blocks, grouped by name.
+    pub methods: std::collections::HashMap<String, Vec<u32>>,
+    /// Base class, if any.
+    pub base: Option<TypeId>,
+    /// Size of an instance including the class header (classes) and inherited
+    /// fields; equals `size` for structures.
+    pub instance_size: u64,
+    /// Alignment of an instance.
+    pub instance_align: u64,
     /// Enumeration members with their values.
     pub enum_members: Vec<(String, i128)>,
     /// Underlying type of an enumeration.
@@ -77,6 +88,17 @@ pub struct TypeDef {
     /// Alignment of the type (the spec uses member type size as default
     /// alignment, §3.7.2).
     pub align: u64,
+}
+
+/// One declared parameter.
+#[derive(Clone, Debug)]
+pub struct ParameterInfo {
+    /// Declared name.
+    pub name: String,
+    /// Parameter type.
+    pub ty: TypeId,
+    /// Whether the parameter is passed by reference (`&`, §8.2).
+    pub by_ref: bool,
 }
 
 /// A function definition (`fixed Name : function(...) T { ... }`, §8.1).
@@ -90,8 +112,10 @@ pub struct FunctionInfo {
     pub node: NodeId,
     /// The function body block.
     pub body: NodeId,
-    /// Parameter names and types.
-    pub parameters: Vec<(String, TypeId)>,
+    /// Parameters, including `this` first for methods.
+    pub parameters: Vec<ParameterInfo>,
+    /// The type this function is a method of, if it came from an extension.
+    pub method_of: Option<TypeId>,
     /// Return type; `None` is the empty type.
     pub return_type: Option<TypeId>,
     /// Mangled symbol name (§13.2).
@@ -100,6 +124,15 @@ pub struct FunctionInfo {
     pub locals: Vec<LocalInfo>,
     /// Span of the declaration, for diagnostics.
     pub span: Span,
+}
+
+/// How a local's storage is allocated (§12.1).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Storage {
+    /// Storage inside the current scope (stack or global data).
+    Value,
+    /// Heap storage reached through a pointer (`heap` definitions).
+    Heap,
 }
 
 /// A local variable (also used for parameters' storage).
@@ -111,8 +144,10 @@ pub struct LocalInfo {
     pub ty: TypeId,
     /// Whether the variable is a constant (`fixed`).
     pub fixed: bool,
-    /// Parameter index, when this local stores a parameter.
+    /// Parameter index in the LLVM signature, when this local stores one.
     pub parameter: Option<u32>,
+    /// Storage allocation of this variable.
+    pub storage: Storage,
     /// Span of the declaration.
     pub span: Span,
 }
@@ -155,6 +190,16 @@ pub enum Resolution {
         type_id: TypeId,
         /// Index into the enumeration's member list.
         index: u32,
+    },
+    /// The `this` parameter of a method.
+    This,
+    /// A construction expression (`T(args)`, §4.6); `method` is the selected
+    /// `Construct` overload, if one exists.
+    Construct {
+        /// Constructed type.
+        type_id: TypeId,
+        /// Selected constructor.
+        method: Option<u32>,
     },
     /// A structure or class field.
     Field {
@@ -253,6 +298,7 @@ pub(crate) enum Symbol {
     Local(LocalId),
     Global(u32),
     Module(usize),
+    This { owner: TypeId },
 }
 
 /// Runs semantic analysis over one parsed file.
@@ -460,6 +506,11 @@ impl<'a> Sema<'a> {
             kind,
             node,
             fields: Vec::new(),
+            field_initializers: Vec::new(),
+            methods: std::collections::HashMap::new(),
+            base: None,
+            instance_size: 0,
+            instance_align: 1,
             enum_members: Vec::new(),
             underlying: None,
             size: 0,
@@ -506,6 +557,7 @@ impl<'a> Sema<'a> {
                     self.resolve_linkable_signature(node, &declaration);
                 }
                 NodeKind::Local(_) => self.resolve_global_local(node),
+                NodeKind::Extension(_) => self.resolve_extension_declaration(node, None),
                 _ => {}
             }
         }

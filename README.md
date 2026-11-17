@@ -29,15 +29,21 @@ Implemented today:
   short-circuit logical operators, branches and loops, `match`, calls, fixed arrays and
   strings, enumerations, structures (value layout and field access), numeric casts, and the
   generated `main` launcher
+- **Object model (work in progress)**: extension blocks with methods, `this` parameters and
+  method calls, structure/class construction expressions (`T(...)`, `Construct` overloads,
+  default construction, field initializers), class instance layout (vtable/typeinfo header +
+  fields, single inheritance field flattening), class reference semantics, `heap` allocation
+  and `dispose` (calls `Destruct`, frees memory)
 - **Name mangling** per §13.2, including the spec's worked example as a unit test
-- 68 tests: 36 unit, 8 CLI, 2 LLVM smoke, 11 end-to-end execution, 10 parser, 1 spec
+- 73 tests: 36 unit, 8 CLI, 2 LLVM smoke, 16 end-to-end execution, 10 parser, 1 spec
   conformance; `cargo fmt` + `clippy -D warnings` clean
 
-Not implemented yet (rejected with a clear diagnostic): classes and inheritance, interfaces,
-variants and unions, generics/monomorphization, extensions/accessors/operators, function
-literals and closures, `heap`/`dispose`/NOLAA, `trap`/`throw`/`finally` (runtime exception
-model), compile-time execution (`#(...)`, `#{...}`, `#if`), references (`&`/`&T`),
-`is` expressions, `??` and construction expressions, and the Built-In Library prelude.
+Not implemented yet (rejected with a clear diagnostic): virtual dispatch/`override` and
+`base` calls, interfaces, variants and unions, member construction (`T.Member(...)`),
+accessors and operator definitions, generics/monomorphization, function literals and
+closures, `trap`/`throw`/`finally` (runtime exception model), compile-time execution
+(`#(...)`, `#{...}`, `#if`), references (`&`/`&T`) beyond `this`, `is` expressions, `??`,
+NOLAA, and the Built-In Library prelude.
 
 ## Requirements
 

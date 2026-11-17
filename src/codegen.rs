@@ -27,7 +27,7 @@ use crate::ast::{
 };
 use crate::literal;
 use crate::sema::types::{Type, TypeId};
-use crate::sema::{Resolution, SemaResult, TypeDefKind};
+use crate::sema::{ParameterInfo, Resolution, SemaResult, Storage, TypeDefKind};
 
 /// Name of the module used by the workspace smoke test.
 pub const SMOKE_MODULE_NAME: &str = "ainsc_smoke";
@@ -79,7 +79,10 @@ pub fn generate(ast: &Ast, sema: &SemaResult, options: &CodegenOptions) -> Resul
         loops: Vec::new(),
         current_function: 0,
         current_return: None,
+        current_this_slot: None,
         launcher_initializers: Vec::new(),
+        malloc_fn: None,
+        free_fn: None,
     };
     generator.run()?;
     if let Err(message) = generator.module.verify() {
@@ -113,17 +116,42 @@ struct Generator<'ctx, 'a> {
     loops: Vec<LoopInfo<'ctx>>,
     current_function: u32,
     current_return: Option<TypeId>,
+    current_this_slot: Option<PointerValue<'ctx>>,
     launcher_initializers: Vec<u32>,
+    malloc_fn: Option<FunctionValue<'ctx>>,
+    free_fn: Option<FunctionValue<'ctx>>,
 }
 
 impl<'ctx, 'a> Generator<'ctx, 'a> {
     fn run(&mut self) -> Result<(), String> {
+        self.ensure_libc()?;
         self.prepare_struct_types()?;
         self.declare_functions()?;
         self.declare_globals()?;
         self.generate_functions()?;
         self.generate_launcher()?;
         let _ = self.options;
+        Ok(())
+    }
+
+    /// Declares the small libc surface used by `heap` and `dispose` (§12.1).
+    fn ensure_libc(&mut self) -> Result<(), String> {
+        let pointer_type = self.context.ptr_type(AddressSpace::default());
+        let malloc_type = pointer_type.fn_type(&[self.context.i64_type().into()], false);
+        let malloc = self
+            .module
+            .get_function("malloc")
+            .unwrap_or_else(|| self.module.add_function("malloc", malloc_type, None));
+        let free_type = self
+            .context
+            .void_type()
+            .fn_type(&[pointer_type.into()], false);
+        let free = self
+            .module
+            .get_function("free")
+            .unwrap_or_else(|| self.module.add_function("free", free_type, None));
+        self.malloc_fn = Some(malloc);
+        self.free_fn = Some(free);
         Ok(())
     }
 
@@ -168,6 +196,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     self.llvm_type(underlying)?
                 }
                 TypeDefKind::Structure => self.struct_type(index)?.into(),
+                TypeDefKind::Class => self.context.ptr_type(AddressSpace::default()).into(),
                 _ => return Err("this type cannot be lowered yet".to_string()),
             },
         })
@@ -201,7 +230,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .type_defs
             .iter()
             .enumerate()
-            .filter(|(_, definition)| definition.kind == TypeDefKind::Structure)
+            .filter(|(_, definition)| {
+                matches!(definition.kind, TypeDefKind::Structure | TypeDefKind::Class)
+            })
             .map(|(index, _)| index as u32)
             .collect();
         for index in structures {
@@ -215,14 +246,22 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             return Ok(info.llvm_type);
         }
         let definition = &self.sema.type_defs[index as usize];
-        if definition.kind != TypeDefKind::Structure {
-            return Err("only structures have a value layout".to_string());
+        if !matches!(definition.kind, TypeDefKind::Structure | TypeDefKind::Class) {
+            return Err("this type has no instance layout".to_string());
         }
         let fields = definition.fields.clone();
-        let size = definition.size;
+        let size = definition.instance_size;
+        let is_class = definition.kind == TypeDefKind::Class;
+        let pointer_type = self.context.ptr_type(AddressSpace::default());
         let mut llvm_fields: Vec<BasicTypeEnum<'ctx>> = Vec::new();
         let mut semantic_to_llvm = Vec::with_capacity(fields.len());
         let mut offset: u64 = 0;
+        if is_class {
+            // Class header: vtable pointer, then type information pointer.
+            llvm_fields.push(pointer_type.into());
+            llvm_fields.push(pointer_type.into());
+            offset = 16;
+        }
         for field in &fields {
             if field.offset > offset {
                 let padding = u32::try_from(field.offset - offset)
@@ -256,8 +295,8 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         let parameter_types = info.parameters.clone();
         let return_type = info.return_type;
         let mut parameter_metadata = Vec::with_capacity(parameter_types.len());
-        for (_, ty) in &parameter_types {
-            parameter_metadata.push(self.llvm_type(*ty)?.into());
+        for parameter in &parameter_types {
+            parameter_metadata.push(self.llvm_parameter_type(parameter)?.into());
         }
         Ok(match return_type {
             Some(ty) => {
@@ -266,6 +305,17 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             }
             None => self.context.void_type().fn_type(&parameter_metadata, false),
         })
+    }
+
+    fn llvm_parameter_type(
+        &mut self,
+        parameter: &ParameterInfo,
+    ) -> Result<BasicTypeEnum<'ctx>, String> {
+        if parameter.by_ref {
+            Ok(self.context.ptr_type(AddressSpace::default()).into())
+        } else {
+            self.llvm_type(parameter.ty)
+        }
     }
 
     // -- declarations ------------------------------------------------------
@@ -346,33 +396,57 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 .functions
                 .get(&index)
                 .ok_or_else(|| "missing function declaration".to_string())?;
-            let (body, locals, return_type) = {
+            let (body, locals, return_type, method_of) = {
                 let info = &self.sema.functions[index as usize];
-                (info.body, info.locals.clone(), info.return_type)
+                (
+                    info.body,
+                    info.locals.clone(),
+                    info.return_type,
+                    info.method_of,
+                )
             };
             self.current_function = index;
             self.current_return = return_type;
             self.local_slots.clear();
+            self.current_this_slot = None;
             self.loops.clear();
 
             let entry = self.context.append_basic_block(function, "entry");
             self.builder.position_at_end(entry);
+            if method_of.is_some() {
+                let pointer_type = self.context.ptr_type(AddressSpace::default());
+                let this_slot = self
+                    .builder
+                    .build_alloca(pointer_type, "this")
+                    .map_err(|error| format!("cannot allocate this: {error}"))?;
+                let this_value = function
+                    .get_nth_param(0)
+                    .ok_or_else(|| "method has no this parameter".to_string())?;
+                self.builder
+                    .build_store(this_slot, this_value)
+                    .map_err(|error| format!("cannot store this: {error}"))?;
+                self.current_this_slot = Some(this_slot);
+            }
             for (local_index, local) in locals.iter().enumerate() {
-                let llvm_type = self.llvm_type(local.ty)?;
+                let llvm_type = if local.storage == Storage::Heap {
+                    self.context.ptr_type(AddressSpace::default()).into()
+                } else {
+                    self.llvm_type(local.ty)?
+                };
                 let slot = self
                     .builder
                     .build_alloca(llvm_type, &format!("local{local_index}"))
                     .map_err(|error| format!("cannot allocate local: {error}"))?;
                 self.local_slots.insert(local_index as u32, slot);
             }
-            for (parameter_index, local) in locals.iter().enumerate() {
-                if local.parameter.is_some() {
+            for (local_index, local) in locals.iter().enumerate() {
+                if let Some(parameter_index) = local.parameter {
                     let value = function
-                        .get_nth_param(parameter_index as u32)
+                        .get_nth_param(parameter_index)
                         .ok_or_else(|| "missing function parameter".to_string())?;
                     let slot = *self
                         .local_slots
-                        .get(&(parameter_index as u32))
+                        .get(&(local_index as u32))
                         .ok_or_else(|| "missing parameter slot".to_string())?;
                     self.builder
                         .build_store(slot, value)
@@ -440,8 +514,16 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         }
 
         let mut arguments = Vec::with_capacity(parameters.len());
-        for (_, ty) in &parameters {
-            arguments.push(self.zero_value(*ty)?.into());
+        for parameter in &parameters {
+            let value = if parameter.by_ref {
+                self.context
+                    .ptr_type(AddressSpace::default())
+                    .const_zero()
+                    .into()
+            } else {
+                self.zero_value(parameter.ty)?.into()
+            };
+            arguments.push(value);
         }
         let call = self
             .builder
@@ -522,6 +604,8 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         match self.ast.node(node).kind.clone() {
             NodeKind::Block(_) | NodeKind::VerbatimBlock(_) => self.gen_block_contents(node),
             NodeKind::Local(_) | NodeKind::Fixed(_) => self.gen_local_declaration(node),
+            NodeKind::Heap(declaration) => self.gen_heap_statement(node, &declaration),
+            NodeKind::Dispose(statement) => self.gen_dispose_statement(&statement),
             NodeKind::Set(statement) => self.gen_set_statement(&statement),
             NodeKind::CompoundSet(statement) => self.gen_compound_set_statement(&statement),
             NodeKind::If(statement) => self.gen_if_statement(&statement),
@@ -601,6 +685,136 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .get(&self.current_function)
             .copied()
             .ok_or_else(|| "no current function".to_string())
+    }
+
+    fn local_info(&self, local: u32) -> Option<crate::sema::LocalInfo> {
+        let function = self.current_function;
+        self.sema
+            .functions
+            .get(function as usize)?
+            .locals
+            .get(local as usize)
+            .cloned()
+    }
+
+    fn gen_heap_statement(
+        &mut self,
+        node: NodeId,
+        declaration: &crate::ast::HeapDecl,
+    ) -> Result<(), String> {
+        let Some(local) = self
+            .sema
+            .local_declarations
+            .get(&node)
+            .and_then(|locals| locals.first().copied())
+        else {
+            return Err("missing heap local".to_string());
+        };
+        let info = self
+            .local_info(local)
+            .ok_or_else(|| "missing heap information".to_string())?;
+        let slot = *self
+            .local_slots
+            .get(&local)
+            .ok_or_else(|| "missing heap slot".to_string())?;
+        let instance_type = self.instance_llvm_type(info.ty)?;
+        let size = self.instance_size(info.ty);
+        let malloc = self
+            .malloc_fn
+            .ok_or_else(|| "malloc is not declared".to_string())?;
+        let size_value = self.context.i64_type().const_int(size, false);
+        let call = self
+            .builder
+            .build_call(malloc, &[size_value.into()], "allocate")
+            .map_err(|error| format!("cannot allocate: {error}"))?;
+        let storage = match call.try_as_basic_value() {
+            ValueKind::Basic(value) => value.into_pointer_value(),
+            ValueKind::Instruction(_) => return Err("allocation produced no pointer".to_string()),
+        };
+        self.builder
+            .build_store(storage, instance_type.const_zero())
+            .map_err(|error| format!("cannot initialize heap storage: {error}"))?;
+        if let Some(initializer) = declaration.init {
+            let is_construction = matches!(
+                self.sema.resolutions[initializer as usize],
+                Some(Resolution::Construct { .. })
+            );
+            if is_construction {
+                self.gen_construct_into(initializer, storage)?;
+            } else {
+                let value = self.gen_expr(initializer)?;
+                self.builder
+                    .build_store(storage, value)
+                    .map_err(|error| format!("cannot initialize heap storage: {error}"))?;
+            }
+        }
+        self.builder
+            .build_store(slot, storage)
+            .map_err(|error| format!("cannot store heap pointer: {error}"))?;
+        Ok(())
+    }
+
+    fn gen_dispose_statement(&mut self, statement: &crate::ast::DisposeStmt) -> Result<(), String> {
+        let NodeKind::Name(name) = self.ast.node(statement.target).kind.clone() else {
+            return Err("dispose requires a named heap variable".to_string());
+        };
+        let Some(Resolution::Local(local)) =
+            self.sema.resolutions[statement.target as usize].clone()
+        else {
+            return Err("dispose requires a heap variable".to_string());
+        };
+        let info = self
+            .local_info(local)
+            .ok_or_else(|| "missing heap information".to_string())?;
+        let slot = *self
+            .local_slots
+            .get(&local)
+            .ok_or_else(|| "missing heap slot".to_string())?;
+        let pointer_type = self.context.ptr_type(AddressSpace::default());
+        let storage = self
+            .builder
+            .build_load(pointer_type, slot, "heap_pointer")
+            .map_err(|error| format!("cannot load heap pointer: {error}"))?
+            .into_pointer_value();
+        if let Some(destructor) = self.find_method(info.ty, "Destruct") {
+            let function = *self
+                .functions
+                .get(&destructor)
+                .ok_or_else(|| "missing destructor".to_string())?;
+            self.builder
+                .build_call(function, &[storage.into()], "destruct")
+                .map_err(|error| format!("cannot call destructor: {error}"))?;
+        }
+        let free = self
+            .free_fn
+            .ok_or_else(|| "free is not declared".to_string())?;
+        self.builder
+            .build_call(free, &[storage.into()], "deallocate")
+            .map_err(|error| format!("cannot deallocate: {error}"))?;
+        let _ = name;
+        Ok(())
+    }
+
+    fn find_method(&self, ty: TypeId, name: &str) -> Option<u32> {
+        let mut current = Some(ty);
+        let mut depth = 0;
+        while let Some(ty) = current {
+            depth += 1;
+            if depth > 32 {
+                break;
+            }
+            let Type::Named(index) = self.sema.types.get(ty) else {
+                break;
+            };
+            let definition = &self.sema.type_defs[*index as usize];
+            if let Some(list) = definition.methods.get(name) {
+                if let Some(first) = list.first() {
+                    return Some(*first);
+                }
+            }
+            current = definition.base;
+        }
+        None
     }
 
     fn gen_local_declaration(&mut self, node: NodeId) -> Result<(), String> {
@@ -1229,6 +1443,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             NodeKind::Name(_) | NodeKind::MemberAccess(_) | NodeKind::PointerMemberAccess(_) => {
                 self.gen_value_from_resolution(node)
             }
+            NodeKind::This => self.gen_this_value(),
             NodeKind::Index(index) => self.gen_index_expr(node, &index),
             NodeKind::Call(call) => self.gen_call_expr(node, &call),
             NodeKind::Cast(cast) => self.gen_cast_expr(node, &cast),
@@ -1245,10 +1460,29 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         let ty = self.type_of(node);
         match self.sema.resolutions[node as usize].clone() {
             Some(Resolution::Local(local)) => {
+                let info = self
+                    .local_info(local)
+                    .ok_or_else(|| "missing local information".to_string())?;
                 let slot = *self
                     .local_slots
                     .get(&local)
                     .ok_or_else(|| "missing local slot".to_string())?;
+                if info.storage == Storage::Heap {
+                    let pointer_type = self.context.ptr_type(AddressSpace::default());
+                    let pointer = self
+                        .builder
+                        .build_load(pointer_type, slot, "heap_pointer")
+                        .map_err(|error| format!("cannot load heap pointer: {error}"))?;
+                    if matches!(self.sema.types.get(ty), Type::Named(index) if self.sema.type_defs[*index as usize].kind == TypeDefKind::Class)
+                    {
+                        return Ok(pointer);
+                    }
+                    let instance_type = self.instance_llvm_type(ty)?;
+                    return self
+                        .builder
+                        .build_load(instance_type, pointer.into_pointer_value(), "heap_value")
+                        .map_err(|error| format!("cannot load heap value: {error}"));
+                }
                 let llvm_type = self.llvm_type(ty)?;
                 self.builder
                     .build_load(llvm_type, slot, "local")
@@ -1274,6 +1508,8 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .into())
             }
             Some(Resolution::Field { .. }) => self.gen_field_load(node),
+            Some(Resolution::This) => self.gen_this_value(),
+            Some(Resolution::Construct { .. }) => self.gen_construction(node),
             Some(Resolution::Function(_)) => Err("function values are not lowered yet".to_string()),
             Some(Resolution::Type(_)) | None => Err("name cannot be used as a value".to_string()),
         }
@@ -1314,12 +1550,52 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
 
     fn gen_lvalue(&mut self, node: NodeId) -> Result<Option<PointerValue<'ctx>>, String> {
         match self.ast.node(node).kind.clone() {
+            NodeKind::This => {
+                let slot = self
+                    .current_this_slot
+                    .ok_or_else(|| "no this slot".to_string())?;
+                let pointer_type = self.context.ptr_type(AddressSpace::default());
+                let pointer = self
+                    .builder
+                    .build_load(pointer_type, slot, "this")
+                    .map_err(|error| format!("cannot load this: {error}"))?;
+                Ok(Some(pointer.into_pointer_value()))
+            }
             NodeKind::Name(_) => match self.sema.resolutions[node as usize].clone() {
-                Some(Resolution::Local(local)) => Ok(self.local_slots.get(&local).copied()),
+                Some(Resolution::Local(local)) => {
+                    let info = self
+                        .local_info(local)
+                        .ok_or_else(|| "missing local information".to_string())?;
+                    let slot = *self
+                        .local_slots
+                        .get(&local)
+                        .ok_or_else(|| "missing local slot".to_string())?;
+                    if info.storage == Storage::Heap {
+                        let pointer_type = self.context.ptr_type(AddressSpace::default());
+                        let pointer = self
+                            .builder
+                            .build_load(pointer_type, slot, "heap_pointer")
+                            .map_err(|error| format!("cannot load heap pointer: {error}"))?;
+                        Ok(Some(pointer.into_pointer_value()))
+                    } else {
+                        Ok(Some(slot))
+                    }
+                }
                 Some(Resolution::Global(global)) => Ok(self
                     .globals
                     .get(&global)
                     .map(|global| global.as_pointer_value())),
+                Some(Resolution::This) => {
+                    let slot = self
+                        .current_this_slot
+                        .ok_or_else(|| "no this slot".to_string())?;
+                    let pointer_type = self.context.ptr_type(AddressSpace::default());
+                    let pointer = self
+                        .builder
+                        .build_load(pointer_type, slot, "this")
+                        .map_err(|error| format!("cannot load this: {error}"))?;
+                    Ok(Some(pointer.into_pointer_value()))
+                }
                 _ => Ok(None),
             },
             NodeKind::Index(index) => {
@@ -1625,31 +1901,222 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         node: NodeId,
         call: &CallExpr,
     ) -> Result<BasicValueEnum<'ctx>, String> {
-        let Some(Resolution::Function(index)) = self.sema.resolutions[node as usize].clone() else {
-            return Err("call target is not a direct function yet".to_string());
-        };
-        let function = *self
-            .functions
-            .get(&index)
-            .ok_or_else(|| "missing callee".to_string())?;
-        let mut arguments = Vec::with_capacity(call.arguments.len());
-        for argument in &call.arguments {
-            arguments.push(self.gen_expr(argument.value)?.into());
-        }
-        let call_site = self
-            .builder
-            .build_call(function, &arguments, "call")
-            .map_err(|error| format!("cannot call function: {error}"))?;
-        let return_type = self.sema.functions[index as usize].return_type;
-        match return_type {
-            Some(ty) => match call_site.try_as_basic_value() {
-                ValueKind::Basic(value) => {
-                    let _ = ty;
-                    Ok(value)
+        match self.sema.resolutions[node as usize].clone() {
+            Some(Resolution::Construct { .. }) => self.gen_construction(node),
+            Some(Resolution::Function(index)) => {
+                let function = *self
+                    .functions
+                    .get(&index)
+                    .ok_or_else(|| "missing callee".to_string())?;
+                let parameter_count = self.sema.functions[index as usize].parameters.len();
+                let mut arguments = Vec::with_capacity(parameter_count);
+                if self.sema.functions[index as usize].method_of.is_some() {
+                    let NodeKind::MemberAccess(access) = self.ast.node(call.callee).kind.clone()
+                    else {
+                        return Err("method call requires a receiver".to_string());
+                    };
+                    let receiver = self.gen_instance_pointer(access.base)?;
+                    arguments.push(receiver.into());
                 }
-                ValueKind::Instruction(_) => Err("call did not produce a value".to_string()),
-            },
-            None => Ok(self.context.i8_type().const_zero().into()),
+                for argument in &call.arguments {
+                    arguments.push(self.gen_expr(argument.value)?.into());
+                }
+                let call_site = self
+                    .builder
+                    .build_call(function, &arguments, "call")
+                    .map_err(|error| format!("cannot call function: {error}"))?;
+                match self.sema.functions[index as usize].return_type {
+                    Some(_) => match call_site.try_as_basic_value() {
+                        ValueKind::Basic(value) => Ok(value),
+                        ValueKind::Instruction(_) => {
+                            Err("call did not produce a value".to_string())
+                        }
+                    },
+                    None => Ok(self.context.i8_type().const_zero().into()),
+                }
+            }
+            _ => Err("call target is not a direct function yet".to_string()),
+        }
+    }
+
+    /// Address of the instance a call or field access operates on.
+    fn gen_instance_pointer(&mut self, node: NodeId) -> Result<PointerValue<'ctx>, String> {
+        if matches!(self.ast.node(node).kind, NodeKind::This) {
+            let slot = self
+                .current_this_slot
+                .ok_or_else(|| "no this slot".to_string())?;
+            let pointer_type = self.context.ptr_type(AddressSpace::default());
+            let pointer = self
+                .builder
+                .build_load(pointer_type, slot, "this")
+                .map_err(|error| format!("cannot load this: {error}"))?;
+            return Ok(pointer.into_pointer_value());
+        }
+        let ty = self.type_of(node);
+        if matches!(self.sema.types.get(ty), Type::Named(index) if self.sema.type_defs[*index as usize].kind == TypeDefKind::Class)
+        {
+            return Ok(self.gen_expr(node)?.into_pointer_value());
+        }
+        match self.gen_lvalue(node)? {
+            Some(pointer) => Ok(pointer),
+            None => {
+                let value = self.gen_expr(node)?;
+                let llvm_type = self.llvm_type(ty)?;
+                let slot = self
+                    .builder
+                    .build_alloca(llvm_type, "receiver")
+                    .map_err(|error| format!("cannot allocate receiver: {error}"))?;
+                self.builder
+                    .build_store(slot, value)
+                    .map_err(|error| format!("cannot store receiver: {error}"))?;
+                Ok(slot)
+            }
+        }
+    }
+
+    // -- construction ------------------------------------------------------
+
+    fn instance_llvm_type(&mut self, ty: TypeId) -> Result<BasicTypeEnum<'ctx>, String> {
+        match self.sema.types.get(ty).clone() {
+            Type::Named(index)
+                if matches!(
+                    self.sema.type_defs[index as usize].kind,
+                    TypeDefKind::Structure | TypeDefKind::Class
+                ) =>
+            {
+                Ok(self.struct_type(index)?.into())
+            }
+            _ => Err("this type has no instance layout".to_string()),
+        }
+    }
+
+    fn instance_size(&self, ty: TypeId) -> u64 {
+        match self.sema.types.get(ty) {
+            Type::Named(index) => self.sema.type_defs[*index as usize].instance_size,
+            _ => self.sema.size_align(ty).0,
+        }
+    }
+
+    fn gen_this_value(&mut self) -> Result<BasicValueEnum<'ctx>, String> {
+        let slot = self
+            .current_this_slot
+            .ok_or_else(|| "no this slot".to_string())?;
+        let pointer_type = self.context.ptr_type(AddressSpace::default());
+        let pointer = self
+            .builder
+            .build_load(pointer_type, slot, "this")
+            .map_err(|error| format!("cannot load this: {error}"))?
+            .into_pointer_value();
+        let owner = self.sema.functions[self.current_function as usize]
+            .method_of
+            .ok_or_else(|| "this outside a method".to_string())?;
+        match self.sema.types.get(owner).clone() {
+            Type::Named(index)
+                if self.sema.type_defs[index as usize].kind == TypeDefKind::Class =>
+            {
+                Ok(pointer.into())
+            }
+            _ => {
+                let instance_type = self.instance_llvm_type(owner)?;
+                self.builder
+                    .build_load(instance_type, pointer, "this_value")
+                    .map_err(|error| format!("cannot load this: {error}"))
+            }
+        }
+    }
+
+    /// Constructs a value of the node's type into `storage` (§4.6).
+    fn gen_construct_into(
+        &mut self,
+        node: NodeId,
+        storage: PointerValue<'ctx>,
+    ) -> Result<(), String> {
+        let Some(Resolution::Construct { type_id, method }) =
+            self.sema.resolutions[node as usize].clone()
+        else {
+            return Err("expected a construction expression".to_string());
+        };
+        let Type::Named(index) = self.sema.types.get(type_id).clone() else {
+            return Err("construction requires a named type".to_string());
+        };
+        let fields = self.sema.type_defs[index as usize].fields.clone();
+        let initializers = self.sema.type_defs[index as usize]
+            .field_initializers
+            .clone();
+        for (position, initializer) in initializers.iter().enumerate() {
+            let Some(expression) = initializer else {
+                continue;
+            };
+            let value = self.gen_expr(*expression)?;
+            let pointer = self
+                .struct_field_pointer(storage, type_id, position as u32)?
+                .ok_or_else(|| "missing field pointer".to_string())?;
+            self.builder
+                .build_store(pointer, value)
+                .map_err(|error| format!("cannot initialize field: {error}"))?;
+        }
+        let _ = fields;
+        if let Some(method) = method {
+            let function = *self
+                .functions
+                .get(&method)
+                .ok_or_else(|| "missing constructor".to_string())?;
+            let mut arguments = Vec::new();
+            arguments.push(storage.into());
+            if let NodeKind::Call(call) = self.ast.node(node).kind.clone() {
+                for argument in &call.arguments {
+                    arguments.push(self.gen_expr(argument.value)?.into());
+                }
+            }
+            self.builder
+                .build_call(function, &arguments, "construct")
+                .map_err(|error| format!("cannot call constructor: {error}"))?;
+        }
+        Ok(())
+    }
+
+    fn gen_construction(&mut self, node: NodeId) -> Result<BasicValueEnum<'ctx>, String> {
+        let Some(Resolution::Construct { type_id, .. }) =
+            self.sema.resolutions[node as usize].clone()
+        else {
+            return Err("expected a construction expression".to_string());
+        };
+        let Type::Named(index) = self.sema.types.get(type_id).clone() else {
+            return Err("construction requires a named type".to_string());
+        };
+        let is_class = self.sema.type_defs[index as usize].kind == TypeDefKind::Class;
+        let instance_type = self.instance_llvm_type(type_id)?;
+        let storage = self
+            .builder
+            .build_alloca(instance_type, "constructed")
+            .map_err(|error| format!("cannot allocate instance: {error}"))?;
+        self.builder
+            .build_store(storage, instance_type.const_zero())
+            .map_err(|error| format!("cannot initialize instance: {error}"))?;
+        if let Type::Named(class_index) = self.sema.types.get(type_id).clone() {
+            if self.sema.type_defs[class_index as usize].kind == TypeDefKind::Class {
+                // Initialize the class header with a zero vtable/typeinfo for now.
+                let instance_struct = self.struct_type(class_index)?;
+                let pointer_type = self.context.ptr_type(AddressSpace::default());
+                let zero = pointer_type.const_zero();
+                for field_index in 0..2u32 {
+                    let pointer = self
+                        .builder
+                        .build_struct_gep(instance_struct, storage, field_index, "header")
+                        .map_err(|error| format!("cannot initialize header: {error}"))?;
+                    self.builder
+                        .build_store(pointer, zero)
+                        .map_err(|error| format!("cannot initialize header: {error}"))?;
+                }
+            }
+        }
+        self.gen_construct_into(node, storage)?;
+        if is_class {
+            Ok(storage.into())
+        } else {
+            self.builder
+                .build_load(instance_type, storage, "constructed_value")
+                .map_err(|error| format!("cannot load constructed value: {error}"))
         }
     }
 

@@ -199,3 +199,153 @@ fn emit_ir_prints_a_verified_module() {
         "expected the launcher return:\n{ir}"
     );
 }
+
+#[test]
+fn structure_construction_and_methods() {
+    let source = "\
+structure Vector3
+{
+    public X: integer(4);
+    public Y: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Vector3, x: integer(4), y: integer(4))
+        {
+            this.X = x;
+            this.Y = y;
+        }
+
+        public fixed Sum(this: &Vector3): integer(4)
+        {
+            return this.X + this.Y;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local v: Vector3 = Vector3(3, 4);
+    local w: Vector3 = Vector3(10, 20);
+    return v.Sum() + w.Sum();
+}";
+    assert_eq!(run_program(source), 37);
+}
+
+#[test]
+fn class_construction_and_methods() {
+    let source = "\
+class Counter
+{
+    private Count: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Counter, start: integer(4))
+        {
+            this.Count = start;
+        }
+
+        public fixed Increment(this: &Counter)
+        {
+            this.Count = this.Count + 1;
+        }
+
+        public fixed Value(this: &Counter): integer(4)
+        {
+            return this.Count;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local c: Counter = Counter(10);
+    c.Increment();
+    c.Increment();
+    return c.Value();
+}";
+    assert_eq!(run_program(source), 12);
+}
+
+#[test]
+fn heap_structure_and_dispose() {
+    let source = "\
+structure Pair
+{
+    public A: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Pair, a: integer(4))
+        {
+            this.A = a;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    heap p: Pair = Pair(21);
+    local value: integer(4) = p.A;
+    dispose p;
+    return value * 2;
+}";
+    assert_eq!(run_program(source), 42);
+}
+
+#[test]
+fn heap_class_and_dispose() {
+    let source = "\
+class Box
+{
+    private Value: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Box, value: integer(4))
+        {
+            this.Value = value;
+        }
+
+        public fixed Get(this: &Box): integer(4)
+        {
+            return this.Value;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    heap box: Box = Box(42);
+    local result: integer(4) = box.Get();
+    dispose box;
+    return result;
+}";
+    assert_eq!(run_program(source), 42);
+}
+
+#[test]
+fn field_initializers_run_before_the_constructor() {
+    let source = "\
+structure Point
+{
+    public X: integer(4) = 5;
+    public Y: integer(4) = 7;
+
+    extension
+    {
+        public fixed Sum(this: &Point): integer(4)
+        {
+            return this.X + this.Y;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local p: Point = Point();
+    return p.Sum();
+}";
+    assert_eq!(run_program(source), 12);
+}

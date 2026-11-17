@@ -185,45 +185,91 @@ impl<'a> Sema<'a> {
     // Declaration resolution (pass 2)
     // ==================================================================
 
-    pub(crate) fn resolve_structure_like(&mut self, node: NodeId, name: String, kind: TypeDefKind) {
-        if kind == TypeDefKind::Class {
-            self.unsupported(self.span_of(node), "class declarations");
+    pub(crate) fn resolve_structure_like(
+        &mut self,
+        node: NodeId,
+        _name: String,
+        kind: TypeDefKind,
+    ) {
+        let (members, bases) = match self.node_kind(node) {
+            NodeKind::Structure(declaration) => (declaration.members.clone(), Vec::new()),
+            NodeKind::Class(declaration) => {
+                (declaration.members.clone(), declaration.bases.clone())
+            }
+            _ => return,
+        };
+        let is_class = kind == TypeDefKind::Class;
+        let Some(type_id) = self.type_id_for_node(node) else {
             return;
-        }
-
-        let members = match self.node_kind(node) {
-            NodeKind::Structure(declaration) => declaration.members.clone(),
-            NodeKind::Class(declaration) => declaration.members.clone(),
-            _ => Vec::new(),
+        };
+        let type_index = match self.result.types.get(type_id) {
+            Type::Named(index) => *index,
+            _ => return,
         };
 
-        let mut fields = Vec::new();
-        let mut offset: u64 = 0;
-        let mut max_align: u64 = 1;
+        // Base class (§3.7.1): at most one class, interfaces are not supported yet.
+        let mut base_type = None;
+        if is_class {
+            for (position, base) in bases.iter().enumerate() {
+                let Some(base_type_id) = self.resolve_type(*base) else {
+                    continue;
+                };
+                let base_kind = match self.result.types.get(base_type_id) {
+                    Type::Named(index) => self.result.type_defs[*index as usize].kind,
+                    _ => {
+                        self.error(self.span_of(*base), "base type must be a named type");
+                        continue;
+                    }
+                };
+                if base_kind == TypeDefKind::Class {
+                    if position != 0 || base_type.is_some() {
+                        self.error(self.span_of(*base), "a class may inherit at most one class");
+                    } else {
+                        base_type = Some(base_type_id);
+                    }
+                } else {
+                    self.unsupported(self.span_of(*base), "interface implementation");
+                }
+            }
+        }
 
-        for member in members {
-            match self.node_kind(member).clone() {
+        let struct_alignment = match self.node_kind(node) {
+            NodeKind::Structure(declaration) => declaration.modifiers.aligned,
+            NodeKind::Class(declaration) => declaration.modifiers.aligned,
+            _ => None,
+        };
+
+        // The instance starts with the class header, then inherited fields, then
+        // fields declared here (declaration order, §3.7.2).
+        let mut fields: Vec<FieldInfo> = Vec::new();
+        let mut field_initializers: Vec<Option<NodeId>> = Vec::new();
+        let mut offset: u64 = if is_class { 16 } else { 0 };
+        let mut max_align: u64 = if is_class { 8 } else { 1 };
+
+        if let Some(base_type) = base_type {
+            if let Type::Named(base_index) = self.types_of(base_type) {
+                let base_definition = &self.result.type_defs[base_index as usize];
+                fields.extend(base_definition.fields.clone());
+                field_initializers.extend(base_definition.field_initializers.clone());
+                offset = base_definition.instance_size;
+                max_align = max_align.max(base_definition.instance_align);
+            }
+        }
+
+        for member in &members {
+            match self.node_kind(*member) {
                 NodeKind::Field(field) => {
                     let Some(ty_node) = field.ty else {
-                        self.error(self.span_of(member), "field requires a type");
+                        self.error(self.span_of(*member), "field requires a type");
                         continue;
                     };
                     let Some(ty) = self.resolve_type(ty_node) else {
                         continue;
                     };
                     let (size, natural_align) = self.size_align(ty);
-                    let alignment = match field.modifiers.aligned {
-                        Some(0) => {
-                            // `aligned(0)`: compact layout, no padding.
-                            offset += size;
-                            max_align = max_align.max(1);
-                            fields.push(FieldInfo {
-                                name: field.name,
-                                ty,
-                                offset: offset - size,
-                            });
-                            continue;
-                        }
+                    let field_alignment = field.modifiers.aligned.or(struct_alignment);
+                    let alignment = match field_alignment {
+                        Some(0) => 0,
                         Some(requested) => u64::from(requested),
                         None => natural_align,
                     };
@@ -232,14 +278,130 @@ impl<'a> Sema<'a> {
                         max_align = max_align.max(alignment);
                     }
                     fields.push(FieldInfo {
-                        name: field.name,
+                        name: field.name.clone(),
                         ty,
                         offset,
+                    });
+                    field_initializers.push(match field.init {
+                        Some(Initializer::Expression(expression)) => Some(expression),
+                        Some(Initializer::Block(_)) => {
+                            self.error(
+                                self.span_of(*member),
+                                "field initializer must be an expression",
+                            );
+                            None
+                        }
+                        None => None,
                     });
                     offset += size;
                 }
                 NodeKind::Extension(_) => {
-                    self.unsupported(self.span_of(member), "extension declarations");
+                    self.resolve_extension_declaration(*member, Some(type_id));
+                }
+                NodeKind::Module(_) => {}
+                NodeKind::Operator(_) | NodeKind::Accessor(_) => {
+                    self.unsupported(
+                        self.span_of(*member),
+                        "operators and accessors in type bodies",
+                    );
+                }
+                NodeKind::Class(_)
+                | NodeKind::Structure(_)
+                | NodeKind::Interface(_)
+                | NodeKind::Enumeration(_)
+                | NodeKind::Variant(_)
+                | NodeKind::Union(_) => {}
+                _ => {
+                    self.error(
+                        self.span_of(*member),
+                        "only fields and extension blocks may appear directly in a type body",
+                    );
+                }
+            }
+        }
+
+        let instance_size = round_up(offset, max_align);
+        let definition = &mut self.result.type_defs[type_index as usize];
+        definition.fields = fields;
+        definition.field_initializers = field_initializers;
+        definition.base = base_type;
+        definition.instance_size = instance_size;
+        definition.instance_align = max_align;
+        if is_class {
+            // The value representation of a class is a reference (§3.4).
+            definition.size = 8;
+            definition.align = 8;
+        } else {
+            definition.size = instance_size;
+            definition.align = max_align;
+        }
+    }
+
+    fn types_of(&self, ty: TypeId) -> Type {
+        self.result.types.get(ty).clone()
+    }
+
+    fn type_id_for_node(&mut self, node: NodeId) -> Option<TypeId> {
+        let index = self
+            .result
+            .type_defs
+            .iter()
+            .position(|definition| definition.node == node)? as u32;
+        Some(self.result.types.intern(Type::Named(index)))
+    }
+
+    fn resolve_extension_target(&mut self, node: NodeId) -> Option<TypeId> {
+        match self.node_kind(node) {
+            NodeKind::ExtensionTarget(target) => match target {
+                ExtensionTarget::Type(type_node) => self.resolve_type(type_node),
+                ExtensionTarget::Generic { .. } => {
+                    self.unsupported(self.span_of(node), "generic extension targets");
+                    None
+                }
+                ExtensionTarget::Array { .. } => {
+                    self.unsupported(self.span_of(node), "array extension targets");
+                    None
+                }
+            },
+            _ => self.resolve_type(node),
+        }
+    }
+
+    pub(crate) fn resolve_extension_declaration(&mut self, node: NodeId, owner: Option<TypeId>) {
+        let NodeKind::Extension(declaration) = self.node_kind(node) else {
+            return;
+        };
+        let target = match declaration.target {
+            Some(target) => self.resolve_extension_target(target),
+            None => owner,
+        };
+        let Some(target) = target else {
+            self.error(self.span_of(node), "extension requires a target type");
+            return;
+        };
+        let target_kind = match self.result.types.get(target) {
+            Type::Named(index) => self.result.type_defs[*index as usize].kind,
+            _ => {
+                self.error(self.span_of(node), "extension target must be a named type");
+                return;
+            }
+        };
+        if !matches!(
+            target_kind,
+            TypeDefKind::Structure | TypeDefKind::Class | TypeDefKind::Interface
+        ) {
+            self.error(
+                self.span_of(node),
+                "extensions may only target structures, classes and interfaces",
+            );
+            return;
+        }
+
+        let members = declaration.members.clone();
+        for member in members {
+            match self.node_kind(member) {
+                NodeKind::Fixed(declaration) => {
+                    self.create_method(member, &declaration, target);
                 }
                 NodeKind::Accessor(_) => {
                     self.unsupported(self.span_of(member), "accessor declarations");
@@ -247,40 +409,130 @@ impl<'a> Sema<'a> {
                 NodeKind::Operator(_) => {
                     self.unsupported(self.span_of(member), "operator declarations");
                 }
-                NodeKind::Module(_) => {}
+                NodeKind::Field(_) => {
+                    self.error(self.span_of(member), "an extension must not declare fields");
+                }
                 NodeKind::Class(_)
                 | NodeKind::Structure(_)
                 | NodeKind::Interface(_)
                 | NodeKind::Enumeration(_)
                 | NodeKind::Variant(_)
                 | NodeKind::Union(_) => {
-                    // Nested types are declared, but their bodies are resolved
-                    // by the outer walk; nothing to do here.
+                    self.unsupported(self.span_of(member), "nested type declarations");
                 }
+                NodeKind::Module(_) => {}
                 _ => {
                     self.error(
                         self.span_of(member),
-                        "only fields and extensions may appear directly in a structure body",
+                        "extension members must be function definitions",
                     );
                 }
             }
         }
-
-        let size = round_up(offset, max_align);
-        let index = self.type_def_index(node).expect("declared type");
-        let definition = &mut self.result.type_defs[index as usize];
-        definition.fields = fields;
-        definition.size = size;
-        definition.align = max_align;
-        let _ = name;
     }
 
-    fn type_def_index(&self, node: NodeId) -> Option<TypeDefId> {
-        self.result
-            .type_defs
+    /// Registers a method declared in an extension block (§8.4).
+    fn create_method(
+        &mut self,
+        node: NodeId,
+        declaration: &FixedDecl,
+        owner: TypeId,
+    ) -> Option<u32> {
+        let ty_node = declaration.ty?;
+        let NodeKind::FunctionType(function) = self.node_kind(ty_node) else {
+            self.unsupported(
+                self.span_of(node),
+                "function-valued constants in extensions",
+            );
+            return None;
+        };
+        let body = match declaration.init {
+            Some(Initializer::Block(block)) => block,
+            _ => {
+                self.unsupported(self.span_of(node), "function values in extensions");
+                return None;
+            }
+        };
+        let Some(first) = function.parameters.first() else {
+            self.error(self.span_of(node), "a method requires a 'this' parameter");
+            return None;
+        };
+        if first.name.as_deref() != Some("this") || !first.by_ref {
+            self.error(
+                self.span_of(node),
+                "the first parameter of a method must be 'this: &T'",
+            );
+            return None;
+        }
+        if let Some(first_type) = first.ty {
+            match self.resolve_type(first_type) {
+                Some(resolved) if resolved == owner => {}
+                Some(_) => {
+                    self.error(
+                        self.span_of(node),
+                        "the type of 'this' must be the extension target",
+                    );
+                    return None;
+                }
+                None => return None,
+            }
+        }
+
+        let mut parameters = Vec::new();
+        for (index, parameter) in function.parameters.iter().enumerate() {
+            let Some(parameter_type_node) = parameter.ty else {
+                self.error(parameter.span, "method parameter requires a type");
+                return None;
+            };
+            let parameter_type = self.resolve_type(parameter_type_node)?;
+            let name = parameter
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("argument{index}"));
+            if index > 0 && parameter.by_ref {
+                self.unsupported(parameter.span, "by-reference parameters other than 'this'");
+                return None;
+            }
+            parameters.push(ParameterInfo {
+                name,
+                ty: parameter_type,
+                by_ref: parameter.by_ref,
+            });
+        }
+        let return_type = function.return_type.and_then(|ty| self.resolve_type(ty));
+        let owner_name = match self.result.types.get(owner) {
+            Type::Named(index) => self.result.type_defs[*index as usize]
+                .qualified_name
+                .clone(),
+            _ => return None,
+        };
+        let scope: Vec<String> = owner_name.split('.').map(str::to_string).collect();
+        let spellings: Vec<String> = parameters
             .iter()
-            .position(|definition| definition.node == node)
-            .map(|index| index as TypeDefId)
+            .map(|parameter| self.spelling(parameter.ty))
+            .collect();
+        let mangled = mangle_function(&scope, &declaration.name, &spellings);
+        let index = self.result.functions.len() as u32;
+        self.result.functions.push(FunctionInfo {
+            name: declaration.name.clone(),
+            scope,
+            node,
+            body,
+            parameters,
+            method_of: Some(owner),
+            return_type,
+            mangled,
+            locals: Vec::new(),
+            span: self.span_of(node),
+        });
+        if let Type::Named(owner_index) = self.result.types.get(owner).clone() {
+            self.result.type_defs[owner_index as usize]
+                .methods
+                .entry(declaration.name.clone())
+                .or_default()
+                .push(index);
+        }
+        Some(index)
     }
 
     pub(crate) fn resolve_enumeration(&mut self, node: NodeId, _name: String) {
@@ -324,7 +576,12 @@ impl<'a> Sema<'a> {
         }
 
         let size = u64::from(bytes);
-        let index = self.type_def_index(node).expect("declared type");
+        let Some(type_id) = self.type_id_for_node(node) else {
+            return;
+        };
+        let Type::Named(index) = self.result.types.get(type_id).clone() else {
+            return;
+        };
         let definition = &mut self.result.type_defs[index as usize];
         definition.enum_members = members;
         definition.underlying = Some(underlying);
@@ -338,57 +595,91 @@ impl<'a> Sema<'a> {
             self.resolve_global_fixed(node, declaration);
             return;
         };
-        let NodeKind::FunctionType(function) = self.node_kind(ty_node).clone() else {
+        let NodeKind::FunctionType(function) = self.node_kind(ty_node) else {
             self.resolve_global_fixed(node, declaration);
             return;
         };
-        let Some(body) = declaration.init.and_then(|init| match init {
-            Initializer::Block(block) => Some(block),
-            Initializer::Expression(_) => None,
-        }) else {
-            self.unsupported(self.span_of(node), "function-valued constants (lambdas)");
+        let body = match declaration.init {
+            Some(Initializer::Block(block)) => block,
+            _ => {
+                self.unsupported(self.span_of(node), "function-valued constants (lambdas)");
+                return;
+            }
+        };
+        let Some(parameters) = self.resolve_parameters(&function) else {
             return;
         };
+        let return_type = function.return_type.and_then(|ty| self.resolve_type(ty));
+        self.register_function(FunctionDeclaration {
+            node,
+            name: declaration.name.clone(),
+            body,
+            parameters,
+            return_type,
+            method_of: None,
+            exposed_symbol: None,
+        });
+    }
 
-        let Some(function_type) = self.resolve_type(ty_node) else {
-            return;
-        };
+    fn resolve_parameters(
+        &mut self,
+        function: &crate::ast::FunctionType,
+    ) -> Option<Vec<ParameterInfo>> {
         let mut parameters = Vec::new();
         for (index, parameter) in function.parameters.iter().enumerate() {
-            let Some(ty) = parameter.ty else {
-                continue;
+            let Some(parameter_type_node) = parameter.ty else {
+                self.error(parameter.span, "parameter requires a type");
+                return None;
             };
-            let Some(ty) = self.resolve_type(ty) else {
-                continue;
-            };
+            let parameter_type = self.resolve_type(parameter_type_node)?;
+            if parameter.by_ref {
+                self.unsupported(parameter.span, "by-reference parameters outside methods");
+                return None;
+            }
             let name = parameter
                 .name
                 .clone()
                 .unwrap_or_else(|| format!("argument{index}"));
-            parameters.push((name, ty));
+            parameters.push(ParameterInfo {
+                name,
+                ty: parameter_type,
+                by_ref: false,
+            });
         }
-        let return_type = function.return_type.and_then(|ty| self.resolve_type(ty));
+        Some(parameters)
+    }
 
+    fn register_function(&mut self, declaration: FunctionDeclaration) -> u32 {
+        let FunctionDeclaration {
+            node,
+            name,
+            body,
+            parameters,
+            return_type,
+            method_of,
+            exposed_symbol,
+        } = declaration;
         let scope = self.scope_path.clone();
-        let parameter_spellings: Vec<String> = parameters
+        let spellings: Vec<String> = parameters
             .iter()
-            .map(|(_, ty)| self.spelling(*ty))
+            .map(|parameter| self.spelling(parameter.ty))
             .collect();
-        let mangled = mangle_function(&scope, &declaration.name, &parameter_spellings);
+        let mangled = exposed_symbol.unwrap_or_else(|| mangle_function(&scope, &name, &spellings));
         let index = self.result.functions.len() as u32;
         self.result.functions.push(FunctionInfo {
-            name: declaration.name.clone(),
+            name: name.clone(),
             scope,
             node,
             body,
             parameters,
+            method_of,
             return_type,
             mangled,
             locals: Vec::new(),
             span: self.span_of(node),
         });
-        let _ = function_type;
-        self.declare_functions(declaration.name.clone(), index);
+        self.declare_functions(name, index);
+        index
     }
 
     pub(crate) fn resolve_linkable_signature(&mut self, node: NodeId, declaration: &LinkableDecl) {
@@ -396,49 +687,34 @@ impl<'a> Sema<'a> {
             self.unsupported(self.span_of(node), "linkable declarations without a type");
             return;
         };
-        let NodeKind::FunctionType(function) = self.node_kind(ty_node).clone() else {
+        let NodeKind::FunctionType(function) = self.node_kind(ty_node) else {
             self.unsupported(self.span_of(node), "linkable variables");
             return;
         };
-        let Some(body) = declaration.init.and_then(|init| match init {
-            Initializer::Block(block) => Some(block),
-            Initializer::Expression(_) => None,
-        }) else {
-            self.unsupported(self.span_of(node), "linkable declarations without a body");
+        let body = match declaration.init {
+            Some(Initializer::Block(block)) => block,
+            _ => {
+                self.unsupported(self.span_of(node), "linkable declarations without a body");
+                return;
+            }
+        };
+        let Some(parameters) = self.resolve_parameters(&function) else {
             return;
         };
-        let mut parameters = Vec::new();
-        for (index, parameter) in function.parameters.iter().enumerate() {
-            let Some(ty) = parameter.ty else {
-                continue;
-            };
-            let Some(ty) = self.resolve_type(ty) else {
-                continue;
-            };
-            let name = parameter
-                .name
-                .clone()
-                .unwrap_or_else(|| format!("argument{index}"));
-            parameters.push((name, ty));
-        }
         let return_type = function.return_type.and_then(|ty| self.resolve_type(ty));
-        let mangled = declaration
+        let exposed = declaration
             .symbol
             .clone()
             .unwrap_or_else(|| declaration.name.clone());
-        let index = self.result.functions.len() as u32;
-        self.result.functions.push(FunctionInfo {
-            name: declaration.name.clone(),
-            scope: self.scope_path.clone(),
+        self.register_function(FunctionDeclaration {
             node,
+            name: declaration.name.clone(),
             body,
             parameters,
             return_type,
-            mangled,
-            locals: Vec::new(),
-            span: self.span_of(node),
+            method_of: None,
+            exposed_symbol: Some(exposed),
         });
-        self.declare_functions(declaration.name.clone(), index);
     }
 
     fn resolve_global_fixed(&mut self, node: NodeId, declaration: &FixedDecl) {
@@ -619,6 +895,17 @@ impl<'a> Sema<'a> {
     }
 }
 
+/// Metadata needed to register a function or method.
+struct FunctionDeclaration {
+    node: NodeId,
+    name: String,
+    body: NodeId,
+    parameters: Vec<ParameterInfo>,
+    return_type: Option<TypeId>,
+    method_of: Option<TypeId>,
+    exposed_symbol: Option<String>,
+}
+
 fn round_up(value: u64, alignment: u64) -> u64 {
     if alignment <= 1 {
         return value;
@@ -651,15 +938,36 @@ pub(crate) fn fits_integer(value: i128, signed: bool, bytes: u8) -> bool {
 impl<'a> Sema<'a> {
     pub(crate) fn check_function_bodies(&mut self) {
         for index in 0..self.result.functions.len() {
-            let (body, parameters, span) = {
+            let (body, parameters, method_of, span) = {
                 let function = &self.result.functions[index];
-                (function.body, function.parameters.clone(), function.span)
+                (
+                    function.body,
+                    function.parameters.clone(),
+                    function.method_of,
+                    function.span,
+                )
             };
             self.current_function = Some(index as u32);
             self.loop_labels.clear();
             self.push_scope();
-            for (parameter_index, (name, ty)) in parameters.iter().enumerate() {
-                self.add_local(name.clone(), *ty, false, Some(parameter_index as u32), span);
+            let mut llvm_parameter_index = 0u32;
+            if let Some(owner) = method_of {
+                self.declare("this".to_string(), Symbol::This { owner }, span);
+                llvm_parameter_index = 1;
+            }
+            for (position, parameter) in parameters.iter().enumerate() {
+                if method_of.is_some() && position == 0 {
+                    continue;
+                }
+                self.add_local(
+                    parameter.name.clone(),
+                    parameter.ty,
+                    false,
+                    Some(llvm_parameter_index),
+                    Storage::Value,
+                    span,
+                );
+                llvm_parameter_index += 1;
             }
             self.check_block(body);
             self.pop_scope();
@@ -707,6 +1015,7 @@ impl<'a> Sema<'a> {
         ty: TypeId,
         fixed: bool,
         parameter: Option<u32>,
+        storage: Storage,
         span: Span,
     ) -> LocalId {
         let function_index = self.current_function_index();
@@ -717,6 +1026,7 @@ impl<'a> Sema<'a> {
             ty,
             fixed,
             parameter,
+            storage,
             span,
         });
         self.declare(name, Symbol::Local(id), span);
@@ -761,7 +1071,26 @@ impl<'a> Sema<'a> {
         }
         // Values convert implicitly to `boolean`? No: §3.2 forbids basic
         // implicit conversions.
-        // Class/interface subtyping would go here; classes are not implemented yet.
+        // Derived classes convert implicitly to their base classes (§3.7.1).
+        if matches!(self.type_of(from), Type::Named(_))
+            && matches!(self.type_of(to), Type::Named(_))
+        {
+            let mut current = Some(from);
+            let mut depth = 0;
+            while let Some(ty) = current {
+                depth += 1;
+                if depth > 32 {
+                    break;
+                }
+                if ty == to {
+                    return true;
+                }
+                let Type::Named(index) = self.type_of(ty) else {
+                    return false;
+                };
+                current = self.result.type_defs[index as usize].base;
+            }
+        }
         false
     }
 
@@ -942,8 +1271,8 @@ impl<'a> Sema<'a> {
             }
             NodeKind::Throw(_) => self.unsupported(self.span_of(node), "throw statements"),
             NodeKind::Trap(_) => self.unsupported(self.span_of(node), "trap statements"),
-            NodeKind::Dispose(_) => self.unsupported(self.span_of(node), "dispose statements"),
-            NodeKind::Heap(_) => self.unsupported(self.span_of(node), "heap definitions"),
+            NodeKind::Dispose(statement) => self.check_dispose_statement(&statement),
+            NodeKind::Heap(declaration) => self.check_heap_statement(node, &declaration),
             NodeKind::Class(_)
             | NodeKind::Structure(_)
             | NodeKind::Interface(_)
@@ -1017,7 +1346,14 @@ impl<'a> Sema<'a> {
                     continue;
                 }
             };
-            let local = self.add_local(item.name.clone(), ty, false, None, item.span);
+            let local = self.add_local(
+                item.name.clone(),
+                ty,
+                false,
+                None,
+                Storage::Value,
+                item.span,
+            );
             locals.push(local);
         }
         self.result.local_declarations.insert(node, locals);
@@ -1046,13 +1382,25 @@ impl<'a> Sema<'a> {
                     }
                 }
             }
-            let local =
-                self.add_local(declaration.name.clone(), ty, true, None, self.span_of(node));
+            let local = self.add_local(
+                declaration.name.clone(),
+                ty,
+                true,
+                None,
+                Storage::Value,
+                self.span_of(node),
+            );
             self.result.local_declarations.insert(node, vec![local]);
         } else if let Some(Initializer::Expression(expression)) = declaration.init {
             let ty = self.check_expr(expression, None).unwrap_or(TypeId::ERROR);
-            let local =
-                self.add_local(declaration.name.clone(), ty, true, None, self.span_of(node));
+            let local = self.add_local(
+                declaration.name.clone(),
+                ty,
+                true,
+                None,
+                Storage::Value,
+                self.span_of(node),
+            );
             self.result.local_declarations.insert(node, vec![local]);
         } else {
             self.error(
@@ -1066,8 +1414,12 @@ impl<'a> Sema<'a> {
         match self.node_kind(node).clone() {
             NodeKind::Name(name) => match self.lookup(&name.name).cloned() {
                 Some(Symbol::Local(local)) => {
-                    if self.local_info(local).is_some_and(|info| info.fixed) {
-                        self.error(self.span_of(node), "cannot assign to a constant");
+                    if let Some(info) = self.local_info(local) {
+                        if info.fixed {
+                            self.error(self.span_of(node), "cannot assign to a constant");
+                        } else if info.storage == Storage::Heap {
+                            self.error(self.span_of(node), "cannot reassign heap storage");
+                        }
                     }
                 }
                 Some(Symbol::Global(global)) => {
@@ -1080,6 +1432,52 @@ impl<'a> Sema<'a> {
             NodeKind::Index(_) | NodeKind::MemberAccess(_) | NodeKind::PointerMemberAccess(_) => {}
             _ => self.error(self.span_of(node), "expression is not assignable"),
         }
+    }
+
+    fn check_heap_statement(&mut self, node: NodeId, declaration: &HeapDecl) {
+        let Some(type_node) = declaration.ty else {
+            self.error(self.span_of(node), "heap definition requires a type");
+            return;
+        };
+        let Some(ty) = self.resolve_type(type_node) else {
+            return;
+        };
+        if let Some(initializer) = declaration.init {
+            let inferred = self.check_expr(initializer, Some(ty));
+            if let Some(inferred) = inferred {
+                self.expect_assignable(self.span_of(node), inferred, ty);
+            }
+        }
+        let local = self.add_local(
+            declaration.name.clone(),
+            ty,
+            false,
+            None,
+            Storage::Heap,
+            self.span_of(node),
+        );
+        self.result.local_declarations.insert(node, vec![local]);
+    }
+
+    fn check_dispose_statement(&mut self, statement: &DisposeStmt) {
+        if let NodeKind::Name(name) = self.node_kind(statement.target) {
+            if let Some(Symbol::Local(local)) = self.lookup(&name.name).cloned() {
+                if self
+                    .local_info(local)
+                    .is_some_and(|info| info.storage == Storage::Heap)
+                {
+                    self.result.resolutions[statement.target as usize] =
+                        Some(Resolution::Local(local));
+                    self.result.node_types[statement.target as usize] =
+                        self.local_info(local).map(|info| info.ty);
+                    return;
+                }
+            }
+        }
+        self.error(
+            self.span_of(statement.target),
+            "dispose requires a heap-allocated variable",
+        );
     }
 
     fn check_for_statement(&mut self, node: NodeId, statement: &ForStmt) {
@@ -1137,6 +1535,7 @@ impl<'a> Sema<'a> {
             binding_type,
             false,
             None,
+            Storage::Value,
             self.span_of(node),
         );
         self.result.loop_bindings.insert(node, binding_local);
@@ -1286,8 +1685,23 @@ impl<'a> Sema<'a> {
                 self.unsupported(self.span_of(node), "monomorphization expressions");
                 None
             }
-            NodeKind::This | NodeKind::Owner | NodeKind::Base => {
-                self.unsupported(self.span_of(node), "this/owner/base expressions");
+            NodeKind::This => {
+                let owner = self
+                    .current_function
+                    .and_then(|index| self.result.functions[index as usize].method_of);
+                match owner {
+                    Some(owner) => {
+                        self.result.resolutions[node as usize] = Some(Resolution::This);
+                        Some(owner)
+                    }
+                    None => {
+                        self.error(self.span_of(node), "'this' is only available in methods");
+                        None
+                    }
+                }
+            }
+            NodeKind::Owner | NodeKind::Base => {
+                self.unsupported(self.span_of(node), "owner/base expressions");
                 None
             }
             NodeKind::Construct(_) | NodeKind::MemberConstruct(_) => {
@@ -1514,7 +1928,7 @@ impl<'a> Sema<'a> {
                 let parameters = self.result.functions[index as usize]
                     .parameters
                     .iter()
-                    .map(|(_, ty)| *ty)
+                    .map(|parameter| parameter.ty)
                     .collect::<Vec<_>>();
                 let return_type = self.result.functions[index as usize].return_type;
                 Some(
@@ -1538,6 +1952,10 @@ impl<'a> Sema<'a> {
                 );
                 None
             }
+            Symbol::This { owner } => {
+                self.result.resolutions[node as usize] = Some(Resolution::This);
+                Some(owner)
+            }
         }
     }
 
@@ -1557,7 +1975,7 @@ impl<'a> Sema<'a> {
                     let parameters = self.result.functions[index as usize]
                         .parameters
                         .iter()
-                        .map(|(_, ty)| *ty)
+                        .map(|parameter| parameter.ty)
                         .collect::<Vec<_>>();
                     let return_type = self.result.functions[index as usize].return_type;
                     return Some(
@@ -1975,6 +2393,26 @@ impl<'a> Sema<'a> {
     }
 
     fn check_call(&mut self, node: NodeId, call: &CallExpr) -> Option<TypeId> {
+        // Method call: `value.Method(arguments)` (§8.4).
+        if let NodeKind::MemberAccess(access) = self.node_kind(call.callee) {
+            let namespace = matches!(
+                self.try_resolve_name(access.base),
+                Some(Symbol::Module(_)) | Some(Symbol::Type(_))
+            );
+            if !namespace {
+                if let Some(base_type) = self.check_expr(access.base, None) {
+                    if let Some(result) =
+                        self.try_method_call(node, base_type, &access.name, &call.arguments)
+                    {
+                        return result;
+                    }
+                }
+            }
+        }
+        // Construction: `Type(arguments)` (§4.6).
+        if let Some(Symbol::Type(type_id)) = self.try_callee_symbol(call.callee) {
+            return self.check_construction(node, type_id, &call.arguments);
+        }
         if let Some(Symbol::Functions(overloads)) = self.try_callee_symbol(call.callee) {
             return self.resolve_overload(node, &overloads, &call.arguments);
         }
@@ -2017,6 +2455,194 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Collects methods named `name` from `type_id` and its base classes.
+    fn collect_methods(&self, type_id: TypeId, name: &str) -> Vec<u32> {
+        let mut methods = Vec::new();
+        let mut current = Some(type_id);
+        let mut depth = 0;
+        while let Some(ty) = current {
+            depth += 1;
+            if depth > 32 {
+                break;
+            }
+            let Type::Named(index) = self.result.types.get(ty) else {
+                break;
+            };
+            let definition = &self.result.type_defs[*index as usize];
+            if let Some(list) = definition.methods.get(name) {
+                methods.extend(list.iter().copied());
+            }
+            current = definition.base;
+        }
+        methods
+    }
+
+    fn is_this_compatible(&self, actual: TypeId, expected: TypeId) -> bool {
+        if actual == expected {
+            return true;
+        }
+        let mut current = Some(actual);
+        let mut depth = 0;
+        while let Some(ty) = current {
+            depth += 1;
+            if depth > 32 {
+                break;
+            }
+            if ty == expected {
+                return true;
+            }
+            let Type::Named(index) = self.result.types.get(ty) else {
+                return false;
+            };
+            current = self.result.type_defs[*index as usize].base;
+        }
+        false
+    }
+
+    fn try_method_call(
+        &mut self,
+        node: NodeId,
+        base_type: TypeId,
+        name: &str,
+        arguments: &[Argument],
+    ) -> Option<Option<TypeId>> {
+        let candidates = self.collect_methods(base_type, name);
+        if candidates.is_empty() {
+            return None;
+        }
+        let mut exact = Vec::new();
+        for &candidate in &candidates {
+            let parameters = self.result.functions[candidate as usize].parameters.clone();
+            if parameters.len() != arguments.len() + 1 {
+                continue;
+            }
+            if !self.is_this_compatible(base_type, parameters[0].ty) {
+                continue;
+            }
+            self.suppress_errors += 1;
+            let mut matches = true;
+            for (argument, parameter) in arguments.iter().zip(parameters.iter().skip(1)) {
+                let ty = self.check_expr(argument.value, Some(parameter.ty));
+                if ty != Some(parameter.ty) {
+                    matches = false;
+                    break;
+                }
+            }
+            self.suppress_errors -= 1;
+            if matches {
+                exact.push(candidate);
+            }
+        }
+        let selected = if exact.len() == 1 {
+            exact[0]
+        } else if exact.is_empty() {
+            self.error(
+                self.span_of(node),
+                "no method overload matches the argument types",
+            );
+            return Some(None);
+        } else {
+            self.error(
+                self.span_of(node),
+                "ambiguous method call: several overloads match",
+            );
+            return Some(None);
+        };
+        let parameters = self.result.functions[selected as usize].parameters.clone();
+        for (argument, parameter) in arguments.iter().zip(parameters.iter().skip(1)) {
+            let ty = self.check_expr(argument.value, Some(parameter.ty));
+            if let Some(ty) = ty {
+                self.expect_assignable(argument.span, ty, parameter.ty);
+            }
+        }
+        self.result.resolutions[node as usize] = Some(Resolution::Function(selected));
+        Some(self.result.functions[selected as usize].return_type)
+    }
+
+    fn check_construction(
+        &mut self,
+        node: NodeId,
+        type_id: TypeId,
+        arguments: &[Argument],
+    ) -> Option<TypeId> {
+        let Type::Named(index) = self.result.types.get(type_id).clone() else {
+            self.error(self.span_of(node), "only named types can be constructed");
+            return None;
+        };
+        match self.result.type_defs[index as usize].kind {
+            TypeDefKind::Structure | TypeDefKind::Class => {}
+            TypeDefKind::Enumeration => {
+                self.error(
+                    self.span_of(node),
+                    "enumeration values are written as members, not constructed",
+                );
+                return None;
+            }
+            _ => {
+                self.unsupported(self.span_of(node), "construction of this type");
+                return None;
+            }
+        }
+        let candidates = self.collect_methods(type_id, "Construct");
+        if candidates.is_empty() {
+            if arguments.is_empty() {
+                self.result.resolutions[node as usize] = Some(Resolution::Construct {
+                    type_id,
+                    method: None,
+                });
+                return Some(type_id);
+            }
+            self.error(
+                self.span_of(node),
+                "this type declares no constructor that accepts arguments",
+            );
+            return None;
+        }
+        let mut exact = Vec::new();
+        for &candidate in &candidates {
+            let parameters = self.result.functions[candidate as usize].parameters.clone();
+            if parameters.len() != arguments.len() + 1 {
+                continue;
+            }
+            if !self.is_this_compatible(type_id, parameters[0].ty) {
+                continue;
+            }
+            self.suppress_errors += 1;
+            let mut matches = true;
+            for (argument, parameter) in arguments.iter().zip(parameters.iter().skip(1)) {
+                let ty = self.check_expr(argument.value, Some(parameter.ty));
+                if ty != Some(parameter.ty) {
+                    matches = false;
+                    break;
+                }
+            }
+            self.suppress_errors -= 1;
+            if matches {
+                exact.push(candidate);
+            }
+        }
+        if exact.len() != 1 {
+            self.error(
+                self.span_of(node),
+                "no constructor overload matches the argument types",
+            );
+            return None;
+        }
+        let selected = exact[0];
+        let parameters = self.result.functions[selected as usize].parameters.clone();
+        for (argument, parameter) in arguments.iter().zip(parameters.iter().skip(1)) {
+            let ty = self.check_expr(argument.value, Some(parameter.ty));
+            if let Some(ty) = ty {
+                self.expect_assignable(argument.span, ty, parameter.ty);
+            }
+        }
+        self.result.resolutions[node as usize] = Some(Resolution::Construct {
+            type_id,
+            method: Some(selected),
+        });
+        Some(type_id)
+    }
+
     fn try_callee_symbol(&mut self, callee: NodeId) -> Option<Symbol> {
         if let NodeKind::MemberAccess(access) = self.node_kind(callee).clone() {
             if let Some(Symbol::Module(scope)) = self.try_resolve_name(access.base) {
@@ -2041,9 +2667,9 @@ impl<'a> Sema<'a> {
             }
             self.suppress_errors += 1;
             let mut matches = true;
-            for (argument, (_, parameter_type)) in arguments.iter().zip(parameters.iter()) {
-                let ty = self.check_expr(argument.value, Some(*parameter_type));
-                if ty != Some(*parameter_type) {
+            for (argument, parameter) in arguments.iter().zip(parameters.iter()) {
+                let ty = self.check_expr(argument.value, Some(parameter.ty));
+                if ty != Some(parameter.ty) {
                     matches = false;
                     break;
                 }
@@ -2066,10 +2692,10 @@ impl<'a> Sema<'a> {
                     }
                     self.suppress_errors += 1;
                     let mut matches = true;
-                    for (argument, (_, parameter_type)) in arguments.iter().zip(parameters.iter()) {
-                        let ty = self.check_expr(argument.value, Some(*parameter_type));
+                    for (argument, parameter) in arguments.iter().zip(parameters.iter()) {
+                        let ty = self.check_expr(argument.value, Some(parameter.ty));
                         match ty {
-                            Some(ty) if self.is_assignable(ty, *parameter_type) => {}
+                            Some(ty) if self.is_assignable(ty, parameter.ty) => {}
                             _ => {
                                 matches = false;
                                 break;
@@ -2104,10 +2730,10 @@ impl<'a> Sema<'a> {
         };
 
         let parameters = self.result.functions[selected as usize].parameters.clone();
-        for (argument, (_, parameter_type)) in arguments.iter().zip(parameters.iter()) {
-            let ty = self.check_expr(argument.value, Some(*parameter_type));
+        for (argument, parameter) in arguments.iter().zip(parameters.iter()) {
+            let ty = self.check_expr(argument.value, Some(parameter.ty));
             if let Some(ty) = ty {
-                self.expect_assignable(argument.span, ty, *parameter_type);
+                self.expect_assignable(argument.span, ty, parameter.ty);
             }
         }
         self.result.resolutions[node as usize] = Some(Resolution::Function(selected));

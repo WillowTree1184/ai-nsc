@@ -64,9 +64,11 @@ diagnostics; all valid examples type-check.
 - [x] Aggregates: strings and fixed arrays, enumerations, structures (value layout)
 - [x] `emit-ir`, `emit-obj`, `build` and `run` actions wired through `clang`
 - [x] `module.verify()` on every generated module
-- [ ] Classes, interfaces, variants/unions and virtual dispatch
+- [x] Construction expressions (in-place, constructor overloads, field initializers)
+- [x] Methods, `this`, class instances and `heap`/`dispose` allocation
+- [ ] Virtual dispatch, interfaces, variants/unions and RTTI
 - [ ] Runtime exception model (`trap`/`throw`/`finally`, division/out-of-range traps)
-- [ ] `heap` allocation, `dispose` and NOLAA analysis
+- [ ] NOLAA analysis for heap lifetime
 
 Acceptance: IR golden tests with `FileCheck-18`; objects link and run for the full example
 suite.

@@ -3069,10 +3069,7 @@ impl<'a> Sema<'a> {
 
     fn check_heap_statement(&mut self, node: NodeId, declaration: &HeapDecl) {
         // The type may be omitted when an initializer provides it (§5.4).
-        let declared = match declaration.ty {
-            Some(type_node) => Some(self.resolve_type(type_node)),
-            None => None,
-        };
+        let declared = declaration.ty.map(|type_node| self.resolve_type(type_node));
         let mut ty = match declared {
             Some(Some(ty)) => Some(ty),
             Some(None) => return,

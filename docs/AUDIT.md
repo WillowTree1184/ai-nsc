@@ -45,7 +45,7 @@ only after the reproduction is re-run and its regression test is green.
 | 23 | MED | §2.7.11, §2.7.12, §5.3 | `illegal`/`uninitialized` misuse undiagnosed; `fixed Bad: integer(4);` (no initializer) accepted | fixed (72587df + bf80e9b: constant initialization, illegal comparisons, and the `uninitialized` placement rule) |
 | 24 | MED | §3.7.5 | Variant name-elision sugar missing (`local s: Status = Idle;`, `= Loading(50);`); built-in variant equality missing | fixed (9ef2245 payload-less elision, 40d12c7 payload elision, af2656d built-in variant equality) |
 | 25 | MED | §3.6.1, §3.8.1, §5.8, §5.9, §12.2 | Warning subsystem unused: zero `Severity::Warning` sites; all spec warnings missing (index out of bounds, array↔pointer cast, match exhaustiveness, dispose warnings, initializer-order adjustment) | partial (ccb385b out-of-bounds index, 3bc3b49 array/pointer conversion, 8f6c41b variant match exhaustiveness, de212c5 double dispose; initializer-order adjustment is open) |
-| 26 | LOW | §8.2 | Array parameter expansion sugar (`message[length: cardinal(4)]`) missing | open |
+| 26 | LOW | §8.2 | Array parameter expansion sugar (`message[length: cardinal(4)]`) missing | partial (bf40b34: declaration expands to pointer+length parameters; implicit call-site conversion still missing) |
 | 27 | LOW | §5.9.1 | `for &ref` element references missing | fixed (24244ab: by-reference array iteration implemented) |
 | 28 | LOW | §5.7 | Compound-assignment evaluation order not specified/implemented | open |
 | 29 | LOW | §3.2 | Signed `INT_MIN / -1` sdiv poison possible | open |

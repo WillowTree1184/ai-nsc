@@ -1730,3 +1730,74 @@ fixed Main(): integer(4)
     // The global becomes 7, the local stays 2.
     assert_eq!(run_program(source), 72);
 }
+
+#[test]
+fn use_imports_module_members_into_the_scope() {
+    let source = "\
+module Settings
+{
+    local Flag: boolean = true;
+    local Limit: integer(4) = 9;
+}
+
+module Maths
+{
+    fixed Double(value: integer(4)): integer(4)
+    {
+        return value * 2;
+    }
+
+    structure Point
+    {
+        public X: integer(4);
+        public Y: integer(4);
+    }
+}
+
+fixed Main(): integer(4)
+{
+    use Settings, Maths;
+
+    local point: Point;
+    point.X = Double(3);
+    point.Y = Double(2);
+
+    if (Flag && Limit == 9)
+    {
+        return point.X + point.Y;
+    }
+    return 0;
+}";
+    assert_eq!(run_program(source), 10);
+}
+
+#[test]
+fn use_works_at_module_level_for_later_declarations() {
+    let source = "\
+module Types
+{
+    structure Item
+    {
+        public Value: integer(4);
+    }
+}
+
+module Container
+{
+    use Types;
+
+    structure Holder
+    {
+        public Item: Item;
+    }
+}
+
+fixed Main(): integer(4)
+{
+    use Container;
+    local holder: Holder;
+    holder.Item.Value = 11;
+    return holder.Item.Value;
+}";
+    assert_eq!(run_program(source), 11);
+}

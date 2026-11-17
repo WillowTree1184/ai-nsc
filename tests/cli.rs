@@ -311,3 +311,24 @@ fixed Main(): integer(4) { return 0; }",
     );
     assert!(stderr.contains("base.Construct"), "{stderr}");
 }
+
+#[test]
+fn use_only_affects_the_rest_of_its_scope() {
+    let stderr = check_source(
+        "\
+module A
+{
+    fixed Value(): integer(4) { return 5; }
+}
+
+fixed Main(): integer(4)
+{
+    {
+        use A;
+        local inside: integer(4) = Value();
+    }
+    return Value();
+}",
+    );
+    assert!(stderr.contains("unknown name 'Value'"), "{stderr}");
+}

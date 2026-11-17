@@ -2668,9 +2668,7 @@ impl<'a> Sema<'a> {
                 }
             }
             NodeKind::Use(statement) => {
-                for target in &statement.targets {
-                    self.check_expr(*target, None);
-                }
+                self.resolve_use_statement(&statement);
             }
             NodeKind::CompileTimeBlock(block) => self.check_block(block),
             NodeKind::CompileTimeIf(statement) => {

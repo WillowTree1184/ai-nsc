@@ -744,6 +744,9 @@ impl SemaResult {
 pub(crate) struct Scope {
     parent: Option<usize>,
     symbols: HashMap<String, Symbol>,
+    /// Module scopes whose members are imported by a `use` statement in this
+    /// scope (§5.6). Later imports are searched first.
+    imports: Vec<usize>,
 }
 
 /// What a name in a scope binds to.
@@ -872,6 +875,7 @@ impl<'a> Sema<'a> {
         self.scopes.push(Scope {
             parent: Some(parent),
             symbols: HashMap::new(),
+            imports: Vec::new(),
         });
         id
     }
@@ -957,9 +961,36 @@ impl<'a> Sema<'a> {
             if let Some(symbol) = self.scopes[index].symbols.get(name) {
                 return Some(symbol);
             }
+            for imported in self.scopes[index].imports.iter().rev() {
+                if let Some(symbol) = self.scopes[*imported].symbols.get(name) {
+                    return Some(symbol);
+                }
+            }
             scope = self.scopes[index].parent;
         }
         None
+    }
+
+    /// Registers the imports of a `use` statement in the current scope (§5.6).
+    ///
+    /// Imports only affect the statements that follow the `use` in the same
+    /// scope, which holds naturally because statements are checked in order.
+    pub(crate) fn resolve_use_statement(&mut self, statement: &UseStmt) {
+        for target in &statement.targets {
+            let span = self.span_of(*target);
+            match self.try_resolve_name(*target) {
+                Some(Symbol::Module(scope)) => {
+                    let current = self.current_scope();
+                    if !self.scopes[current].imports.contains(&scope) {
+                        self.scopes[current].imports.push(scope);
+                    }
+                }
+                Some(Symbol::Type(_)) => {
+                    self.unsupported(span, "use of a type's static members");
+                }
+                _ => self.error(span, "'use' requires a module name"),
+            }
+        }
     }
 
     pub(crate) fn lookup_in(&self, scope: usize, name: &str) -> Option<&Symbol> {
@@ -1323,6 +1354,7 @@ impl<'a> Sema<'a> {
                 }
                 NodeKind::Local(_) => self.resolve_global_local(node),
                 NodeKind::Extension(_) => self.resolve_extension_declaration(node, None),
+                NodeKind::Use(statement) => self.resolve_use_statement(&statement),
                 _ => {}
             }
         }

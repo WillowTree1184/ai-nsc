@@ -2308,7 +2308,7 @@ impl<'a> Sema<'a> {
                 llvm_parameter_index += 1;
             }
             match body {
-                FunctionBody::Block(block) => self.check_block(block),
+                FunctionBody::Block(block) => self.check_body_block(block),
                 FunctionBody::Expression(expression) => {
                     self.check_expr(expression, None);
                 }
@@ -2506,6 +2506,26 @@ impl<'a> Sema<'a> {
             self.check_statement(statement);
         }
         self.pop_scope();
+    }
+
+    /// Checks a function body block in the scope that already holds `this` and
+    /// the parameters: the body block *is* the function's scope (§6.1), so
+    /// `owner` from inside it reaches the enclosing declaration scope.
+    fn check_body_block(&mut self, block: NodeId) {
+        let statements = match self.node_kind(block) {
+            NodeKind::Block(statements) => statements,
+            NodeKind::VerbatimBlock(inner) => {
+                self.check_body_block(inner);
+                return;
+            }
+            _ => {
+                self.error(self.span_of(block), "expected a block");
+                return;
+            }
+        };
+        for statement in statements {
+            self.check_statement(statement);
+        }
     }
 
     fn check_statement(&mut self, node: NodeId) {
@@ -3388,7 +3408,10 @@ impl<'a> Sema<'a> {
                 }
             }
             NodeKind::Owner => {
-                self.unsupported(self.span_of(node), "owner expressions");
+                self.error(
+                    self.span_of(node),
+                    "'owner' must be followed by '.' and a name",
+                );
                 None
             }
             NodeKind::Construct(_) | NodeKind::MemberConstruct(_) => {
@@ -3593,6 +3616,12 @@ impl<'a> Sema<'a> {
             self.error(self.span_of(node), format!("unknown name '{}'", name.name));
             return None;
         };
+        self.check_symbol_expr(node, &name.name, symbol)
+    }
+
+    /// Records the resolution of an expression node for a resolved symbol and
+    /// returns the symbol's value type.
+    fn check_symbol_expr(&mut self, node: NodeId, name: &str, symbol: Symbol) -> Option<TypeId> {
         match symbol {
             Symbol::Local(local) => {
                 self.result.resolutions[node as usize] = Some(Resolution::Local(local));
@@ -3627,10 +3656,7 @@ impl<'a> Sema<'a> {
             Symbol::GenericFunctions(_) => {
                 self.error(
                     self.span_of(node),
-                    format!(
-                        "'{}' is a generic function; type arguments are required",
-                        name.name
-                    ),
+                    format!("'{name}' is a generic function; type arguments are required"),
                 );
                 None
             }
@@ -3656,12 +3682,50 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Number of `owner` hops in an owner chain base (`owner`, `owner.owner`),
+    /// if `node` is such a chain.
+    fn owner_levels(&self, node: NodeId) -> Option<usize> {
+        let mut levels = 0;
+        let mut current = node;
+        loop {
+            match self.node_kind(current) {
+                NodeKind::Owner => return Some(levels + 1),
+                NodeKind::MemberAccess(access) if access.name == "owner" => {
+                    levels += 1;
+                    current = access.base;
+                }
+                _ => return None,
+            }
+        }
+    }
+
     fn check_member_access(
         &mut self,
         node: NodeId,
         access: &MemberAccess,
         pointer: bool,
     ) -> Option<TypeId> {
+        // Shadowed-name access: `owner.name`, `owner.owner.name` (§6.4).
+        if let Some(levels) = self.owner_levels(access.base) {
+            let Some(scope) = self.ancestor_scope(self.current_scope(), levels) else {
+                self.error(
+                    self.span_of(node),
+                    "'owner' refers past the outermost scope",
+                );
+                return None;
+            };
+            let Some(symbol) = self.lookup_in(scope, &access.name).cloned() else {
+                self.error(
+                    self.span_of(node),
+                    format!(
+                        "'{}' is not declared in the scope that 'owner' refers to",
+                        access.name
+                    ),
+                );
+                return None;
+            };
+            return self.check_symbol_expr(node, &access.name, symbol);
+        }
         // Module-qualified name: `Module.member`.
         if let Some(Symbol::Module(scope)) = self.try_resolve_name(access.base) {
             let member = self.lookup_in(scope, &access.name).cloned();

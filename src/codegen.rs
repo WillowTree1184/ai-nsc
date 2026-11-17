@@ -3072,6 +3072,51 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .map_err(|error| format!("cannot load element: {error}"))
     }
 
+    /// Address of the storage of a resolved local, global, `this` or `base`
+    /// expression (`owner.name` reuses this too, §6.4).
+    fn gen_lvalue_resolution(
+        &mut self,
+        node: NodeId,
+    ) -> Result<Option<PointerValue<'ctx>>, String> {
+        match self.sema.resolutions[node as usize].clone() {
+            Some(Resolution::Local(local)) => {
+                let info = self
+                    .local_info(local)
+                    .ok_or_else(|| "missing local information".to_string())?;
+                let slot = *self
+                    .local_slots
+                    .get(&local)
+                    .ok_or_else(|| "missing local slot".to_string())?;
+                if info.storage == Storage::Heap {
+                    let pointer_type = self.context.ptr_type(AddressSpace::default());
+                    let pointer = self
+                        .builder
+                        .build_load(pointer_type, slot, "heap_pointer")
+                        .map_err(|error| format!("cannot load heap pointer: {error}"))?;
+                    Ok(Some(pointer.into_pointer_value()))
+                } else {
+                    Ok(Some(slot))
+                }
+            }
+            Some(Resolution::Global(global)) => Ok(self
+                .globals
+                .get(&global)
+                .map(|global| global.as_pointer_value())),
+            Some(Resolution::This) | Some(Resolution::Base) => {
+                let slot = self
+                    .current_this_slot
+                    .ok_or_else(|| "no this slot".to_string())?;
+                let pointer_type = self.context.ptr_type(AddressSpace::default());
+                let pointer = self
+                    .builder
+                    .build_load(pointer_type, slot, "this")
+                    .map_err(|error| format!("cannot load this: {error}"))?;
+                Ok(Some(pointer.into_pointer_value()))
+            }
+            _ => Ok(None),
+        }
+    }
+
     fn gen_lvalue(&mut self, node: NodeId) -> Result<Option<PointerValue<'ctx>>, String> {
         match self.ast.node(node).kind.clone() {
             NodeKind::This => {
@@ -3085,43 +3130,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .map_err(|error| format!("cannot load this: {error}"))?;
                 Ok(Some(pointer.into_pointer_value()))
             }
-            NodeKind::Name(_) => match self.sema.resolutions[node as usize].clone() {
-                Some(Resolution::Local(local)) => {
-                    let info = self
-                        .local_info(local)
-                        .ok_or_else(|| "missing local information".to_string())?;
-                    let slot = *self
-                        .local_slots
-                        .get(&local)
-                        .ok_or_else(|| "missing local slot".to_string())?;
-                    if info.storage == Storage::Heap {
-                        let pointer_type = self.context.ptr_type(AddressSpace::default());
-                        let pointer = self
-                            .builder
-                            .build_load(pointer_type, slot, "heap_pointer")
-                            .map_err(|error| format!("cannot load heap pointer: {error}"))?;
-                        Ok(Some(pointer.into_pointer_value()))
-                    } else {
-                        Ok(Some(slot))
-                    }
-                }
-                Some(Resolution::Global(global)) => Ok(self
-                    .globals
-                    .get(&global)
-                    .map(|global| global.as_pointer_value())),
-                Some(Resolution::This) | Some(Resolution::Base) => {
-                    let slot = self
-                        .current_this_slot
-                        .ok_or_else(|| "no this slot".to_string())?;
-                    let pointer_type = self.context.ptr_type(AddressSpace::default());
-                    let pointer = self
-                        .builder
-                        .build_load(pointer_type, slot, "this")
-                        .map_err(|error| format!("cannot load this: {error}"))?;
-                    Ok(Some(pointer.into_pointer_value()))
-                }
-                _ => Ok(None),
-            },
+            NodeKind::Name(_) => self.gen_lvalue_resolution(node),
             NodeKind::Index(index) => {
                 let base_type = self.type_of(index.base);
                 match self.sema.types.get(base_type).clone() {
@@ -3189,6 +3198,17 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             }
             NodeKind::MemberAccess(access) => {
                 let resolution = self.sema.resolutions[node as usize].clone();
+                // `owner.name` resolves to a local, global, `this` or `base`
+                // storage rather than to a field (§6.4).
+                if matches!(
+                    resolution,
+                    Some(Resolution::Local(_))
+                        | Some(Resolution::Global(_))
+                        | Some(Resolution::This)
+                        | Some(Resolution::Base)
+                ) {
+                    return self.gen_lvalue_resolution(node);
+                }
                 let base_type = self.type_of(access.base);
                 if let Some(Resolution::UnionMember { type_id, member }) = resolution {
                     let Type::Named(index) = self.sema.types.get(type_id).clone() else {

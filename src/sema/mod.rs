@@ -858,6 +858,14 @@ impl<'a> Sema<'a> {
         *self.scope_stack.last().expect("scope stack is never empty")
     }
 
+    /// The `levels`-th ancestor of `scope` (its parent for 1), if it exists.
+    pub(crate) fn ancestor_scope(&self, mut scope: usize, levels: usize) -> Option<usize> {
+        for _ in 0..levels {
+            scope = self.scopes[scope].parent?;
+        }
+        Some(scope)
+    }
+
     fn create_child_scope(&mut self) -> usize {
         let parent = self.current_scope();
         let id = self.scopes.len();

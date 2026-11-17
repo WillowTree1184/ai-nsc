@@ -1694,3 +1694,39 @@ fixed Main(): integer(4)
     // Base constructor sets X = 10, derived sets Y = 5.
     assert_eq!(run_program(source), 15);
 }
+
+#[test]
+fn owner_accesses_shadowed_outer_scopes() {
+    let source = "\
+local a: integer(4) = 1;
+
+fixed Main(): integer(4)
+{
+    local a: integer(4) = 2;
+    local b: integer(4) = a;
+    local c: integer(4) = owner.a;
+    {
+        local a: integer(8) = 3;
+        local d: integer(4) = owner.owner.a;
+        b = b + Cast<integer(4)>(owner.a);
+        return b + c * 10 + d * 100;
+    }
+}";
+    // b = 2 + 2, c = global 1, d = global 1.
+    assert_eq!(run_program(source), 114);
+}
+
+#[test]
+fn owner_is_a_valid_assignment_target() {
+    let source = "\
+local total: integer(4) = 1;
+
+fixed Main(): integer(4)
+{
+    local total: integer(4) = 2;
+    owner.total = total + 5;
+    return owner.total * 10 + total;
+}";
+    // The global becomes 7, the local stays 2.
+    assert_eq!(run_program(source), 72);
+}

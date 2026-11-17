@@ -585,3 +585,17 @@ fixed Main(): integer(4)
     );
     assert!(stderr.contains("custom heap allocators"), "{stderr}");
 }
+
+#[test]
+fn compile_time_expression_rejects_runtime_values() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    local value: integer(4) = 4;
+    local derived: integer(4) = #(value + 1);
+    return derived;
+}",
+    );
+    assert!(stderr.contains("compile-time expressions"), "{stderr}");
+}

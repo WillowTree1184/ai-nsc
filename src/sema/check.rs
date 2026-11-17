@@ -2157,6 +2157,14 @@ impl<'a> Sema<'a> {
             NodeKind::Unary(unary) if unary.op == UnaryOp::Negate => {
                 self.eval_const_int(unary.operand).map(i128::wrapping_neg)
             }
+            NodeKind::CompileTimeExpr(inner) => self.eval_const_int(inner),
+            // The compiler API call `Type.SizeOf<T>()` is a compile-time constant
+            // (§11.8).
+            NodeKind::Call(call) => {
+                let argument = builtin_size_of_type_argument(self.ast, call.callee)?;
+                let ty = self.resolve_type(argument)?;
+                Some(self.size_align(ty).0 as i128)
+            }
             NodeKind::Binary(binary) => {
                 let left = self.eval_const_int(binary.left)?;
                 let right = self.eval_const_int(binary.right)?;
@@ -3562,7 +3570,20 @@ impl<'a> Sema<'a> {
                 then_type
             }
             NodeKind::ArrayLiteral(literal) => self.check_array_literal(node, &literal, expected),
-            NodeKind::CompileTimeExpr(inner) => self.check_expr(inner, expected),
+            NodeKind::CompileTimeExpr(inner) => {
+                let ty = self.check_expr(inner, expected);
+                // A '#(...)' expression must be evaluable at compile time (§11.2).
+                self.suppress_errors += 1;
+                let constant = self.eval_const_int(inner);
+                self.suppress_errors -= 1;
+                if constant.is_none() {
+                    self.unsupported(
+                        self.span_of(node),
+                        "compile-time expressions that are not integer constants",
+                    );
+                }
+                ty
+            }
             NodeKind::Is(is_expression) => self.check_is_expression(node, &is_expression),
             NodeKind::Coalesce(_) => {
                 self.unsupported(self.span_of(node), "null coalescing expressions");

@@ -2000,3 +2000,22 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 16);
 }
+
+#[test]
+fn compile_time_expressions_evaluate_constants() {
+    let source = "\
+structure Vector3
+{
+    public X: float(4);
+    public Y: float(4);
+    public Z: float(4);
+}
+
+fixed Main(): integer(4)
+{
+    local size: cardinal(8) = #(Type.SizeOf<Vector3>());
+    local sum: integer(4) = #(1 + 2 * 3);
+    return Cast<integer(4)>(size) + sum;
+}";
+    assert_eq!(run_program(source), 19);
+}

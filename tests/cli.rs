@@ -461,3 +461,34 @@ fixed Main(): integer(4)
     );
     assert!(stderr.contains("carries a payload"), "{stderr}");
 }
+
+#[test]
+fn constant_out_of_bounds_index_warns_without_failing() {
+    let directory = std::env::temp_dir().join(format!("ainsc-cli-warn-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("main.ns");
+    std::fs::write(
+        &path,
+        "\
+fixed Main(): integer(4)
+{
+    local values[3]: integer(4) = { 1, 2, 3 };
+    return values[5];
+}",
+    )
+    .expect("write program");
+    let output = ai_nsc()
+        .args(["check", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "warnings must not fail the build: {stderr}"
+    );
+    assert!(
+        stderr.contains("warning") && stderr.contains("out of bounds"),
+        "{stderr}"
+    );
+}

@@ -19,7 +19,7 @@ pub(crate) use generics::MonomorphizedTarget;
 use std::collections::HashMap;
 
 use crate::ast::*;
-use crate::diagnostics::DiagnosticEngine;
+use crate::diagnostics::{DiagnosticEngine, Severity};
 use crate::source::{SourceManager, Span};
 use types::{mangle_function, TypeId, TypeStore};
 
@@ -845,6 +845,20 @@ impl<'a> Sema<'a> {
                 &mut stderr,
                 self.sources,
                 crate::diagnostics::Severity::Error,
+                Some(span),
+                &message.into(),
+            );
+        }
+    }
+
+    /// Reports a non-fatal warning.
+    pub(crate) fn warn(&mut self, span: Span, message: impl Into<String>) {
+        if self.suppress_errors == 0 {
+            let mut stderr = std::io::stderr();
+            let _ = self.engine.report(
+                &mut stderr,
+                self.sources,
+                Severity::Warning,
                 Some(span),
                 &message.into(),
             );

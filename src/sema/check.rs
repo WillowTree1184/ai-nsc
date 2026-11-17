@@ -4135,6 +4135,20 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// The value of an integer literal or a negated integer literal, without
+    /// reporting diagnostics (used only for optional warnings).
+    fn literal_integer(&self, node: NodeId) -> Option<i128> {
+        match self.node_kind(node) {
+            NodeKind::IntegerLiteral(literal) => literal::decode_integer(&literal.raw)
+                .ok()
+                .and_then(|value| i128::try_from(value).ok()),
+            NodeKind::Unary(unary) if unary.op == UnaryOp::Negate => {
+                self.literal_integer(unary.operand).map(|value| -value)
+            }
+            _ => None,
+        }
+    }
+
     fn check_index_expr(&mut self, node: NodeId, index: &IndexExpr) -> Option<TypeId> {
         let base_type = self.check_expr(index.base, None)?;
         let index_type = self.check_expr(index.index, None);
@@ -4151,6 +4165,21 @@ impl<'a> Sema<'a> {
                 mut dimensions,
                 element,
             } => {
+                // A provably out-of-bounds constant index is a warning (§4.4.3).
+                if let Some(length) = dimensions.first().copied() {
+                    if let Some(constant) = self.literal_integer(index.index) {
+                        if constant < 0
+                            || u64::try_from(constant).map_or(true, |value| value >= length)
+                        {
+                            self.warn(
+                                self.span_of(index.index),
+                                format!(
+                                    "index {constant} is out of bounds for an array of length {length}"
+                                ),
+                            );
+                        }
+                    }
+                }
                 if dimensions.len() > 1 {
                     dimensions.remove(0);
                     Some(self.result.types.array(dimensions, element))

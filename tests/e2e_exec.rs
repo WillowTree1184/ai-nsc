@@ -1935,3 +1935,16 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 11);
 }
+
+#[test]
+fn uninitialized_is_allowed_as_a_global_initial_value() {
+    let source = "\
+local buffer: integer(4) = uninitialized;
+
+fixed Main(): integer(4)
+{
+    buffer = 4;
+    return buffer;
+}";
+    assert_eq!(run_program(source), 4);
+}

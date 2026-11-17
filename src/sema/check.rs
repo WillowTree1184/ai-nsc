@@ -2427,7 +2427,9 @@ impl<'a> Sema<'a> {
                 if ty == TypeId::ERROR {
                     continue;
                 }
+                self.initializer_depth += 1;
                 let inferred = self.check_expr(initializer, Some(ty));
+                self.initializer_depth -= 1;
                 if let Some(inferred) = inferred {
                     if !self.is_assignable(inferred, ty) {
                         self.error(

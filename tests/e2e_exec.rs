@@ -2241,3 +2241,29 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 9);
 }
+
+#[test]
+fn static_class_members_and_accessor_alias() {
+    let source = "\
+static class Counter
+{
+    private static Total: integer(4) = 5;
+
+    extension
+    {
+        public static accessor Count: integer(4) => Total;
+
+        public static fixed Add(amount: integer(4))
+        {
+            Total += amount;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    Counter.Add(3);
+    return Counter.Count;
+}";
+    assert_eq!(run_program(source), 8);
+}

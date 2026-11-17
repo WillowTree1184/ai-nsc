@@ -307,6 +307,11 @@ impl<'a> Sema<'a> {
             NodeKind::Structure(declaration) => declaration.modifiers.sealed,
             _ => false,
         };
+        let static_class = match self.node_kind(node) {
+            NodeKind::Class(declaration) => declaration.modifiers.static_,
+            NodeKind::Structure(declaration) => declaration.modifiers.static_,
+            _ => false,
+        };
         // Register the base and sealed flags before processing members, so that
         // extension methods can validate `override` against the base chain.
         {
@@ -318,6 +323,7 @@ impl<'a> Sema<'a> {
             definition.base = base_type;
             definition.sealed = sealed_class;
             definition.is_abstract = abstract_class;
+            definition.is_static = static_class;
             definition.interfaces = interfaces.clone();
         }
 
@@ -396,6 +402,13 @@ impl<'a> Sema<'a> {
                                 .static_fields
                                 .insert(field.name.clone(), index);
                         }
+                        continue;
+                    }
+                    if static_class {
+                        self.error(
+                            self.span_of(*member),
+                            "a static class must not declare instance fields",
+                        );
                         continue;
                     }
                     let (size, natural_align) = self.size_align(ty);
@@ -652,7 +665,11 @@ impl<'a> Sema<'a> {
                         self.create_method(member, &declaration, target);
                     }
                 }
-                NodeKind::Accessor(_) => {
+                NodeKind::Accessor(declaration) => {
+                    if declaration.modifiers.static_ {
+                        self.create_static_accessor(member, &declaration, target);
+                        continue;
+                    }
                     self.pending_accessors.push(PendingAccessor {
                         node: member,
                         owner: target,
@@ -870,6 +887,60 @@ impl<'a> Sema<'a> {
         self.result.type_defs[owner_index as usize]
             .static_fields
             .insert(declaration.name.clone(), index);
+    }
+
+    /// Registers a `static accessor`: a class-level property backed by a static
+    /// field, exposed as `Class.Name` (§3.8.2, §9.15).
+    fn create_static_accessor(&mut self, node: NodeId, declaration: &AccessorDecl, owner: TypeId) {
+        if !declaration.members.is_empty() {
+            self.unsupported(
+                self.span_of(node),
+                "static accessors with explicit accessor members",
+            );
+            return;
+        }
+        let Some(backing) = declaration.backing else {
+            self.error(
+                self.span_of(node),
+                "a static accessor requires a backing static field",
+            );
+            return;
+        };
+        let NodeKind::Name(name) = self.node_kind(backing) else {
+            self.error(
+                self.span_of(backing),
+                "an accessor backing must be a field name",
+            );
+            return;
+        };
+        let Type::Named(owner_index) = self.types_of(owner) else {
+            return;
+        };
+        let backing_global = self.result.type_defs[owner_index as usize]
+            .static_fields
+            .get(&name.name)
+            .copied();
+        let Some(backing_global) = backing_global else {
+            self.error(
+                self.span_of(backing),
+                format!("unknown static backing field '{}'", name.name),
+            );
+            return;
+        };
+        let Some(ty) = self.resolve_type(declaration.ty) else {
+            return;
+        };
+        let global_ty = self.result.globals[backing_global as usize].ty;
+        if global_ty != ty {
+            self.error(
+                self.span_of(node),
+                "the accessor type must match its backing static field",
+            );
+            return;
+        }
+        self.result.type_defs[owner_index as usize]
+            .static_fields
+            .insert(declaration.name.clone(), backing_global);
     }
 
     /// Registers a `static` method: no `this`, class-level storage (§9.15).
@@ -5869,6 +5940,14 @@ impl<'a> Sema<'a> {
                 self.unsupported(self.span_of(node), "construction of this type");
                 return None;
             }
+        }
+        if self.result.type_defs[index as usize].is_static {
+            let class_name = self.result.type_defs[index as usize].qualified_name.clone();
+            self.error(
+                self.span_of(node),
+                format!("cannot instantiate the static class '{class_name}'"),
+            );
+            return None;
         }
         if self.result.type_defs[index as usize].is_abstract {
             let class_name = self.result.type_defs[index as usize].qualified_name.clone();

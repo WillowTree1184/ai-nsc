@@ -217,6 +217,8 @@ pub struct TypeDef {
     pub sealed: bool,
     /// Whether the class is abstract and therefore cannot be instantiated (§9.10).
     pub is_abstract: bool,
+    /// Whether the class is `static`: no instances, class-level members (§9.15).
+    pub is_static: bool,
     /// Virtual dispatch table: method id per slot (classes only).
     pub vtable: Vec<u32>,
     /// Whether the vtable has been computed.
@@ -1116,6 +1118,7 @@ impl<'a> Sema<'a> {
                 interface_dispatch: Vec::new(),
                 sealed: false,
                 is_abstract: false,
+                is_static: false,
                 vtable: Vec::new(),
                 vtable_ready: true,
                 base: None,
@@ -1349,6 +1352,7 @@ impl<'a> Sema<'a> {
             interface_dispatch: Vec::new(),
             sealed: false,
             is_abstract: false,
+            is_static: false,
             vtable: Vec::new(),
             vtable_ready: false,
             base: None,

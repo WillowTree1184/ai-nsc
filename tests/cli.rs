@@ -722,3 +722,27 @@ fixed Main(): integer(4)
         "{stderr}"
     );
 }
+
+#[test]
+fn static_class_cannot_be_instantiated() {
+    let stderr = check_source(
+        "\
+static class Utility
+{
+    extension
+    {
+        public static fixed Twice(value: integer(4)): integer(4) { return value * 2; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local instance: Utility = Utility();
+    return instance.Twice(4);
+}",
+    );
+    assert!(
+        stderr.contains("cannot instantiate the static class"),
+        "{stderr}"
+    );
+}

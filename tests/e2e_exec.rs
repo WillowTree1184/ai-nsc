@@ -2047,3 +2047,28 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 52);
 }
+
+#[test]
+fn variants_compare_by_state_and_payload() {
+    let source = "\
+variant Maybe
+{
+    Nothing;
+    Some: integer(4);
+}
+
+fixed Main(): integer(4)
+{
+    local a: Maybe = Some(5);
+    local b: Maybe = Some(5);
+    local c: Maybe = Some(6);
+    local d: Maybe = Nothing;
+    local score: integer(4) = 0;
+    if (a == b) { score += 1; }
+    if (a != c) { score += 2; }
+    if (a != d) { score += 4; }
+    if (d == d) { score += 8; }
+    return score;
+}";
+    assert_eq!(run_program(source), 15);
+}

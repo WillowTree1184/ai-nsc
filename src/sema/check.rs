@@ -2522,6 +2522,26 @@ impl<'a> Sema<'a> {
             || self.is_boolean(ty)
             || matches!(self.type_of(ty), Type::Pointer { .. })
             || matches!(self.type_of(ty), Type::Named(index) if self.result.type_defs[index as usize].underlying.is_some())
+            || self.variant_has_builtin_equality(ty)
+    }
+
+    /// Whether `==` is defined for a variant: same state and equal payload, with
+    /// every payload itself comparable (§3.7.5).
+    fn variant_has_builtin_equality(&self, ty: TypeId) -> bool {
+        let Type::Named(index) = self.type_of(ty) else {
+            return false;
+        };
+        let definition = &self.result.type_defs[index as usize];
+        if definition.kind != TypeDefKind::Variant {
+            return false;
+        }
+        definition
+            .variant_states
+            .iter()
+            .all(|state| match state.payload {
+                None => true,
+                Some(payload) => self.has_builtin_equality(payload),
+            })
     }
 
     fn is_boolean(&self, ty: TypeId) -> bool {
@@ -4863,10 +4883,7 @@ impl<'a> Sema<'a> {
                 Some(TypeId::BOOLEAN)
             }
             BinaryOp::Equal | BinaryOp::NotEqual => {
-                let comparable = self.is_numeric(left_type)
-                    || self.is_boolean(left_type)
-                    || matches!(self.type_of(left_type), Type::Named(index) if self.result.type_defs[index as usize].underlying.is_some())
-                    || matches!(self.type_of(left_type), Type::Pointer { .. });
+                let comparable = self.has_builtin_equality(left_type);
                 if !comparable {
                     self.error(
                         self.span_of(node),

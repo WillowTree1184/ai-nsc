@@ -4851,6 +4851,112 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         }
     }
 
+    /// Variant equality (§3.7.5): equal states and equal payloads.
+    fn build_variant_comparison(
+        &mut self,
+        op: BinaryOp,
+        left: BasicValueEnum<'ctx>,
+        right: BasicValueEnum<'ctx>,
+        ty: TypeId,
+        index: u32,
+    ) -> Result<IntValue<'ctx>, String> {
+        let negate = match op {
+            BinaryOp::Equal => false,
+            BinaryOp::NotEqual => true,
+            _ => return Err("unsupported variant comparison".to_string()),
+        };
+        let (tag_type, payload_offset, states) = {
+            let definition = &self.sema.type_defs[index as usize];
+            (
+                definition
+                    .tag_type
+                    .ok_or_else(|| "variant has no tag type".to_string())?,
+                definition.payload_offset,
+                definition.variant_states.clone(),
+            )
+        };
+        let instance_type = self.instance_llvm_type(ty)?;
+        let left_slot = self
+            .builder
+            .build_alloca(instance_type, "variant_left")
+            .map_err(|error| format!("cannot allocate variant: {error}"))?;
+        let right_slot = self
+            .builder
+            .build_alloca(instance_type, "variant_right")
+            .map_err(|error| format!("cannot allocate variant: {error}"))?;
+        self.builder
+            .build_store(left_slot, left)
+            .map_err(|error| format!("cannot compare variants: {error}"))?;
+        self.builder
+            .build_store(right_slot, right)
+            .map_err(|error| format!("cannot compare variants: {error}"))?;
+        let tag_llvm = self.llvm_type(tag_type)?.into_int_type();
+        let zero = self.context.i64_type().const_zero();
+        let left_tag_address = self.address_with_size(left_slot, 1, zero)?;
+        let right_tag_address = self.address_with_size(right_slot, 1, zero)?;
+        let left_tag = self
+            .builder
+            .build_load(tag_llvm, left_tag_address, "left_tag")
+            .map_err(|error| format!("cannot compare variants: {error}"))?
+            .into_int_value();
+        let right_tag = self
+            .builder
+            .build_load(tag_llvm, right_tag_address, "right_tag")
+            .map_err(|error| format!("cannot compare variants: {error}"))?
+            .into_int_value();
+        let tags_equal = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, left_tag, right_tag, "tags_equal")
+            .map_err(|error| format!("cannot compare variants: {error}"))?;
+        let mut equal = tags_equal;
+        for (state_index, state) in states.iter().enumerate() {
+            let Some(payload_type) = state.payload else {
+                continue;
+            };
+            let offset = self.context.i64_type().const_int(payload_offset, false);
+            let left_address = self.address_with_size(left_slot, 1, offset)?;
+            let right_address = self.address_with_size(right_slot, 1, offset)?;
+            let payload_llvm = self.llvm_type(payload_type)?;
+            let left_payload = self
+                .builder
+                .build_load(payload_llvm, left_address, "left_payload")
+                .map_err(|error| format!("cannot compare variants: {error}"))?;
+            let right_payload = self
+                .builder
+                .build_load(payload_llvm, right_address, "right_payload")
+                .map_err(|error| format!("cannot compare variants: {error}"))?;
+            let payload_equal =
+                self.build_comparison(BinaryOp::Equal, left_payload, right_payload, payload_type)?;
+            let payload_equal = self.as_boolean_i1(payload_equal);
+            let same_state = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    left_tag,
+                    tag_llvm.const_int(state_index as u64, false),
+                    "same_state",
+                )
+                .map_err(|error| format!("cannot compare variants: {error}"))?;
+            let state_equal = self
+                .builder
+                .build_and(tags_equal, payload_equal, "state_equal")
+                .map_err(|error| format!("cannot compare variants: {error}"))?;
+            equal = self
+                .builder
+                .build_select(same_state, state_equal, equal, "variant_equal")
+                .map_err(|error| format!("cannot compare variants: {error}"))?
+                .into_int_value();
+        }
+        let result = if negate {
+            self.builder
+                .build_not(equal, "variant_not_equal")
+                .map_err(|error| format!("cannot compare variants: {error}"))?
+        } else {
+            equal
+        };
+        self.extend_bool(result)
+    }
+
     fn build_comparison(
         &mut self,
         op: BinaryOp,
@@ -4902,6 +5008,10 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 self.extend_bool(result)
             }
             Type::Named(index) => {
+                let kind = self.sema.type_defs[index as usize].kind;
+                if kind == TypeDefKind::Variant {
+                    return self.build_variant_comparison(op, left, right, ty, index);
+                }
                 let underlying = self.sema.type_defs[index as usize]
                     .underlying
                     .ok_or_else(|| "unsupported comparison".to_string())?;

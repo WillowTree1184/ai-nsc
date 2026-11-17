@@ -2118,3 +2118,18 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 75);
 }
+
+#[test]
+fn for_by_reference_bindings_write_the_elements() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local values[3]: integer(4) = { 1, 2, 3 };
+    for &value: integer(4) in values
+    {
+        value = value * 10;
+    }
+    return values[0] + values[1] + values[2];
+}";
+    assert_eq!(run_program(source), 60);
+}

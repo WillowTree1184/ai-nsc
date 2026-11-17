@@ -2059,13 +2059,21 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .map_err(|error| format!("cannot load index: {error}"))?
                     .into_int_value();
                 let element_pointer = self.element_address(pointer, binding_type, index)?;
-                let value = self
-                    .builder
-                    .build_load(element_llvm, element_pointer, "element")
-                    .map_err(|error| format!("cannot load element: {error}"))?;
-                self.builder
-                    .build_store(binding_slot, value)
-                    .map_err(|error| format!("cannot store element: {error}"))?;
+                if statement.by_ref {
+                    // The binding aliases the element, so assignments inside the
+                    // body write the array (§5.9.5).
+                    self.builder
+                        .build_store(binding_slot, element_pointer)
+                        .map_err(|error| format!("cannot store element reference: {error}"))?;
+                } else {
+                    let value = self
+                        .builder
+                        .build_load(element_llvm, element_pointer, "element")
+                        .map_err(|error| format!("cannot load element: {error}"))?;
+                    self.builder
+                        .build_store(binding_slot, value)
+                        .map_err(|error| format!("cannot store element: {error}"))?;
+                }
                 self.loops.push(LoopInfo {
                     label: statement.label.clone(),
                     break_block: end_block,

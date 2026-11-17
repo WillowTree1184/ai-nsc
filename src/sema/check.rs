@@ -3206,8 +3206,11 @@ impl<'a> Sema<'a> {
 
     fn check_for_statement(&mut self, node: NodeId, statement: &ForStmt) {
         let binding_type = self.resolve_type(statement.ty).unwrap_or(TypeId::ERROR);
-        if statement.by_ref {
-            self.unsupported(self.span_of(node), "by-reference for bindings");
+        if statement.by_ref && matches!(statement.target, ForTarget::Range(_)) {
+            self.error(
+                self.span_of(node),
+                "a by-reference 'for' binding requires an array target",
+            );
             return;
         }
         match &statement.target {
@@ -3259,7 +3262,11 @@ impl<'a> Sema<'a> {
             binding_type,
             false,
             None,
-            Storage::Value,
+            if statement.by_ref {
+                Storage::Reference
+            } else {
+                Storage::Value
+            },
             self.span_of(node),
         );
         self.result.loop_bindings.insert(node, binding_local);

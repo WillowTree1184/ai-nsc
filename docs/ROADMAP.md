@@ -66,7 +66,7 @@ diagnostics; all valid examples type-check.
 - [x] `module.verify()` on every generated module
 - [x] Construction expressions (in-place, constructor overloads, field initializers)
 - [x] Methods, `this`, class instances and `heap`/`dispose` allocation
-- [ ] Accessors (`get`/`set`) and operator overloading
+- [ ] Operator overloading (12 overloadable entities)
 - [ ] Runtime exception model (`trap`/`throw`/`finally`, division/out-of-range traps)
 - [ ] NOLAA analysis for heap lifetime
 

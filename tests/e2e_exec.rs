@@ -652,3 +652,98 @@ fixed Main(): integer(4) { return 0; }";
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("Area"), "stderr: {stderr}");
 }
+
+#[test]
+fn accessors_read_and_write_fields() {
+    let source = "\
+structure Point
+{
+    private X: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Point, x: integer(4)) { this.X = x; }
+        public accessor Value: integer(4) => X { get; set; }
+    }
+}
+
+class Counter
+{
+    private Count: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Counter, count: integer(4)) { this.Count = count; }
+        public accessor Value: integer(4)
+        {
+            get() { return this.Count; }
+            set(value) { this.Count = value; }
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local point: Point = Point(3);
+    point.Value = 5;
+    local counter: Counter = Counter(10);
+    counter.Value = counter.Value + 2;
+    return point.Value + counter.Value;   // 5 + 12
+}";
+    assert_eq!(run_program(source), 17);
+}
+
+#[test]
+fn interface_accessor_dispatches_virtually() {
+    let source = "\
+interface IThing
+{
+    extension
+    {
+        public accessor Value: integer(4) { get; set; }
+    }
+}
+
+class Thing: IThing
+{
+    private Stored: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Thing, value: integer(4)) { this.Stored = value; }
+        public accessor Value: integer(4) => Stored { get; set; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local thing: Thing = Thing(4);
+    local first: IThing = thing;
+    first.Value = first.Value + 3;
+    return first.Value;   // 7
+}";
+    assert_eq!(run_program(source), 7);
+}
+
+#[test]
+fn accessor_without_backing_needs_an_implementation() {
+    let source = "\
+structure Broken
+{
+    extension
+    {
+        public accessor Value: integer(4) { get; }
+    }
+}
+
+fixed Main(): integer(4) { return 0; }";
+    let path = write_program(source);
+    let output = ai_nsc()
+        .args(["check", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(path.parent().expect("temp dir"));
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("implementation"), "stderr: {stderr}");
+}

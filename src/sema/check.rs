@@ -319,11 +319,22 @@ impl<'a> Sema<'a> {
                     self.resolve_extension_declaration(*member, Some(type_id));
                 }
                 NodeKind::Module(_) => {}
-                NodeKind::Operator(_) | NodeKind::Accessor(_) => {
-                    self.unsupported(
-                        self.span_of(*member),
-                        "operators and accessors in type bodies",
+                NodeKind::Accessor(_) => {
+                    let is_interface = matches!(
+                        self.types_of(type_id),
+                        Type::Named(index) if self.result.type_defs[index as usize].kind == TypeDefKind::Interface
                     );
+                    if is_interface {
+                        self.resolve_accessor_declaration(*member, Some(type_id));
+                    } else {
+                        self.error(
+                            self.span_of(*member),
+                            "accessors must be declared in an extension block",
+                        );
+                    }
+                }
+                NodeKind::Operator(_) => {
+                    self.unsupported(self.span_of(*member), "operators in type bodies");
                 }
                 NodeKind::Class(_)
                 | NodeKind::Structure(_)
@@ -349,23 +360,26 @@ impl<'a> Sema<'a> {
             }
         }
         let instance_size = round_up(offset, max_align);
+        {
+            let definition = &mut self.result.type_defs[type_index as usize];
+            definition.sealed = sealed;
+            definition.fields = fields;
+            definition.field_initializers = field_initializers;
+            definition.base = base_type;
+            definition.instance_size = instance_size;
+            definition.instance_align = max_align;
+            if is_class {
+                // The value representation of a class is a reference (§3.4).
+                definition.size = 8;
+                definition.align = 8;
+            } else {
+                definition.size = instance_size;
+                definition.align = max_align;
+            }
+        }
+        self.resolve_pending_accessors();
         if is_class {
             self.verify_interface_implementations(type_id);
-        }
-        let definition = &mut self.result.type_defs[type_index as usize];
-        definition.sealed = sealed;
-        definition.fields = fields;
-        definition.field_initializers = field_initializers;
-        definition.base = base_type;
-        definition.instance_size = instance_size;
-        definition.instance_align = max_align;
-        if is_class {
-            // The value representation of a class is a reference (§3.4).
-            definition.size = 8;
-            definition.align = 8;
-        } else {
-            definition.size = instance_size;
-            definition.align = max_align;
         }
     }
 
@@ -485,7 +499,7 @@ impl<'a> Sema<'a> {
                     self.create_method(member, &declaration, target);
                 }
                 NodeKind::Accessor(_) => {
-                    self.unsupported(self.span_of(member), "accessor declarations");
+                    self.pending_accessors.push((member, target));
                 }
                 NodeKind::Operator(_) => {
                     self.unsupported(self.span_of(member), "operator declarations");
@@ -528,7 +542,7 @@ impl<'a> Sema<'a> {
             return None;
         };
         let (body, is_abstract) = match declaration.init {
-            Some(Initializer::Block(block)) => (Some(block), false),
+            Some(Initializer::Block(block)) => (Some(FunctionBody::Block(block)), false),
             None => (None, true),
             Some(Initializer::Expression(_)) => {
                 self.unsupported(self.span_of(node), "function values in extensions");
@@ -721,11 +735,14 @@ impl<'a> Sema<'a> {
                 NodeKind::Extension(_) => {
                     self.resolve_extension_declaration(member, Some(type_id));
                 }
+                NodeKind::Accessor(_) => {
+                    self.resolve_accessor_declaration(member, Some(type_id));
+                }
                 NodeKind::Module(_) => {}
                 _ => {
                     self.error(
                         self.span_of(member),
-                        "an interface body may only contain extension blocks",
+                        "an interface body may only contain extension blocks and accessors",
                     );
                 }
             }
@@ -739,6 +756,258 @@ impl<'a> Sema<'a> {
         definition.align = 8;
         definition.instance_size = 0;
         definition.instance_align = 1;
+        self.resolve_pending_accessors();
+    }
+
+    /// Resolves accessor declarations into getter/setter methods (§3.8.2).
+    /// Resolves accessors that were waiting for their owner's field layout.
+    pub(crate) fn resolve_pending_accessors(&mut self) {
+        let pending: Vec<(NodeId, TypeId)> = std::mem::take(&mut self.pending_accessors);
+        for (node, owner) in pending {
+            self.resolve_accessor_declaration(node, Some(owner));
+        }
+    }
+
+    pub(crate) fn resolve_accessor_declaration(&mut self, node: NodeId, owner: Option<TypeId>) {
+        let NodeKind::Accessor(declaration) = self.node_kind(node) else {
+            return;
+        };
+        let Some(owner) = owner else {
+            self.unsupported(self.span_of(node), "accessors outside type bodies");
+            return;
+        };
+        let Type::Named(owner_index) = self.types_of(owner) else {
+            return;
+        };
+        let owner_kind = self.result.type_defs[owner_index as usize].kind;
+        if owner_kind == TypeDefKind::Enumeration {
+            self.error(self.span_of(node), "enumerations cannot declare accessors");
+            return;
+        }
+        let is_interface = owner_kind == TypeDefKind::Interface;
+        if is_interface && declaration.backing.is_some() {
+            self.error(
+                self.span_of(node),
+                "interface accessors must not have a backing field",
+            );
+            return;
+        }
+        let Some(ty) = self.resolve_type(declaration.ty) else {
+            return;
+        };
+        let mut default_get = None;
+        let mut default_set = None;
+        if let Some(backing) = declaration.backing {
+            match self.node_kind(backing) {
+                NodeKind::Name(name) => match self.find_field(owner, &name.name) {
+                    Some((field_owner, field_index)) => {
+                        default_get = Some(FunctionBody::BackingGet {
+                            owner: field_owner,
+                            field_index,
+                        });
+                        default_set = Some(FunctionBody::BackingSet {
+                            owner: field_owner,
+                            field_index,
+                        });
+                    }
+                    None => {
+                        self.error(
+                            self.span_of(backing),
+                            format!("unknown backing field '{}'", name.name),
+                        );
+                    }
+                },
+                _ => self.error(
+                    self.span_of(backing),
+                    "an accessor backing must be a field name",
+                ),
+            }
+        }
+        let mut accessor = AccessorInfo {
+            name: declaration.name.clone(),
+            ty,
+            getter: None,
+            setter: None,
+        };
+        for member in &declaration.members {
+            if let Some(annotation) = member.ty {
+                if let Some(annotated) = self.resolve_type(annotation) {
+                    if annotated != ty {
+                        self.error(
+                            member.span,
+                            "accessor member type must match the accessor type",
+                        );
+                    }
+                }
+            }
+            let implementation = match (member.expression, member.body) {
+                (Some(expression), None) => Some(FunctionBody::Expression(expression)),
+                (None, Some(block)) => Some(FunctionBody::Block(block)),
+                (Some(_), Some(_)) => {
+                    self.error(
+                        member.span,
+                        "an accessor member takes either an expression or a block",
+                    );
+                    None
+                }
+                (None, None) => {
+                    if member.is_getter {
+                        default_get
+                    } else {
+                        default_set
+                    }
+                }
+            };
+            let body = if is_interface { None } else { implementation };
+            if !is_interface && body.is_none() {
+                self.error(
+                    member.span,
+                    "accessor member requires an implementation or a backing field",
+                );
+                continue;
+            }
+            let method = self.create_accessor_method(
+                owner,
+                &declaration.name,
+                member.is_getter,
+                ty,
+                body,
+                member.span,
+            );
+            if member.is_getter {
+                accessor.getter = method;
+            } else {
+                accessor.setter = method;
+            }
+        }
+        let definition = &mut self.result.type_defs[owner_index as usize];
+        if definition
+            .accessors
+            .iter()
+            .any(|existing| existing.name == accessor.name)
+        {
+            self.error(
+                self.span_of(node),
+                format!("accessor '{}' is declared twice", accessor.name),
+            );
+            return;
+        }
+        definition.accessors.push(accessor);
+    }
+
+    fn create_accessor_method(
+        &mut self,
+        owner: TypeId,
+        name: &str,
+        is_getter: bool,
+        ty: TypeId,
+        body: Option<FunctionBody>,
+        span: Span,
+    ) -> Option<u32> {
+        let suffix = if is_getter { "get" } else { "set" };
+        let method_name = format!("{name}@{suffix}");
+        let mut parameters = vec![ParameterInfo {
+            name: "this".to_string(),
+            ty: owner,
+            by_ref: true,
+        }];
+        if !is_getter {
+            parameters.push(ParameterInfo {
+                name: "value".to_string(),
+                ty,
+                by_ref: false,
+            });
+        }
+        let return_type = if is_getter { Some(ty) } else { None };
+        let owner_name = match self.result.types.get(owner) {
+            Type::Named(index) => self.result.type_defs[*index as usize]
+                .qualified_name
+                .clone(),
+            _ => return None,
+        };
+        let scope: Vec<String> = owner_name.split('.').map(str::to_string).collect();
+        let spellings: Vec<String> = parameters
+            .iter()
+            .map(|parameter| self.spelling(parameter.ty))
+            .collect();
+        let mangled = mangle_function(&scope, &method_name, &spellings);
+        let index = self.result.functions.len() as u32;
+        self.result.functions.push(FunctionInfo {
+            name: method_name.clone(),
+            scope,
+            node: NodeId::default(),
+            body,
+            parameters,
+            method_of: Some(owner),
+            is_virtual: false,
+            is_override: false,
+            is_sealed: false,
+            is_abstract: body.is_none(),
+            return_type,
+            mangled,
+            locals: Vec::new(),
+            span,
+        });
+        if let Type::Named(owner_index) = self.result.types.get(owner).clone() {
+            let definition = &mut self.result.type_defs[owner_index as usize];
+            definition
+                .methods
+                .entry(method_name)
+                .or_default()
+                .push(index);
+            definition.method_list.push(index);
+        }
+        Some(index)
+    }
+
+    /// Finds an accessor by name along the inheritance chain.
+    fn find_accessor(&self, owner: TypeId, name: &str) -> Option<AccessorInfo> {
+        let mut current = Some(owner);
+        let mut depth = 0;
+        while let Some(ty) = current {
+            depth += 1;
+            if depth > 32 {
+                break;
+            }
+            let Type::Named(index) = self.types_of(ty) else {
+                break;
+            };
+            let definition = &self.result.type_defs[index as usize];
+            if let Some(accessor) = definition
+                .accessors
+                .iter()
+                .find(|accessor| accessor.name == name)
+            {
+                return Some(accessor.clone());
+            }
+            current = definition.base;
+        }
+        None
+    }
+
+    /// Finds a field by name along the inheritance chain.
+    fn find_field(&self, owner: TypeId, name: &str) -> Option<(TypeId, u32)> {
+        let mut current = Some(owner);
+        let mut depth = 0;
+        while let Some(ty) = current {
+            depth += 1;
+            if depth > 32 {
+                break;
+            }
+            let Type::Named(index) = self.types_of(ty) else {
+                break;
+            };
+            let definition = &self.result.type_defs[index as usize];
+            if let Some(position) = definition
+                .fields
+                .iter()
+                .position(|field| field.name == name)
+            {
+                return Some((ty, position as u32));
+            }
+            current = definition.base;
+        }
+        None
     }
 
     pub(crate) fn resolve_variant(&mut self, node: NodeId) {
@@ -1008,7 +1277,7 @@ impl<'a> Sema<'a> {
             name: name.clone(),
             scope,
             node,
-            body: Some(body),
+            body: Some(FunctionBody::Block(body)),
             parameters,
             method_of,
             is_virtual: false,
@@ -1378,7 +1647,13 @@ impl<'a> Sema<'a> {
                 );
                 llvm_parameter_index += 1;
             }
-            self.check_block(body);
+            match body {
+                FunctionBody::Block(block) => self.check_block(block),
+                FunctionBody::Expression(expression) => {
+                    self.check_expr(expression, None);
+                }
+                FunctionBody::BackingGet { .. } | FunctionBody::BackingSet { .. } => {}
+            }
             self.pop_scope();
             self.current_function = None;
         }
@@ -1572,6 +1847,13 @@ impl<'a> Sema<'a> {
             NodeKind::Set(statement) => {
                 let target_type = self.check_expr(statement.target, None);
                 self.ensure_assignable(statement.target);
+                if let Some(Resolution::Accessor { setter, .. }) =
+                    self.result.resolutions[statement.target as usize].clone()
+                {
+                    if setter.is_none() {
+                        self.error(self.span_of(statement.target), "accessor is read-only");
+                    }
+                }
                 if let Some(target_type) = target_type {
                     let value_type = self.check_expr(statement.value, Some(target_type));
                     if let Some(value_type) = value_type {
@@ -1586,6 +1868,13 @@ impl<'a> Sema<'a> {
             NodeKind::CompoundSet(statement) => {
                 let target_type = self.check_expr(statement.target, None);
                 self.ensure_assignable(statement.target);
+                if let Some(Resolution::Accessor { setter, .. }) =
+                    self.result.resolutions[statement.target as usize].clone()
+                {
+                    if setter.is_none() {
+                        self.error(self.span_of(statement.target), "accessor is read-only");
+                    }
+                }
                 let Some(target_type) = target_type else {
                     return;
                 };
@@ -2656,10 +2945,15 @@ impl<'a> Sema<'a> {
 
         match self.type_of(base_type) {
             Type::Named(index) => {
+                let owner_type_id = self.result.types.intern(Type::Named(index));
                 let definition = &self.result.type_defs[index as usize];
                 if !matches!(
                     definition.kind,
-                    TypeDefKind::Structure | TypeDefKind::Class | TypeDefKind::Union
+                    TypeDefKind::Structure
+                        | TypeDefKind::Class
+                        | TypeDefKind::Union
+                        | TypeDefKind::Interface
+                        | TypeDefKind::Variant
                 ) {
                     self.error(
                         self.span_of(node),
@@ -2673,7 +2967,7 @@ impl<'a> Sema<'a> {
                     .position(|field| field.name == access.name)
                 {
                     self.result.resolutions[node as usize] = Some(Resolution::Field {
-                        type_id: self.result.types.intern(Type::Named(index)),
+                        type_id: owner_type_id,
                         index: field_index as u32,
                     });
                     return Some(definition.fields[field_index].ty);
@@ -2685,11 +2979,19 @@ impl<'a> Sema<'a> {
                         .position(|member| member.name == access.name)
                     {
                         self.result.resolutions[node as usize] = Some(Resolution::UnionMember {
-                            type_id: self.result.types.intern(Type::Named(index)),
+                            type_id: owner_type_id,
                             member: member_index as u32,
                         });
                         return Some(definition.union_members[member_index].ty);
                     }
+                }
+                // Accessor property (§3.8.2): reads go through the getter.
+                if let Some(accessor) = self.find_accessor(owner_type_id, &access.name) {
+                    self.result.resolutions[node as usize] = Some(Resolution::Accessor {
+                        getter: accessor.getter,
+                        setter: accessor.setter,
+                    });
+                    return Some(accessor.ty);
                 }
                 self.error(
                     self.span_of(node),

@@ -653,7 +653,72 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                         .map_err(|error| format!("cannot store parameter: {error}"))?;
                 }
             }
-            self.gen_block_contents(body)?;
+            match body {
+                crate::sema::FunctionBody::Block(block) => self.gen_block_contents(block)?,
+                crate::sema::FunctionBody::Expression(expression) => {
+                    let value = self.gen_expr(expression)?;
+                    match return_type {
+                        Some(_) => {
+                            self.builder
+                                .build_return(Some(&value))
+                                .map_err(|error| format!("cannot return: {error}"))?;
+                        }
+                        None => {
+                            self.builder
+                                .build_return(None)
+                                .map_err(|error| format!("cannot return: {error}"))?;
+                        }
+                    }
+                }
+                crate::sema::FunctionBody::BackingGet { owner, field_index } => {
+                    let this_pointer = self
+                        .current_this_slot
+                        .ok_or_else(|| "accessor without this".to_string())?;
+                    let pointer_type = self.context.ptr_type(AddressSpace::default());
+                    let this = self
+                        .builder
+                        .build_load(pointer_type, this_pointer, "this")
+                        .map_err(|error| format!("cannot load this: {error}"))?
+                        .into_pointer_value();
+                    let field_pointer = self
+                        .struct_field_pointer(this, owner, field_index)?
+                        .ok_or_else(|| "missing backing field".to_string())?;
+                    let field_type = self.llvm_type(
+                        return_type
+                            .ok_or_else(|| "accessor getter has no return type".to_string())?,
+                    )?;
+                    let value = self
+                        .builder
+                        .build_load(field_type, field_pointer, "backing")
+                        .map_err(|error| format!("cannot load backing: {error}"))?;
+                    self.builder
+                        .build_return(Some(&value))
+                        .map_err(|error| format!("cannot return: {error}"))?;
+                }
+                crate::sema::FunctionBody::BackingSet { owner, field_index } => {
+                    let this_pointer = self
+                        .current_this_slot
+                        .ok_or_else(|| "accessor without this".to_string())?;
+                    let pointer_type = self.context.ptr_type(AddressSpace::default());
+                    let this = self
+                        .builder
+                        .build_load(pointer_type, this_pointer, "this")
+                        .map_err(|error| format!("cannot load this: {error}"))?
+                        .into_pointer_value();
+                    let field_pointer = self
+                        .struct_field_pointer(this, owner, field_index)?
+                        .ok_or_else(|| "missing backing field".to_string())?;
+                    let value = function
+                        .get_nth_param(1)
+                        .ok_or_else(|| "setter requires a value".to_string())?;
+                    self.builder
+                        .build_store(field_pointer, value)
+                        .map_err(|error| format!("cannot store backing: {error}"))?;
+                    self.builder
+                        .build_return(None)
+                        .map_err(|error| format!("cannot return: {error}"))?;
+                }
+            }
             if self
                 .builder
                 .get_insert_block()
@@ -1063,6 +1128,20 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
     }
 
     fn gen_set_statement(&mut self, statement: &SetStmt) -> Result<(), String> {
+        if let Some(Resolution::Accessor { setter, .. }) =
+            self.sema.resolutions[statement.target as usize].clone()
+        {
+            let setter = setter.ok_or_else(|| "accessor is read-only".to_string())?;
+            let NodeKind::MemberAccess(access) = self.ast.node(statement.target).kind.clone()
+            else {
+                return Err("accessor write requires a member access".to_string());
+            };
+            let receiver = self.gen_instance_pointer(access.base)?;
+            let receiver_type = self.type_of(access.base);
+            let value = self.gen_expr(statement.value)?;
+            self.gen_method_dispatch(setter, receiver_type, receiver, vec![value.into()])?;
+            return Ok(());
+        }
         let pointer = self
             .gen_lvalue(statement.target)?
             .ok_or_else(|| "assignment target is not addressable".to_string())?;
@@ -1077,6 +1156,32 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         &mut self,
         statement: &crate::ast::CompoundSetStmt,
     ) -> Result<(), String> {
+        if let Some(Resolution::Accessor { getter, setter }) =
+            self.sema.resolutions[statement.target as usize].clone()
+        {
+            let getter = getter.ok_or_else(|| "accessor is write-only".to_string())?;
+            let setter = setter.ok_or_else(|| "accessor is read-only".to_string())?;
+            let NodeKind::MemberAccess(access) = self.ast.node(statement.target).kind.clone()
+            else {
+                return Err("accessor write requires a member access".to_string());
+            };
+            let receiver = self.gen_instance_pointer(access.base)?;
+            let receiver_type = self.type_of(access.base);
+            let current_call =
+                self.gen_method_dispatch(getter, receiver_type, receiver, Vec::new())?;
+            let current = match current_call.try_as_basic_value() {
+                ValueKind::Basic(value) => value,
+                ValueKind::Instruction(_) => {
+                    return Err("accessor getter produced no value".to_string());
+                }
+            };
+            let target_type = self.type_of(statement.target);
+            let value = self.gen_expr(statement.value)?;
+            let result =
+                self.build_arithmetic(statement.op, current, value, target_type, statement.target)?;
+            self.gen_method_dispatch(setter, receiver_type, receiver, vec![result.into()])?;
+            return Ok(());
+        }
         let pointer = self
             .gen_lvalue(statement.target)?
             .ok_or_else(|| "assignment target is not addressable".to_string())?;
@@ -2235,6 +2340,21 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             Some(Resolution::Construct { .. })
             | Some(Resolution::ConstructVariant { .. })
             | Some(Resolution::ConstructUnion { .. }) => self.gen_construction(node),
+            Some(Resolution::Accessor { getter, .. }) => {
+                let getter = getter.ok_or_else(|| "accessor is write-only".to_string())?;
+                let NodeKind::MemberAccess(access) = self.ast.node(node).kind.clone() else {
+                    return Err("accessor access requires a member access".to_string());
+                };
+                let receiver = self.gen_instance_pointer(access.base)?;
+                let receiver_type = self.type_of(access.base);
+                let call = self.gen_method_dispatch(getter, receiver_type, receiver, Vec::new())?;
+                match call.try_as_basic_value() {
+                    ValueKind::Basic(value) => Ok(value),
+                    ValueKind::Instruction(_) => {
+                        Err("accessor getter produced no value".to_string())
+                    }
+                }
+            }
             Some(Resolution::VariantState { type_id, state }) => {
                 self.gen_variant_state_value(type_id, state)
             }
@@ -2813,6 +2933,58 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             }
             _ => Err("call target is not a direct function yet".to_string()),
         }
+    }
+
+    /// Invokes a method or accessor on a receiver, choosing interface, virtual
+    /// or direct dispatch based on the static receiver type.
+    fn gen_method_dispatch(
+        &mut self,
+        method: u32,
+        receiver_type: TypeId,
+        receiver: PointerValue<'ctx>,
+        extra_arguments: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>>,
+    ) -> Result<CallSiteValue<'ctx>, String> {
+        let mut arguments: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+            Vec::with_capacity(extra_arguments.len() + 1);
+        arguments.push(receiver.into());
+        arguments.extend(extra_arguments);
+        if let Type::Named(index) = self.sema.types.get(receiver_type).clone() {
+            if self.sema.type_defs[index as usize].kind == TypeDefKind::Interface {
+                return self.gen_interface_call(receiver, index, method, &arguments);
+            }
+            if self.sema.type_defs[index as usize].kind == TypeDefKind::Class {
+                if let Some(slot) = self.vtable_slot(receiver_type, method) {
+                    let pointer_type = self.context.ptr_type(AddressSpace::default());
+                    let vtable = self
+                        .builder
+                        .build_load(pointer_type, receiver, "vtable")
+                        .map_err(|error| format!("cannot load vtable: {error}"))?
+                        .into_pointer_value();
+                    let slot_address = self.address_with_size(
+                        vtable,
+                        8,
+                        self.context.i64_type().const_int(slot as u64, false),
+                    )?;
+                    let callee = self
+                        .builder
+                        .build_load(pointer_type, slot_address, "vslot")
+                        .map_err(|error| format!("cannot load vtable slot: {error}"))?
+                        .into_pointer_value();
+                    let signature = self.function_type(method)?;
+                    return self
+                        .builder
+                        .build_indirect_call(signature, callee, &arguments, "virtual_call")
+                        .map_err(|error| format!("cannot dispatch call: {error}"));
+                }
+            }
+        }
+        let function = *self
+            .functions
+            .get(&method)
+            .ok_or_else(|| "missing method".to_string())?;
+        self.builder
+            .build_call(function, &arguments, "method_call")
+            .map_err(|error| format!("cannot call method: {error}"))
     }
 
     /// Address of the instance a call or field access operates on.

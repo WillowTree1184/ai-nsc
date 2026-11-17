@@ -43,11 +43,15 @@ Implemented today:
   interfaces inherited through base classes), implicit class→interface conversion,
   per-class interface dispatch tables with virtual interface calls, and `is` checks
   against interface types through RTTI
+- **Accessors**: `accessor` properties in extension blocks and interface bodies with
+  `=> backing` default get/set, explicit `get`/`set` expression and block forms, getter/setter
+  methods (mangled `Name@get` / `Name@set`), read-only diagnostics and interface accessor
+  dispatch through interface tables
 - **Name mangling** per §13.2, including the spec's worked example as a unit test
-- 83 tests: 36 unit, 8 CLI, 2 LLVM smoke, 26 end-to-end execution, 10 parser, 1 spec
+- 86 tests: 36 unit, 8 CLI, 2 LLVM smoke, 29 end-to-end execution, 10 parser, 1 spec
   conformance; `cargo fmt` + `clippy -D warnings` clean
 
-Not implemented yet (rejected with a clear diagnostic): accessors and operator definitions,
+Not implemented yet (rejected with a clear diagnostic): operator definitions,
 generics/monomorphization, function literals and closures, `trap`/`throw`/`finally`
 (runtime exception model), compile-time execution (`#(...)`, `#{...}`, `#if`), references
 (`&`/`&T`) beyond `this`, `??`, NOLAA, and the Built-In Library prelude.

@@ -96,6 +96,8 @@ pub struct TypeDef {
     pub methods: std::collections::HashMap<String, Vec<u32>>,
     /// Methods in declaration order.
     pub method_list: Vec<u32>,
+    /// Accessor properties declared in extension blocks.
+    pub accessors: Vec<AccessorInfo>,
     /// Interfaces this class implements (§3.7.3/§3.7.7).
     pub interfaces: Vec<TypeId>,
     /// Per-interface dispatch tables: implementation method id per interface
@@ -156,7 +158,7 @@ pub struct FunctionInfo {
     /// The `fixed` declaration node.
     pub node: NodeId,
     /// The function body; `None` for abstract interface methods.
-    pub body: Option<NodeId>,
+    pub body: Option<FunctionBody>,
     /// Parameters, including `this` first for methods.
     pub parameters: Vec<ParameterInfo>,
     /// The type this function is a method of, if it came from an extension.
@@ -177,6 +179,42 @@ pub struct FunctionInfo {
     pub locals: Vec<LocalInfo>,
     /// Span of the declaration, for diagnostics.
     pub span: Span,
+}
+
+/// The lowered body of a function or method.
+#[derive(Clone, Copy, Debug)]
+pub enum FunctionBody {
+    /// A statement block.
+    Block(NodeId),
+    /// A single expression whose value is returned.
+    Expression(NodeId),
+    /// Read a field through `this` (accessor default getter).
+    BackingGet {
+        /// Type owning the field.
+        owner: TypeId,
+        /// Field index.
+        field_index: u32,
+    },
+    /// Write a field through `this` (accessor default setter).
+    BackingSet {
+        /// Type owning the field.
+        owner: TypeId,
+        /// Field index.
+        field_index: u32,
+    },
+}
+
+/// An accessor property (§3.8.2).
+#[derive(Clone, Debug)]
+pub struct AccessorInfo {
+    /// Accessor name.
+    pub name: String,
+    /// Value type.
+    pub ty: TypeId,
+    /// Getter method, if defined.
+    pub getter: Option<u32>,
+    /// Setter method, if defined.
+    pub setter: Option<u32>,
 }
 
 /// How a local's storage is allocated (§12.1).
@@ -248,6 +286,13 @@ pub enum Resolution {
     This,
     /// The `base` keyword inside a method (§3.7.1).
     Base,
+    /// An accessor member read or write (§3.8.2).
+    Accessor {
+        /// Getter method, if readable.
+        getter: Option<u32>,
+        /// Setter method, if writable.
+        setter: Option<u32>,
+    },
     /// A construction expression (`T(args)`, §4.6); `method` is the selected
     /// `Construct` overload, if one exists.
     Construct {
@@ -428,6 +473,7 @@ pub fn analyze(ast: &Ast, sources: &SourceManager, engine: &mut DiagnosticEngine
         current_function: None,
         suppress_errors: 0,
         loop_labels: Vec::new(),
+        pending_accessors: Vec::new(),
     };
     sema.run();
     sema.result.error_count = sema.engine.error_count();
@@ -445,6 +491,8 @@ pub(crate) struct Sema<'a> {
     pub(crate) current_function: Option<u32>,
     pub(crate) suppress_errors: u32,
     pub(crate) loop_labels: Vec<Option<String>>,
+    /// Accessor declarations waiting for their owner's field layout.
+    pub(crate) pending_accessors: Vec<(NodeId, TypeId)>,
 }
 
 impl<'a> Sema<'a> {
@@ -617,6 +665,7 @@ impl<'a> Sema<'a> {
             field_initializers: Vec::new(),
             methods: std::collections::HashMap::new(),
             method_list: Vec::new(),
+            accessors: Vec::new(),
             interfaces: Vec::new(),
             interface_dispatch: Vec::new(),
             sealed: false,
@@ -674,6 +723,7 @@ impl<'a> Sema<'a> {
                 _ => {}
             }
         }
+        self.resolve_pending_accessors();
     }
 
     pub(crate) fn unsupported(&mut self, span: Span, feature: &str) {

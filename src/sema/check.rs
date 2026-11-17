@@ -3284,6 +3284,51 @@ impl<'a> Sema<'a> {
             self.pop_scope();
         }
         self.loop_labels.pop();
+        self.check_match_exhaustiveness(node, statement, value_type);
+    }
+
+    /// Warns when a `match` over a variant type neither covers every state nor
+    /// has a wildcard case (§5.9.6).
+    fn check_match_exhaustiveness(
+        &mut self,
+        node: NodeId,
+        statement: &MatchStmt,
+        value_type: Option<TypeId>,
+    ) {
+        let Some(value_type) = value_type else {
+            return;
+        };
+        let Type::Named(index) = self.types_of(value_type) else {
+            return;
+        };
+        let definition = &self.result.type_defs[index as usize];
+        if definition.kind != TypeDefKind::Variant {
+            return;
+        }
+        let state_count = definition.variant_states.len();
+        let has_wildcard = statement.cases.iter().any(|case| {
+            case.guard.is_none() && matches!(case.pattern, None | Some(Pattern::Wildcard))
+        });
+        if has_wildcard {
+            return;
+        }
+        let mut covered = Vec::new();
+        for case_index in 0..statement.cases.len() as u32 {
+            if let Some(MatchPatternInfo::IsVariant { state, .. }) =
+                self.result.match_patterns.get(&(node, case_index))
+            {
+                covered.push(*state);
+            }
+        }
+        let missing = (0..state_count as u32)
+            .filter(|state| !covered.contains(state))
+            .count();
+        if missing > 0 {
+            self.warn(
+                self.span_of(node),
+                format!("match is not exhaustive: {missing} variant state(s) are not covered"),
+            );
+        }
     }
 
     /// Checks an `is` pattern and binds its payload/narrowed value.

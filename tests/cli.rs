@@ -634,3 +634,33 @@ fixed Main(): integer(4)
     );
     assert!(stderr.contains("disposed more than once"), "{stderr}");
 }
+
+#[test]
+fn pointer_to_pointer_conversion_warns_without_failing() {
+    let directory = std::env::temp_dir().join(format!("ainsc-cli-warn5-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("main.ns");
+    std::fs::write(
+        &path,
+        "\
+fixed Main(): integer(4)
+{
+    local values[2]: integer(4) = { 1, 2 };
+    local p: pointer integer(4) = Cast<pointer integer(4)>(values);
+    local raw: pointer = Cast<pointer>(p);
+    return Cast<integer(4)>(Cast<pointer integer(4)>(raw)[1]);
+}",
+    )
+    .expect("write program");
+    let output = ai_nsc()
+        .args(["check", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "warnings must not fail the build: {stderr}"
+    );
+    assert!(stderr.contains("changes only the target type"), "{stderr}");
+}

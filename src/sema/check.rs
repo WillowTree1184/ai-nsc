@@ -4359,6 +4359,21 @@ impl<'a> Sema<'a> {
             );
             return None;
         }
+        // Pointer-to-pointer conversions only change the target type, so the
+        // spec asks for a warning (§3.6.2).
+        if matches!(
+            (self.types_of(source), self.types_of(target)),
+            (Type::Pointer { .. }, Type::Pointer { .. })
+        ) {
+            self.warn(
+                self.span_of(node),
+                format!(
+                    "pointer conversion from '{}' to '{}' changes only the target type",
+                    self.spelling(source),
+                    self.spelling(target)
+                ),
+            );
+        }
         // Array/pointer conversions are legal but unsafe, so the spec asks for a
         // warning (§3.6.1).
         if matches!(

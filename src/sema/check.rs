@@ -207,8 +207,9 @@ impl<'a> Sema<'a> {
             _ => return,
         };
 
-        // Base class (§3.7.1): at most one class, interfaces are not supported yet.
+        // Base class (§3.7.1): at most one class, plus interface contracts.
         let mut base_type = None;
+        let mut interfaces: Vec<TypeId> = Vec::new();
         if is_class {
             for (position, base) in bases.iter().enumerate() {
                 let Some(base_type_id) = self.resolve_type(*base) else {
@@ -227,8 +228,13 @@ impl<'a> Sema<'a> {
                     } else {
                         base_type = Some(base_type_id);
                     }
+                } else if base_kind == TypeDefKind::Interface {
+                    interfaces.push(base_type_id);
                 } else {
-                    self.unsupported(self.span_of(*base), "interface implementation");
+                    self.error(
+                        self.span_of(*base),
+                        "base class list entries must be classes or interfaces",
+                    );
                 }
             }
         }
@@ -244,6 +250,7 @@ impl<'a> Sema<'a> {
             let definition = &mut self.result.type_defs[type_index as usize];
             definition.base = base_type;
             definition.sealed = sealed_class;
+            definition.interfaces = interfaces.clone();
         }
 
         let struct_alignment = match self.node_kind(node) {
@@ -342,6 +349,9 @@ impl<'a> Sema<'a> {
             }
         }
         let instance_size = round_up(offset, max_align);
+        if is_class {
+            self.verify_interface_implementations(type_id);
+        }
         let definition = &mut self.result.type_defs[type_index as usize];
         definition.sealed = sealed;
         definition.fields = fields;
@@ -517,13 +527,25 @@ impl<'a> Sema<'a> {
             );
             return None;
         };
-        let body = match declaration.init {
-            Some(Initializer::Block(block)) => block,
-            _ => {
+        let (body, is_abstract) = match declaration.init {
+            Some(Initializer::Block(block)) => (Some(block), false),
+            None => (None, true),
+            Some(Initializer::Expression(_)) => {
                 self.unsupported(self.span_of(node), "function values in extensions");
                 return None;
             }
         };
+        let owner_kind = match self.result.types.get(owner) {
+            Type::Named(index) => self.result.type_defs[*index as usize].kind,
+            _ => return None,
+        };
+        if is_abstract && owner_kind != TypeDefKind::Interface {
+            self.error(
+                self.span_of(node),
+                "only interface methods may omit their body",
+            );
+            return None;
+        }
         let Some(first) = function.parameters.first() else {
             self.error(self.span_of(node), "a method requires a 'this' parameter");
             return None;
@@ -594,6 +616,7 @@ impl<'a> Sema<'a> {
             is_virtual: declaration.modifiers.virtual_ || declaration.modifiers.override_,
             is_override: declaration.modifiers.override_,
             is_sealed: declaration.modifiers.sealed,
+            is_abstract,
             return_type,
             mangled,
             locals: Vec::new(),
@@ -612,6 +635,110 @@ impl<'a> Sema<'a> {
             definition.method_list.push(index);
         }
         Some(index)
+    }
+
+    /// Checks that every interface method has a matching implementation in the
+    /// class and records the per-interface dispatch table (§3.7.3).
+    fn verify_interface_implementations(&mut self, class_type: TypeId) {
+        let Type::Named(class_index) = self.types_of(class_type) else {
+            return;
+        };
+        let interfaces = self.result.type_defs[class_index as usize]
+            .interfaces
+            .clone();
+        let mut dispatch = Vec::new();
+        for interface_type in interfaces {
+            let Type::Named(interface_index) = self.types_of(interface_type) else {
+                continue;
+            };
+            let method_list = self.result.type_defs[interface_index as usize]
+                .method_list
+                .clone();
+            let interface_name = self.result.type_defs[interface_index as usize]
+                .qualified_name
+                .clone();
+            let mut implementations = Vec::new();
+            let mut ok = true;
+            for method in method_list {
+                let (name, parameters, span) = {
+                    let info = &self.result.functions[method as usize];
+                    (info.name.clone(), info.parameters.clone(), info.span)
+                };
+                let candidates = self.collect_methods(class_type, &name);
+                let implementation = candidates.into_iter().find(|candidate| {
+                    let info = &self.result.functions[*candidate as usize];
+                    info.parameters.len() == parameters.len()
+                        && info
+                            .parameters
+                            .iter()
+                            .zip(parameters.iter())
+                            .skip(1)
+                            .all(|(candidate, interface)| candidate.ty == interface.ty)
+                });
+                match implementation {
+                    Some(implementation) => implementations.push(implementation),
+                    None => {
+                        self.error(
+                            span,
+                            format!(
+                                "class does not implement interface member '{name}' of '{interface_name}'"
+                            ),
+                        );
+                        ok = false;
+                    }
+                }
+            }
+            if ok {
+                dispatch.push((interface_type, implementations));
+            }
+        }
+        self.result.type_defs[class_index as usize].interface_dispatch = dispatch;
+    }
+
+    pub(crate) fn resolve_interface(&mut self, node: NodeId) {
+        let NodeKind::Interface(declaration) = self.node_kind(node) else {
+            return;
+        };
+        let Some(type_id) = self.type_id_for_node(node) else {
+            return;
+        };
+        for base in &declaration.bases {
+            if let Some(base_type) = self.resolve_type(*base) {
+                if matches!(self.types_of(base_type), Type::Named(index) if self.result.type_defs[index as usize].kind == TypeDefKind::Interface)
+                {
+                    self.unsupported(self.span_of(*base), "interface inheritance");
+                } else {
+                    self.error(
+                        self.span_of(*base),
+                        "an interface may only extend interfaces",
+                    );
+                }
+            }
+        }
+        let members = declaration.members.clone();
+        for member in members {
+            match self.node_kind(member) {
+                NodeKind::Extension(_) => {
+                    self.resolve_extension_declaration(member, Some(type_id));
+                }
+                NodeKind::Module(_) => {}
+                _ => {
+                    self.error(
+                        self.span_of(member),
+                        "an interface body may only contain extension blocks",
+                    );
+                }
+            }
+        }
+        let Type::Named(index) = self.types_of(type_id) else {
+            return;
+        };
+        let definition = &mut self.result.type_defs[index as usize];
+        // An interface is a reference type with no instance layout of its own.
+        definition.size = 8;
+        definition.align = 8;
+        definition.instance_size = 0;
+        definition.instance_align = 1;
     }
 
     pub(crate) fn resolve_variant(&mut self, node: NodeId) {
@@ -881,12 +1008,13 @@ impl<'a> Sema<'a> {
             name: name.clone(),
             scope,
             node,
-            body,
+            body: Some(body),
             parameters,
             method_of,
             is_virtual: false,
             is_override: false,
             is_sealed: false,
+            is_abstract: false,
             return_type,
             mangled,
             locals: Vec::new(),
@@ -1214,15 +1342,20 @@ pub(crate) fn fits_integer(value: i128, signed: bool, bytes: u8) -> bool {
 impl<'a> Sema<'a> {
     pub(crate) fn check_function_bodies(&mut self) {
         for index in 0..self.result.functions.len() {
-            let (body, parameters, method_of, span) = {
+            let (body, parameters, method_of, span, is_abstract) = {
                 let function = &self.result.functions[index];
                 (
                     function.body,
                     function.parameters.clone(),
                     function.method_of,
                     function.span,
+                    function.is_abstract,
                 )
             };
+            if is_abstract || body.is_none() {
+                continue;
+            }
+            let body = body.expect("body checked above");
             self.current_function = Some(index as u32);
             self.loop_labels.clear();
             self.push_scope();
@@ -1347,6 +1480,30 @@ impl<'a> Sema<'a> {
         }
         // Values convert implicitly to `boolean`? No: §3.2 forbids basic
         // implicit conversions.
+        // A class converts implicitly to the interfaces it implements, including
+        // interfaces implemented by a base class (§3.7.3).
+        if matches!(self.type_of(to), Type::Named(index) if self.result.type_defs[index as usize].kind == TypeDefKind::Interface)
+        {
+            let mut current = Some(from);
+            let mut depth = 0;
+            while let Some(ty) = current {
+                depth += 1;
+                if depth > 32 {
+                    break;
+                }
+                if ty == to {
+                    return true;
+                }
+                let Type::Named(index) = self.type_of(ty) else {
+                    return false;
+                };
+                let definition = &self.result.type_defs[index as usize];
+                if definition.interfaces.contains(&to) {
+                    return true;
+                }
+                current = definition.base;
+            }
+        }
         // Derived classes convert implicitly to their base classes (§3.7.1).
         if matches!(self.type_of(from), Type::Named(_))
             && matches!(self.type_of(to), Type::Named(_))
@@ -2637,6 +2794,12 @@ impl<'a> Sema<'a> {
             (Type::Array { .. }, Type::Pointer { .. }) => true,
             (Type::Pointer { .. }, Type::Array { .. }) => true,
             // Enumeration <-> underlying numeric type.
+            (Type::Named(left), Type::Named(right)) => {
+                let left_kind = self.result.type_defs[*left as usize].kind;
+                let right_kind = self.result.type_defs[*right as usize].kind;
+                matches!(left_kind, TypeDefKind::Class | TypeDefKind::Interface)
+                    && matches!(right_kind, TypeDefKind::Class | TypeDefKind::Interface)
+            }
             (Type::Named(index), Type::Integer { .. } | Type::Float { .. }) => {
                 self.result.type_defs[*index as usize].underlying.is_some()
             }
@@ -2849,8 +3012,8 @@ impl<'a> Sema<'a> {
                     Some(IsTargetResolved::Type(target_type)) => {
                         let value_kind = self.types_of(value_type);
                         let target_kind = self.types_of(target_type);
-                        let value_is_class = matches!(&value_kind, Type::Named(index) if self.result.type_defs[*index as usize].kind == TypeDefKind::Class);
-                        let target_is_class = matches!(&target_kind, Type::Named(index) if self.result.type_defs[*index as usize].kind == TypeDefKind::Class);
+                        let value_is_class = matches!(&value_kind, Type::Named(index) if matches!(self.result.type_defs[*index as usize].kind, TypeDefKind::Class | TypeDefKind::Interface));
+                        let target_is_class = matches!(&target_kind, Type::Named(index) if matches!(self.result.type_defs[*index as usize].kind, TypeDefKind::Class | TypeDefKind::Interface));
                         if !value_is_class || !target_is_class {
                             self.unsupported(
                                 self.span_of(node),

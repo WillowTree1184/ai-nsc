@@ -96,6 +96,11 @@ pub struct TypeDef {
     pub methods: std::collections::HashMap<String, Vec<u32>>,
     /// Methods in declaration order.
     pub method_list: Vec<u32>,
+    /// Interfaces this class implements (§3.7.3/§3.7.7).
+    pub interfaces: Vec<TypeId>,
+    /// Per-interface dispatch tables: implementation method id per interface
+    /// method slot, in interface declaration order.
+    pub interface_dispatch: Vec<(TypeId, Vec<u32>)>,
     /// Whether the class is sealed (§9.11).
     pub sealed: bool,
     /// Virtual dispatch table: method id per slot (classes only).
@@ -150,8 +155,8 @@ pub struct FunctionInfo {
     pub scope: Vec<String>,
     /// The `fixed` declaration node.
     pub node: NodeId,
-    /// The function body block.
-    pub body: NodeId,
+    /// The function body; `None` for abstract interface methods.
+    pub body: Option<NodeId>,
     /// Parameters, including `this` first for methods.
     pub parameters: Vec<ParameterInfo>,
     /// The type this function is a method of, if it came from an extension.
@@ -162,6 +167,8 @@ pub struct FunctionInfo {
     pub is_override: bool,
     /// Whether the method or class is sealed (§9.11).
     pub is_sealed: bool,
+    /// Whether the method is abstract (an interface method without a body).
+    pub is_abstract: bool,
     /// Return type; `None` is the empty type.
     pub return_type: Option<TypeId>,
     /// Mangled symbol name (§13.2).
@@ -610,6 +617,8 @@ impl<'a> Sema<'a> {
             field_initializers: Vec::new(),
             methods: std::collections::HashMap::new(),
             method_list: Vec::new(),
+            interfaces: Vec::new(),
+            interface_dispatch: Vec::new(),
             sealed: false,
             vtable: Vec::new(),
             vtable_ready: false,
@@ -655,9 +664,7 @@ impl<'a> Sema<'a> {
                 }
                 NodeKind::Variant(_declaration) => self.resolve_variant(node),
                 NodeKind::Union(_declaration) => self.resolve_union(node),
-                NodeKind::Interface(_declaration) => {
-                    self.unsupported(self.span_of(node), "interface declarations");
-                }
+                NodeKind::Interface(_declaration) => self.resolve_interface(node),
                 NodeKind::Fixed(declaration) => self.resolve_function_signature(node, &declaration),
                 NodeKind::Linkable(declaration) => {
                     self.resolve_linkable_signature(node, &declaration);

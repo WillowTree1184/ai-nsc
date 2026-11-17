@@ -39,15 +39,18 @@ Implemented today:
   union overlap layout with `aligned(N)`, member construction (`Variant.State(value)`,
   `Union.Member(value)`), payload-less variant states, union type punning, `is` checks for
   variant states, and `match` `is` patterns with guards and payload binding
+- **Interfaces**: contract declarations, implementation checking on classes (including
+  interfaces inherited through base classes), implicit class→interface conversion,
+  per-class interface dispatch tables with virtual interface calls, and `is` checks
+  against interface types through RTTI
 - **Name mangling** per §13.2, including the spec's worked example as a unit test
-- 80 tests: 36 unit, 8 CLI, 2 LLVM smoke, 23 end-to-end execution, 10 parser, 1 spec
+- 83 tests: 36 unit, 8 CLI, 2 LLVM smoke, 26 end-to-end execution, 10 parser, 1 spec
   conformance; `cargo fmt` + `clippy -D warnings` clean
 
-Not implemented yet (rejected with a clear diagnostic): interfaces, accessors and operator
-definitions, generics/monomorphization, function literals and closures,
-`trap`/`throw`/`finally` (runtime exception model), compile-time execution (`#(...)`,
-`#{...}`, `#if`), references (`&`/`&T`) beyond `this`, `??`, NOLAA, and the Built-In
-Library prelude.
+Not implemented yet (rejected with a clear diagnostic): accessors and operator definitions,
+generics/monomorphization, function literals and closures, `trap`/`throw`/`finally`
+(runtime exception model), compile-time execution (`#(...)`, `#{...}`, `#if`), references
+(`&`/`&T`) beyond `this`, `??`, NOLAA, and the Built-In Library prelude.
 
 ## Requirements
 

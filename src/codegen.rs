@@ -16,7 +16,7 @@ use inkwell::context::Context;
 use inkwell::module::Module;
 use inkwell::types::{BasicType, BasicTypeEnum, FunctionType, IntType, StructType};
 use inkwell::values::{
-    BasicValueEnum, FunctionValue, GlobalValue, IntValue, PointerValue, ValueKind,
+    BasicValueEnum, CallSiteValue, FunctionValue, GlobalValue, IntValue, PointerValue, ValueKind,
 };
 use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 
@@ -85,6 +85,7 @@ pub fn generate(ast: &Ast, sema: &SemaResult, options: &CodegenOptions) -> Resul
         free_fn: None,
         typeinfo_globals: HashMap::new(),
         vtable_globals: HashMap::new(),
+        interface_tables: HashMap::new(),
     };
     generator.run()?;
     if let Err(message) = generator.module.verify() {
@@ -124,6 +125,7 @@ struct Generator<'ctx, 'a> {
     free_fn: Option<FunctionValue<'ctx>>,
     typeinfo_globals: HashMap<u32, GlobalValue<'ctx>>,
     vtable_globals: HashMap<u32, GlobalValue<'ctx>>,
+    interface_tables: HashMap<u32, GlobalValue<'ctx>>,
 }
 
 impl<'ctx, 'a> Generator<'ctx, 'a> {
@@ -201,9 +203,10 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     self.llvm_type(underlying)?
                 }
                 TypeDefKind::Structure => self.struct_type(index)?.into(),
-                TypeDefKind::Class => self.context.ptr_type(AddressSpace::default()).into(),
+                TypeDefKind::Class | TypeDefKind::Interface => {
+                    self.context.ptr_type(AddressSpace::default()).into()
+                }
                 TypeDefKind::Variant | TypeDefKind::Union => self.instance_llvm_type(ty)?,
-                _ => return Err("this type cannot be lowered yet".to_string()),
             },
         })
     }
@@ -345,12 +348,14 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .type_defs
             .iter()
             .enumerate()
-            .filter(|(_, definition)| definition.kind == TypeDefKind::Class)
+            .filter(|(_, definition)| {
+                matches!(definition.kind, TypeDefKind::Class | TypeDefKind::Interface)
+            })
             .map(|(index, _)| index as u32)
             .collect();
 
-        // Type information first (it may reference base type information).
-        let typeinfo_type = pointer_type.array_type(2);
+        // Type information: [name, base typeinfo, interface table, null].
+        let typeinfo_type = pointer_type.array_type(4);
         for &index in &classes {
             let name = self.sema.type_defs[index as usize].qualified_name.clone();
             let string_value = self.context.const_string(name.as_bytes(), false);
@@ -364,12 +369,97 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             let typeinfo_global =
                 self.module
                     .add_global(typeinfo_type, None, &format!("nsc.typeinfo.{index}"));
-            let initializer = pointer_type
-                .const_array(&[name_global.as_pointer_value(), pointer_type.const_zero()]);
+            let initializer = pointer_type.const_array(&[
+                name_global.as_pointer_value(),
+                pointer_type.const_zero(),
+                pointer_type.const_zero(),
+                pointer_type.const_zero(),
+            ]);
             typeinfo_global.set_initializer(&initializer);
             typeinfo_global.set_constant(true);
             self.typeinfo_globals.insert(index, typeinfo_global);
         }
+        // Interface dispatch tables (§3.7.3): each class gets a terminated array
+        // of { interface typeinfo, interface vtable } pairs.
+        for &index in &classes {
+            let mut entries: Vec<(TypeId, Vec<u32>)> = Vec::new();
+            let mut chain = Vec::new();
+            let mut current = self.sema.type_defs[index as usize].base;
+            while let Some(base) = current {
+                chain.push(base);
+                current = match self.sema.types.get(base) {
+                    Type::Named(base_index) => self.sema.type_defs[*base_index as usize].base,
+                    _ => None,
+                };
+            }
+            chain.reverse();
+            for base in chain {
+                if let Type::Named(base_index) = self.sema.types.get(base) {
+                    for entry in self.sema.type_defs[*base_index as usize]
+                        .interface_dispatch
+                        .clone()
+                    {
+                        if let Some(existing) =
+                            entries.iter_mut().find(|(iface, _)| *iface == entry.0)
+                        {
+                            *existing = entry;
+                        } else {
+                            entries.push(entry);
+                        }
+                    }
+                }
+            }
+            for entry in self.sema.type_defs[index as usize]
+                .interface_dispatch
+                .clone()
+            {
+                if let Some(existing) = entries.iter_mut().find(|(iface, _)| *iface == entry.0) {
+                    *existing = entry;
+                } else {
+                    entries.push(entry);
+                }
+            }
+            if entries.is_empty() {
+                continue;
+            }
+            let mut table_values: Vec<PointerValue<'ctx>> = Vec::new();
+            for (iface_type, impl_methods) in entries {
+                let Type::Named(iface_index) = self.sema.types.get(iface_type) else {
+                    continue;
+                };
+                let Some(iface_typeinfo) = self.typeinfo_globals.get(iface_index).copied() else {
+                    continue;
+                };
+                let vtable_type = pointer_type.array_type(impl_methods.len() as u32);
+                let vtable_global = self.module.add_global(
+                    vtable_type,
+                    None,
+                    &format!("nsc.iface_vtable.{index}.{iface_index}"),
+                );
+                let implementations: Vec<FunctionValue<'ctx>> = impl_methods
+                    .iter()
+                    .filter_map(|method| self.functions.get(method).copied())
+                    .collect();
+                let values: Vec<PointerValue<'ctx>> = implementations
+                    .iter()
+                    .map(|function| function.as_global_value().as_pointer_value())
+                    .collect();
+                vtable_global.set_initializer(&pointer_type.const_array(&values));
+                vtable_global.set_constant(true);
+                table_values.push(iface_typeinfo.as_pointer_value());
+                table_values.push(vtable_global.as_pointer_value());
+            }
+            table_values.push(pointer_type.const_zero());
+            table_values.push(pointer_type.const_zero());
+            let table_type = pointer_type.array_type(table_values.len() as u32);
+            let table_global =
+                self.module
+                    .add_global(table_type, None, &format!("nsc.iface_table.{index}"));
+            table_global.set_initializer(&pointer_type.const_array(&table_values));
+            table_global.set_constant(true);
+            self.interface_tables.insert(index, table_global);
+        }
+
         for &index in &classes {
             let base_global = match self.sema.type_defs[index as usize].base {
                 Some(base_type) => match self.sema.types.get(base_type) {
@@ -399,8 +489,16 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 || pointer_type.const_zero(),
                 |global| global.as_pointer_value(),
             );
-            let initializer =
-                pointer_type.const_array(&[name_pointer.as_pointer_value(), base_pointer]);
+            let interface_table = self.interface_tables.get(&index).map_or_else(
+                || pointer_type.const_zero(),
+                |global| global.as_pointer_value(),
+            );
+            let initializer = pointer_type.const_array(&[
+                name_pointer.as_pointer_value(),
+                base_pointer,
+                interface_table,
+                pointer_type.const_zero(),
+            ]);
             if let Some(typeinfo_global) = self.typeinfo_globals.get(&index) {
                 typeinfo_global.set_initializer(&initializer);
             }
@@ -503,6 +601,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     info.return_type,
                     info.method_of,
                 )
+            };
+            let Some(body) = body else {
+                continue;
             };
             self.current_function = index;
             self.current_return = return_type;
@@ -1645,6 +1746,273 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
     }
 
     /// Emits an RTTI membership test for a class value, returning an i1.
+    fn gen_interface_call(
+        &mut self,
+        receiver: PointerValue<'ctx>,
+        interface_index: u32,
+        method: u32,
+        arguments: &[inkwell::values::BasicMetadataValueEnum<'ctx>],
+    ) -> Result<CallSiteValue<'ctx>, String> {
+        let method_list = self.sema.type_defs[interface_index as usize]
+            .method_list
+            .clone();
+        let slot = method_list
+            .iter()
+            .position(|entry| *entry == method)
+            .ok_or_else(|| "interface method is not part of the interface".to_string())?;
+        let pointer_type = self.context.ptr_type(AddressSpace::default());
+        let typeinfo = self.load_pointer_at(receiver, 8)?.into_pointer_value();
+        let table = self.load_pointer_at(typeinfo, 16)?.into_pointer_value();
+        let target = self
+            .typeinfo_globals
+            .get(&interface_index)
+            .ok_or_else(|| "missing interface type information".to_string())?
+            .as_pointer_value();
+        let function = self.current_llvm_function()?;
+        let loop_block = self.context.append_basic_block(function, "iface_loop");
+        let compare_block = self.context.append_basic_block(function, "iface_compare");
+        let advance_block = self.context.append_basic_block(function, "iface_advance");
+        let found_block = self.context.append_basic_block(function, "iface_found");
+        let fail_block = self.context.append_basic_block(function, "iface_fail");
+        let end_block = self.context.append_basic_block(function, "iface_end");
+        let current_slot = self
+            .builder
+            .build_alloca(pointer_type, "iface_table")
+            .map_err(|error| format!("cannot allocate interface state: {error}"))?;
+        self.builder
+            .build_store(current_slot, table)
+            .map_err(|error| format!("cannot store interface state: {error}"))?;
+        let callee_slot = self
+            .builder
+            .build_alloca(pointer_type, "iface_callee")
+            .map_err(|error| format!("cannot allocate interface callee: {error}"))?;
+        self.builder
+            .build_store(callee_slot, pointer_type.const_zero())
+            .map_err(|error| format!("cannot store interface callee: {error}"))?;
+        self.builder
+            .build_unconditional_branch(loop_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(loop_block);
+        let current = self
+            .builder
+            .build_load(pointer_type, current_slot, "table")
+            .map_err(|error| format!("cannot load interface table: {error}"))?
+            .into_pointer_value();
+        let entry = self.load_pointer_at(current, 0)?.into_pointer_value();
+        let is_null = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                entry,
+                pointer_type.const_zero(),
+                "iface_null",
+            )
+            .map_err(|error| format!("cannot compare interface entry: {error}"))?;
+        self.builder
+            .build_conditional_branch(is_null, fail_block, compare_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(compare_block);
+        let matches = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, entry, target, "iface_match")
+            .map_err(|error| format!("cannot compare interface type: {error}"))?;
+        self.builder
+            .build_conditional_branch(matches, found_block, advance_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(advance_block);
+        let next =
+            self.address_with_size(current, 1, self.context.i64_type().const_int(16, false))?;
+        self.builder
+            .build_store(current_slot, next)
+            .map_err(|error| format!("cannot store interface state: {error}"))?;
+        self.builder
+            .build_unconditional_branch(loop_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(found_block);
+        let vtable = self.load_pointer_at(current, 8)?.into_pointer_value();
+        let slot_address = self.address_with_size(
+            vtable,
+            8,
+            self.context.i64_type().const_int(slot as u64, false),
+        )?;
+        let callee = self
+            .builder
+            .build_load(pointer_type, slot_address, "iface_callee_load")
+            .map_err(|error| format!("cannot load interface callee: {error}"))?;
+        self.builder
+            .build_store(callee_slot, callee)
+            .map_err(|error| format!("cannot store interface callee: {error}"))?;
+        self.builder
+            .build_unconditional_branch(end_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(fail_block);
+        let abort = self.module.get_function("abort").unwrap_or_else(|| {
+            let signature = self.context.void_type().fn_type(&[], false);
+            self.module.add_function("abort", signature, None)
+        });
+        self.builder
+            .build_call(abort, &[], "")
+            .map_err(|error| format!("cannot call abort: {error}"))?;
+        self.builder
+            .build_unreachable()
+            .map_err(|error| format!("cannot terminate: {error}"))?;
+        self.builder.position_at_end(end_block);
+        let callee = self
+            .builder
+            .build_load(pointer_type, callee_slot, "iface_callee")
+            .map_err(|error| format!("cannot load interface callee: {error}"))?
+            .into_pointer_value();
+        let signature = self.function_type(method)?;
+        self.builder
+            .build_indirect_call(signature, callee, arguments, "interface_call")
+            .map_err(|error| format!("cannot dispatch interface call: {error}"))
+    }
+
+    /// Emits an RTTI search through a class's interface tables.
+    fn emit_interface_check(
+        &mut self,
+        instance: PointerValue<'ctx>,
+        interface_index: u32,
+    ) -> Result<IntValue<'ctx>, String> {
+        let pointer_type = self.context.ptr_type(AddressSpace::default());
+        let target = self
+            .typeinfo_globals
+            .get(&interface_index)
+            .ok_or_else(|| "missing interface type information".to_string())?
+            .as_pointer_value();
+        let typeinfo = self.load_pointer_at(instance, 8)?.into_pointer_value();
+        let result_slot = self
+            .builder
+            .build_alloca(self.context.bool_type(), "iface_result")
+            .map_err(|error| format!("cannot allocate result: {error}"))?;
+        self.builder
+            .build_store(result_slot, self.context.bool_type().const_zero())
+            .map_err(|error| format!("cannot store result: {error}"))?;
+        let typeinfo_slot = self
+            .builder
+            .build_alloca(pointer_type, "iface_typeinfo")
+            .map_err(|error| format!("cannot allocate interface state: {error}"))?;
+        self.builder
+            .build_store(typeinfo_slot, typeinfo)
+            .map_err(|error| format!("cannot store interface state: {error}"))?;
+        let function = self.current_llvm_function()?;
+        let outer = self.context.append_basic_block(function, "iface_outer");
+        let outer_next = self.context.append_basic_block(function, "iface_next_type");
+        let table_loop = self
+            .context
+            .append_basic_block(function, "iface_table_loop");
+        let table_advance = self
+            .context
+            .append_basic_block(function, "iface_table_next");
+        let table_next_type = self
+            .context
+            .append_basic_block(function, "iface_next_table");
+        let found = self.context.append_basic_block(function, "iface_found");
+        let end = self.context.append_basic_block(function, "iface_end");
+        let table_slot = self
+            .builder
+            .build_alloca(pointer_type, "iface_table_ptr")
+            .map_err(|error| format!("cannot allocate interface state: {error}"))?;
+        let current_type_slot = self
+            .builder
+            .build_alloca(pointer_type, "iface_current_type")
+            .map_err(|error| format!("cannot allocate interface state: {error}"))?;
+        self.builder
+            .build_unconditional_branch(outer)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(outer);
+        let current_type = self
+            .builder
+            .build_load(pointer_type, typeinfo_slot, "current_type")
+            .map_err(|error| format!("cannot load typeinfo: {error}"))?
+            .into_pointer_value();
+        self.builder
+            .build_store(current_type_slot, current_type)
+            .map_err(|error| format!("cannot store typeinfo: {error}"))?;
+        let table = self.load_pointer_at(current_type, 16)?;
+        self.builder
+            .build_store(table_slot, table)
+            .map_err(|error| format!("cannot store interface table: {error}"))?;
+        self.builder
+            .build_unconditional_branch(table_loop)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(table_loop);
+        let table = self
+            .builder
+            .build_load(pointer_type, table_slot, "table")
+            .map_err(|error| format!("cannot load interface table: {error}"))?
+            .into_pointer_value();
+        let entry = self.load_pointer_at(table, 0)?.into_pointer_value();
+        let is_null = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                entry,
+                pointer_type.const_zero(),
+                "iface_null",
+            )
+            .map_err(|error| format!("cannot compare interface entry: {error}"))?;
+        self.builder
+            .build_conditional_branch(is_null, table_next_type, table_advance)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(table_advance);
+        let matches = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, entry, target, "iface_match")
+            .map_err(|error| format!("cannot compare interface type: {error}"))?;
+        let table_advance_next = self.context.append_basic_block(function, "iface_advance");
+        self.builder
+            .build_conditional_branch(matches, found, table_advance_next)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(table_advance_next);
+        let next =
+            self.address_with_size(table, 1, self.context.i64_type().const_int(16, false))?;
+        self.builder
+            .build_store(table_slot, next)
+            .map_err(|error| format!("cannot store interface table: {error}"))?;
+        self.builder
+            .build_unconditional_branch(table_loop)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(table_next_type);
+        let current_type = self
+            .builder
+            .build_load(pointer_type, current_type_slot, "current_type")
+            .map_err(|error| format!("cannot load typeinfo: {error}"))?;
+        let base_typeinfo = self.load_pointer_at(current_type.into_pointer_value(), 8)?;
+        let is_null = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                base_typeinfo.into_pointer_value(),
+                pointer_type.const_zero(),
+                "base_null",
+            )
+            .map_err(|error| format!("cannot compare base typeinfo: {error}"))?;
+        self.builder
+            .build_conditional_branch(is_null, end, outer_next)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(outer_next);
+        self.builder
+            .build_store(typeinfo_slot, base_typeinfo)
+            .map_err(|error| format!("cannot store typeinfo: {error}"))?;
+        self.builder
+            .build_unconditional_branch(outer)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(found);
+        self.builder
+            .build_store(result_slot, self.context.bool_type().const_int(1, false))
+            .map_err(|error| format!("cannot store result: {error}"))?;
+        self.builder
+            .build_unconditional_branch(end)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(end);
+        Ok(self
+            .builder
+            .build_load(self.context.bool_type(), result_slot, "iface_result")
+            .map_err(|error| format!("cannot load result: {error}"))?
+            .into_int_value())
+    }
+
     fn emit_type_check(
         &mut self,
         instance: PointerValue<'ctx>,
@@ -1653,6 +2021,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         let Type::Named(target_index) = self.sema.types.get(target_type).clone() else {
             return Err("is target must be a class".to_string());
         };
+        if self.sema.type_defs[target_index as usize].kind == TypeDefKind::Interface {
+            return self.emit_interface_check(instance, target_index);
+        }
         let target_global = *self
             .typeinfo_globals
             .get(&target_index)
@@ -2359,45 +2730,71 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     } else {
                         TypeId::ERROR
                     };
-                    let slot = if base_call {
+                    let interface_index = if base_call {
                         None
                     } else {
-                        self.vtable_slot(receiver_type, index)
-                    };
-                    match slot {
-                        Some(slot) => {
-                            // Virtual dispatch: load the slot from the vtable in
-                            // the instance header (§3.7.1).
-                            let pointer_type = self.context.ptr_type(AddressSpace::default());
-                            let vtable = self
-                                .builder
-                                .build_load(pointer_type, receiver_pointer, "vtable")
-                                .map_err(|error| format!("cannot load vtable: {error}"))?
-                                .into_pointer_value();
-                            let slot_address = self.address_with_size(
-                                vtable,
-                                8,
-                                self.context.i64_type().const_int(slot as u64, false),
-                            )?;
-                            let callee_pointer = self
-                                .builder
-                                .build_load(pointer_type, slot_address, "vslot")
-                                .map_err(|error| format!("cannot load vtable slot: {error}"))?
-                                .into_pointer_value();
-                            let signature = self.function_type(index)?;
-                            self.builder
-                                .build_indirect_call(
-                                    signature,
-                                    callee_pointer,
-                                    &arguments,
-                                    "virtual_call",
-                                )
-                                .map_err(|error| format!("cannot dispatch call: {error}"))?
+                        match self.sema.types.get(receiver_type) {
+                            Type::Named(receiver_index)
+                                if self.sema.type_defs[*receiver_index as usize].kind
+                                    == TypeDefKind::Interface =>
+                            {
+                                Some(*receiver_index)
+                            }
+                            _ => None,
                         }
-                        None => self
-                            .builder
-                            .build_call(function, &arguments, "call")
-                            .map_err(|error| format!("cannot call function: {error}"))?,
+                    };
+                    match interface_index {
+                        Some(interface_index) => self.gen_interface_call(
+                            receiver_pointer,
+                            interface_index,
+                            index,
+                            &arguments,
+                        )?,
+                        None => {
+                            let slot = if base_call {
+                                None
+                            } else {
+                                self.vtable_slot(receiver_type, index)
+                            };
+                            match slot {
+                                Some(slot) => {
+                                    // Virtual dispatch: load the slot from the vtable in
+                                    // the instance header (§3.7.1).
+                                    let pointer_type =
+                                        self.context.ptr_type(AddressSpace::default());
+                                    let vtable = self
+                                        .builder
+                                        .build_load(pointer_type, receiver_pointer, "vtable")
+                                        .map_err(|error| format!("cannot load vtable: {error}"))?
+                                        .into_pointer_value();
+                                    let slot_address = self.address_with_size(
+                                        vtable,
+                                        8,
+                                        self.context.i64_type().const_int(slot as u64, false),
+                                    )?;
+                                    let callee_pointer = self
+                                        .builder
+                                        .build_load(pointer_type, slot_address, "vslot")
+                                        .map_err(|error| {
+                                            format!("cannot load vtable slot: {error}")
+                                        })?
+                                        .into_pointer_value();
+                                    let signature = self.function_type(index)?;
+                                    self.builder
+                                        .build_indirect_call(
+                                            signature,
+                                            callee_pointer,
+                                            &arguments,
+                                            "virtual_call",
+                                        )
+                                        .map_err(|error| format!("cannot dispatch call: {error}"))?
+                                }
+                                None => self
+                                    .builder
+                                    .build_call(function, &arguments, "call")
+                                    .map_err(|error| format!("cannot call function: {error}"))?,
+                            }
+                        }
                     }
                 } else {
                     self.builder
@@ -2432,8 +2829,13 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             return Ok(pointer.into_pointer_value());
         }
         let ty = self.type_of(node);
-        if matches!(self.sema.types.get(ty), Type::Named(index) if self.sema.type_defs[*index as usize].kind == TypeDefKind::Class)
-        {
+        if matches!(
+            self.sema.types.get(ty),
+            Type::Named(index) if matches!(
+                self.sema.type_defs[*index as usize].kind,
+                TypeDefKind::Class | TypeDefKind::Interface
+            )
+        ) {
             return Ok(self.gen_expr(node)?.into_pointer_value());
         }
         match self.gen_lvalue(node)? {

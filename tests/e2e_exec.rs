@@ -543,3 +543,112 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 11);
 }
+
+#[test]
+fn interfaces_dispatch_to_the_implementing_class() {
+    let source = "\
+interface IShape
+{
+    extension
+    {
+        public fixed Area(this: &IShape): integer(4);
+        public fixed Corners(this: &IShape): integer(4);
+    }
+}
+
+class Square: IShape
+{
+    private Side: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Square, side: integer(4)) { this.Side = side; }
+        public fixed Area(this: &Square): integer(4) { return this.Side * this.Side; }
+        public fixed Corners(this: &Square): integer(4) { return 4; }
+    }
+}
+
+class Triangle: IShape
+{
+    extension
+    {
+        public fixed Area(this: &Triangle): integer(4) { return 6; }
+        public fixed Corners(this: &Triangle): integer(4) { return 3; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local square: Square = Square(5);
+    local triangle: Triangle = Triangle();
+    local first: IShape = square;
+    local second: IShape = triangle;
+    return first.Area() + second.Corners();   // 25 + 3
+}";
+    assert_eq!(run_program(source), 28);
+}
+
+#[test]
+fn interface_type_checks_use_rtti() {
+    let source = "\
+interface INamed
+{
+    extension
+    {
+        public fixed Id(this: &INamed): integer(4);
+    }
+}
+
+class Thing: INamed
+{
+    extension
+    {
+        public fixed Id(this: &Thing): integer(4) { return 7; }
+    }
+}
+
+class Other { }
+
+fixed Main(): integer(4)
+{
+    local thing: Thing = Thing();
+    local named: INamed = thing;
+    local result: integer(4) = 0;
+    if (named is INamed) { result += 1; }
+    if (named is Thing) { result += 10; }
+    if (named is Other) { result += 100; }
+    return result + named.Id();   // 11 + 7
+}";
+    assert_eq!(run_program(source), 18);
+}
+
+#[test]
+fn missing_interface_member_is_reported() {
+    let source = "\
+interface IShape
+{
+    extension
+    {
+        public fixed Area(this: &IShape): integer(4);
+    }
+}
+
+class Broken: IShape
+{
+    extension
+    {
+        public fixed Perimeter(this: &Broken): integer(4) { return 0; }
+    }
+}
+
+fixed Main(): integer(4) { return 0; }";
+    let path = write_program(source);
+    let output = ai_nsc()
+        .args(["check", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(path.parent().expect("temp dir"));
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Area"), "stderr: {stderr}");
+}

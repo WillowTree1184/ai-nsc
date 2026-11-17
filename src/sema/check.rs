@@ -2611,6 +2611,12 @@ impl<'a> Sema<'a> {
             NodeKind::For(for_statement) => self.check_for_statement(node, &for_statement),
             NodeKind::Match(match_statement) => self.check_match_statement(node, &match_statement),
             NodeKind::Break(statement) => {
+                if matches!(self.trap_contexts.last(), Some(TrapContextKind::Finally)) {
+                    self.error(
+                        self.span_of(node),
+                        "'break' must not appear in a 'finally' block",
+                    );
+                }
                 if self.loop_labels.is_empty() {
                     self.error(self.span_of(node), "'break' is only allowed inside a loop");
                 } else if let Some(label) = &statement.label {
@@ -2620,6 +2626,12 @@ impl<'a> Sema<'a> {
                 }
             }
             NodeKind::Continue(statement) => {
+                if matches!(self.trap_contexts.last(), Some(TrapContextKind::Finally)) {
+                    self.error(
+                        self.span_of(node),
+                        "'continue' must not appear in a 'finally' block",
+                    );
+                }
                 if self.loop_labels.is_empty() {
                     self.error(
                         self.span_of(node),
@@ -2632,6 +2644,12 @@ impl<'a> Sema<'a> {
                 }
             }
             NodeKind::Return(statement) => {
+                if matches!(self.trap_contexts.last(), Some(TrapContextKind::Finally)) {
+                    self.error(
+                        self.span_of(node),
+                        "'return' must not appear in a 'finally' block",
+                    );
+                }
                 let return_type = self
                     .current_function
                     .map(|index| self.result.functions[index as usize].return_type);

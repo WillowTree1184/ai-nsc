@@ -359,3 +359,45 @@ fixed Main(): integer(4)
         "{stderr}"
     );
 }
+
+#[test]
+fn return_is_rejected_in_a_finally_block() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    trap
+    {
+        return 1;
+    }
+    finally
+    {
+        return 2;
+    }
+}",
+    );
+    assert!(stderr.contains("'return' must not appear"), "{stderr}");
+}
+
+#[test]
+fn break_and_continue_are_rejected_in_a_finally_block() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    for i: integer(4) in 1..3
+    {
+        trap
+        {
+            break;
+        }
+        finally
+        {
+            continue;
+        }
+    }
+    return 0;
+}",
+    );
+    assert!(stderr.contains("'continue' must not appear"), "{stderr}");
+}

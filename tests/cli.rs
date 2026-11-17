@@ -27,7 +27,14 @@ fn help_lists_commands_and_options() {
 
     assert!(output.status.success());
     for needle in [
-        "USAGE:", "build", "run", "check", "emit-ir", "emit-obj", "--target",
+        "USAGE:",
+        "build",
+        "run",
+        "check",
+        "emit-ir",
+        "emit-obj",
+        "--target",
+        "<file.ns>",
     ] {
         assert!(
             stdout.contains(needle),

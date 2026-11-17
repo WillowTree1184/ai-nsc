@@ -74,7 +74,7 @@ const USAGE: &str = "\
 ai-nsc - the NovaSharp compiler (LLVM backend)
 
 USAGE:
-  ai-nsc <command> [options] <file.nova>...
+  ai-nsc <command> [options] <file.ns>...
 
 COMMANDS:
   build     Compile NovaSharp sources and link an executable
@@ -430,11 +430,11 @@ mod tests {
 
     #[test]
     fn parses_a_command_and_inputs() {
-        let options = parse_args(&args(&["build", "a.nova", "b.nova", "-o", "app"])).unwrap();
+        let options = parse_args(&args(&["build", "a.ns", "b.ns", "-o", "app"])).unwrap();
         assert_eq!(options.action, Some(Action::Build));
         assert_eq!(
             options.inputs,
-            vec![PathBuf::from("a.nova"), PathBuf::from("b.nova")]
+            vec![PathBuf::from("a.ns"), PathBuf::from("b.ns")]
         );
         assert_eq!(options.output, Some(PathBuf::from("app")));
     }
@@ -446,7 +446,7 @@ mod tests {
             "-O2",
             "-g",
             "--target=x86_64-linux-gnu",
-            "x.nova",
+            "x.ns",
         ]))
         .unwrap();
         assert_eq!(options.action, Some(Action::EmitIr));
@@ -457,9 +457,9 @@ mod tests {
 
     #[test]
     fn option_terminator_treats_everything_as_input() {
-        let options = parse_args(&args(&["check", "--", "-weird-name.nova"])).unwrap();
+        let options = parse_args(&args(&["check", "--", "-weird-name.ns"])).unwrap();
         assert_eq!(options.action, Some(Action::Check));
-        assert_eq!(options.inputs, vec![PathBuf::from("-weird-name.nova")]);
+        assert_eq!(options.inputs, vec![PathBuf::from("-weird-name.ns")]);
     }
 
     #[test]

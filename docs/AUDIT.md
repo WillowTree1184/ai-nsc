@@ -252,3 +252,4 @@ report an error (§4.8).
 
 `match`/`is` patterns whose target is an interface are not supported (§4.8).
 | 33 | MED | §15.3 | Compiler compile-time API (`LogNote`/`LogWarning`/`LogError`/`Assert`) missing | fixed (5d1a968: literal messages and constant assertions inside compile-time blocks; computed messages pending) |
+| 34 | MED | §9.15 | Static members (fields/constants/methods) unsupported | partial (29cc794: static fields, static fixed constants and static methods implemented; static accessors and the static class modifier pending) |

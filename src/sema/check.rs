@@ -233,6 +233,19 @@ impl<'a> Sema<'a> {
             }
         }
 
+        let sealed_class = match self.node_kind(node) {
+            NodeKind::Class(declaration) => declaration.modifiers.sealed,
+            NodeKind::Structure(declaration) => declaration.modifiers.sealed,
+            _ => false,
+        };
+        // Register the base and sealed flags before processing members, so that
+        // extension methods can validate `override` against the base chain.
+        {
+            let definition = &mut self.result.type_defs[type_index as usize];
+            definition.base = base_type;
+            definition.sealed = sealed_class;
+        }
+
         let struct_alignment = match self.node_kind(node) {
             NodeKind::Structure(declaration) => declaration.modifiers.aligned,
             NodeKind::Class(declaration) => declaration.modifiers.aligned,
@@ -320,8 +333,17 @@ impl<'a> Sema<'a> {
             }
         }
 
+        let sealed = sealed_class;
+        if let Some(base_type) = base_type {
+            if let Type::Named(base_index) = self.types_of(base_type) {
+                if self.result.type_defs[base_index as usize].sealed {
+                    self.error(self.span_of(node), "cannot inherit from a sealed class");
+                }
+            }
+        }
         let instance_size = round_up(offset, max_align);
         let definition = &mut self.result.type_defs[type_index as usize];
+        definition.sealed = sealed;
         definition.fields = fields;
         definition.field_initializers = field_initializers;
         definition.base = base_type;
@@ -348,6 +370,51 @@ impl<'a> Sema<'a> {
             .iter()
             .position(|definition| definition.node == node)? as u32;
         Some(self.result.types.intern(Type::Named(index)))
+    }
+
+    /// Validates that a method declared `override` really overrides a virtual
+    /// base method (§9.13).
+    fn validate_override(&mut self, method: u32, owner: TypeId) {
+        let base = match self.result.types.get(owner) {
+            Type::Named(index) => self.result.type_defs[*index as usize].base,
+            _ => None,
+        };
+        let Some(base) = base else {
+            let span = self.result.functions[method as usize].span;
+            self.error(span, "'override' requires a base class method");
+            return;
+        };
+        let name = self.result.functions[method as usize].name.clone();
+        let candidates = self.collect_methods(base, &name);
+        let parameters = self.result.functions[method as usize].parameters.clone();
+        for candidate in candidates {
+            let base_parameters = self.result.functions[candidate as usize].parameters.clone();
+            if base_parameters.len() != parameters.len() {
+                continue;
+            }
+            let same = base_parameters
+                .iter()
+                .zip(parameters.iter())
+                .skip(1)
+                .all(|(base, own)| base.ty == own.ty);
+            if !same {
+                continue;
+            }
+            let base_info = &self.result.functions[candidate as usize];
+            if !base_info.is_virtual {
+                let span = self.result.functions[method as usize].span;
+                self.error(span, "cannot override a non-virtual method");
+                return;
+            }
+            if base_info.is_sealed {
+                let span = self.result.functions[method as usize].span;
+                self.error(span, "cannot override a sealed method");
+                return;
+            }
+            return;
+        }
+        let span = self.result.functions[method as usize].span;
+        self.error(span, "'override' does not match any base class method");
     }
 
     fn resolve_extension_target(&mut self, node: NodeId) -> Option<TypeId> {
@@ -520,17 +587,25 @@ impl<'a> Sema<'a> {
             body,
             parameters,
             method_of: Some(owner),
+            is_virtual: declaration.modifiers.virtual_ || declaration.modifiers.override_,
+            is_override: declaration.modifiers.override_,
+            is_sealed: declaration.modifiers.sealed,
             return_type,
             mangled,
             locals: Vec::new(),
             span: self.span_of(node),
         });
+        if declaration.modifiers.override_ {
+            self.validate_override(index, owner);
+        }
         if let Type::Named(owner_index) = self.result.types.get(owner).clone() {
-            self.result.type_defs[owner_index as usize]
+            let definition = &mut self.result.type_defs[owner_index as usize];
+            definition
                 .methods
                 .entry(declaration.name.clone())
                 .or_default()
                 .push(index);
+            definition.method_list.push(index);
         }
         Some(index)
     }
@@ -673,6 +748,9 @@ impl<'a> Sema<'a> {
             body,
             parameters,
             method_of,
+            is_virtual: false,
+            is_override: false,
+            is_sealed: false,
             return_type,
             mangled,
             locals: Vec::new(),
@@ -715,6 +793,68 @@ impl<'a> Sema<'a> {
             method_of: None,
             exposed_symbol: Some(exposed),
         });
+    }
+
+    /// Builds the virtual dispatch tables after all declarations are resolved.
+    pub(crate) fn build_vtables(&mut self) {
+        for index in 0..self.result.type_defs.len() as u32 {
+            if self.result.type_defs[index as usize].kind == TypeDefKind::Class {
+                self.build_vtable(index);
+            }
+        }
+    }
+
+    fn build_vtable(&mut self, index: u32) -> Vec<u32> {
+        if self.result.type_defs[index as usize].vtable_ready {
+            return self.result.type_defs[index as usize].vtable.clone();
+        }
+        let base = self.result.type_defs[index as usize].base;
+        let mut slots = match base {
+            Some(base) => match self.result.types.get(base).clone() {
+                Type::Named(base_index) => self.build_vtable(base_index),
+                _ => Vec::new(),
+            },
+            None => Vec::new(),
+        };
+        let method_list = self.result.type_defs[index as usize].method_list.clone();
+        let class_name = self.result.type_defs[index as usize].qualified_name.clone();
+        for method in method_list {
+            let info = &self.result.functions[method as usize];
+            if !info.is_virtual {
+                continue;
+            }
+            if info.is_override {
+                let name = info.name.clone();
+                let parameters = info.parameters.clone();
+                let slot = slots.iter().position(|candidate| {
+                    let base_info = &self.result.functions[*candidate as usize];
+                    base_info.name == name
+                        && base_info.parameters.len() == parameters.len()
+                        && base_info
+                            .parameters
+                            .iter()
+                            .zip(parameters.iter())
+                            .skip(1)
+                            .all(|(base, own)| base.ty == own.ty)
+                });
+                match slot {
+                    Some(slot) => slots[slot] = method,
+                    None => {
+                        let span = self.result.functions[method as usize].span;
+                        self.error(
+                            span,
+                            format!("'override' does not match a virtual method of '{class_name}'"),
+                        );
+                    }
+                }
+            } else {
+                slots.push(method);
+            }
+        }
+        let definition = &mut self.result.type_defs[index as usize];
+        definition.vtable = slots.clone();
+        definition.vtable_ready = true;
+        slots
     }
 
     fn resolve_global_fixed(&mut self, node: NodeId, declaration: &FixedDecl) {
@@ -1669,10 +1809,7 @@ impl<'a> Sema<'a> {
             }
             NodeKind::ArrayLiteral(literal) => self.check_array_literal(node, &literal, expected),
             NodeKind::CompileTimeExpr(inner) => self.check_expr(inner, expected),
-            NodeKind::Is(_) => {
-                self.unsupported(self.span_of(node), "is expressions");
-                None
-            }
+            NodeKind::Is(is_expression) => self.check_is_expression(node, &is_expression),
             NodeKind::Coalesce(_) => {
                 self.unsupported(self.span_of(node), "null coalescing expressions");
                 None
@@ -1700,8 +1837,29 @@ impl<'a> Sema<'a> {
                     }
                 }
             }
-            NodeKind::Owner | NodeKind::Base => {
-                self.unsupported(self.span_of(node), "owner/base expressions");
+            NodeKind::Base => {
+                let owner = self
+                    .current_function
+                    .and_then(|index| self.result.functions[index as usize].method_of);
+                match owner.and_then(|owner| match self.types_of(owner) {
+                    Type::Named(index) => self.result.type_defs[index as usize].base,
+                    _ => None,
+                }) {
+                    Some(base) => {
+                        self.result.resolutions[node as usize] = Some(Resolution::Base);
+                        Some(base)
+                    }
+                    None => {
+                        self.error(
+                            self.span_of(node),
+                            "'base' requires a base class in a method",
+                        );
+                        None
+                    }
+                }
+            }
+            NodeKind::Owner => {
+                self.unsupported(self.span_of(node), "owner expressions");
                 None
             }
             NodeKind::Construct(_) | NodeKind::MemberConstruct(_) => {
@@ -2392,6 +2550,69 @@ impl<'a> Sema<'a> {
         }
     }
 
+    fn check_is_expression(&mut self, node: NodeId, is_expression: &IsExpr) -> Option<TypeId> {
+        let value_type = self.check_expr(is_expression.value, None)?;
+        match &is_expression.target {
+            IsTarget::Identifier(name) => {
+                let target_type = self.resolve_type_name_text(name)?;
+                let value_kind = self.types_of(value_type);
+                let target_kind = self.types_of(target_type);
+                let value_is_class = matches!(&value_kind, Type::Named(index) if self.result.type_defs[*index as usize].kind == TypeDefKind::Class);
+                let target_is_class = matches!(&target_kind, Type::Named(index) if self.result.type_defs[*index as usize].kind == TypeDefKind::Class);
+                if !value_is_class || !target_is_class {
+                    self.unsupported(
+                        self.span_of(node),
+                        "is checks are only implemented for class values",
+                    );
+                    return None;
+                }
+                self.result.resolutions[node as usize] = Some(Resolution::Type(target_type));
+                Some(TypeId::BOOLEAN)
+            }
+            IsTarget::Illegal => {
+                if !matches!(self.types_of(value_type), Type::Float { .. }) {
+                    self.error(
+                        self.span_of(node),
+                        "checking for 'illegal' requires a floating-point value",
+                    );
+                }
+                Some(TypeId::BOOLEAN)
+            }
+            IsTarget::Infinite { .. } => {
+                if !matches!(self.types_of(value_type), Type::Float { .. }) {
+                    self.error(
+                        self.span_of(node),
+                        "checking for 'infinite' requires a floating-point value",
+                    );
+                }
+                Some(TypeId::BOOLEAN)
+            }
+        }
+    }
+
+    /// Resolves a dotted type name written as text (used by `is` targets).
+    fn resolve_type_name_text(&mut self, text: &str) -> Option<TypeId> {
+        let mut parts = text.split('.');
+        let first = parts.next()?;
+        let mut symbol = self.lookup(first).cloned();
+        for part in parts {
+            symbol = match symbol {
+                Some(Symbol::Module(scope)) => self.lookup_in(scope, part).cloned(),
+                _ => None,
+            };
+        }
+        match symbol {
+            Some(Symbol::Type(type_id)) => Some(type_id),
+            _ => {
+                self.error(
+                    Span::default(),
+                    format!("unknown type '{text}' in is expression"),
+                );
+                None
+            }
+        }
+    }
+
     fn check_call(&mut self, node: NodeId, call: &CallExpr) -> Option<TypeId> {
         // Method call: `value.Method(arguments)` (§8.4).
         if let NodeKind::MemberAccess(access) = self.node_kind(call.callee) {
@@ -2470,7 +2691,10 @@ impl<'a> Sema<'a> {
             };
             let definition = &self.result.type_defs[*index as usize];
             if let Some(list) = definition.methods.get(name) {
+                // Methods of the most derived class hide base declarations of
+                // the same name (overrides replace them, §9.13).
                 methods.extend(list.iter().copied());
+                break;
             }
             current = definition.base;
         }

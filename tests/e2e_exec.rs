@@ -349,3 +349,121 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 12);
 }
+
+#[test]
+fn virtual_dispatch_uses_the_dynamic_type() {
+    let source = "\
+class Animal
+{
+    extension
+    {
+        public virtual fixed Sound(this: &Animal): integer(4)
+        {
+            return 1;
+        }
+    }
+}
+
+class Dog: Animal
+{
+    extension
+    {
+        public override fixed Sound(this: &Dog): integer(4)
+        {
+            return 2;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local dog: Dog = Dog();
+    local animal: Animal = dog;
+    return animal.Sound();
+}";
+    assert_eq!(run_program(source), 2);
+}
+
+#[test]
+fn base_calls_bypass_virtual_dispatch() {
+    let source = "\
+class A
+{
+    extension
+    {
+        public virtual fixed Value(this: &A): integer(4)
+        {
+            return 10;
+        }
+    }
+}
+
+class B: A
+{
+    extension
+    {
+        public override fixed Value(this: &B): integer(4)
+        {
+            return 20;
+        }
+
+        public fixed Total(this: &B): integer(4)
+        {
+            return base.Value() + this.Value();
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local b: B = B();
+    return b.Total();
+}";
+    assert_eq!(run_program(source), 30);
+}
+
+#[test]
+fn is_expression_checks_runtime_type() {
+    let source = "\
+class Base { }
+class Derived: Base { }
+class Other { }
+
+fixed Main(): integer(4)
+{
+    local derived: Derived = Derived();
+    local value: Base = derived;
+
+    local result: integer(4) = 0;
+    if (value is Derived) { result += 1; }
+    if (value is Base) { result += 10; }
+    if (value is Other) { result += 100; }
+    return result;
+}";
+    assert_eq!(run_program(source), 11);
+}
+
+#[test]
+fn sealed_class_cannot_be_inherited() {
+    let source = "\
+class Final
+{
+    sealed;
+}
+
+class Child: Final { }
+
+fixed Main(): integer(4)
+{
+    return 0;
+}";
+    let path = write_program(source);
+    let output = ai_nsc()
+        .args(["check", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(path.parent().expect("temp dir"));
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("sealed"), "stderr: {stderr}");
+}

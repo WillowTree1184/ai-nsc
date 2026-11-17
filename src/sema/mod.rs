@@ -72,6 +72,14 @@ pub struct TypeDef {
     pub field_initializers: Vec<Option<NodeId>>,
     /// Methods contributed by extension blocks, grouped by name.
     pub methods: std::collections::HashMap<String, Vec<u32>>,
+    /// Methods in declaration order.
+    pub method_list: Vec<u32>,
+    /// Whether the class is sealed (§9.11).
+    pub sealed: bool,
+    /// Virtual dispatch table: method id per slot (classes only).
+    pub vtable: Vec<u32>,
+    /// Whether the vtable has been computed.
+    pub vtable_ready: bool,
     /// Base class, if any.
     pub base: Option<TypeId>,
     /// Size of an instance including the class header (classes) and inherited
@@ -116,6 +124,12 @@ pub struct FunctionInfo {
     pub parameters: Vec<ParameterInfo>,
     /// The type this function is a method of, if it came from an extension.
     pub method_of: Option<TypeId>,
+    /// Whether the method is virtual (`virtual` or `override`, §9.12/§9.13).
+    pub is_virtual: bool,
+    /// Whether the method overrides a base method.
+    pub is_override: bool,
+    /// Whether the method or class is sealed (§9.11).
+    pub is_sealed: bool,
     /// Return type; `None` is the empty type.
     pub return_type: Option<TypeId>,
     /// Mangled symbol name (§13.2).
@@ -193,6 +207,8 @@ pub enum Resolution {
     },
     /// The `this` parameter of a method.
     This,
+    /// The `base` keyword inside a method (§3.7.1).
+    Base,
     /// A construction expression (`T(args)`, §4.6); `method` is the selected
     /// `Construct` overload, if one exists.
     Construct {
@@ -445,6 +461,7 @@ impl<'a> Sema<'a> {
         self.resolve_declarations(&roots);
 
         // Pass 3: check bodies and initializers.
+        self.build_vtables();
         self.check_function_bodies();
         self.check_global_initializers();
     }
@@ -508,6 +525,10 @@ impl<'a> Sema<'a> {
             fields: Vec::new(),
             field_initializers: Vec::new(),
             methods: std::collections::HashMap::new(),
+            method_list: Vec::new(),
+            sealed: false,
+            vtable: Vec::new(),
+            vtable_ready: false,
             base: None,
             instance_size: 0,
             instance_align: 1,

@@ -22,8 +22,8 @@ use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
 
 use crate::ast::{
     ArrayElement, Ast, BinaryExpr, BinaryOp, CallExpr, CastExpr, ConditionalExpr, ForStmt,
-    ForTarget, IndexExpr, Initializer, MatchStmt, NodeId, NodeKind, Pattern, SetStmt, UnaryExpr,
-    UnaryOp,
+    ForTarget, IndexExpr, Initializer, IsExpr, IsTarget, MatchStmt, NodeId, NodeKind, Pattern,
+    SetStmt, UnaryExpr, UnaryOp,
 };
 use crate::literal;
 use crate::sema::types::{Type, TypeId};
@@ -83,6 +83,8 @@ pub fn generate(ast: &Ast, sema: &SemaResult, options: &CodegenOptions) -> Resul
         launcher_initializers: Vec::new(),
         malloc_fn: None,
         free_fn: None,
+        typeinfo_globals: HashMap::new(),
+        vtable_globals: HashMap::new(),
     };
     generator.run()?;
     if let Err(message) = generator.module.verify() {
@@ -120,6 +122,8 @@ struct Generator<'ctx, 'a> {
     launcher_initializers: Vec<u32>,
     malloc_fn: Option<FunctionValue<'ctx>>,
     free_fn: Option<FunctionValue<'ctx>>,
+    typeinfo_globals: HashMap<u32, GlobalValue<'ctx>>,
+    vtable_globals: HashMap<u32, GlobalValue<'ctx>>,
 }
 
 impl<'ctx, 'a> Generator<'ctx, 'a> {
@@ -127,6 +131,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         self.ensure_libc()?;
         self.prepare_struct_types()?;
         self.declare_functions()?;
+        self.build_class_metadata()?;
         self.declare_globals()?;
         self.generate_functions()?;
         self.generate_launcher()?;
@@ -326,6 +331,99 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             let mangled = self.sema.functions[index as usize].mangled.clone();
             let function = self.module.add_function(&mangled, signature, None);
             self.functions.insert(index, function);
+        }
+        Ok(())
+    }
+
+    /// Creates the per-class type information and virtual dispatch tables
+    /// (§13.1): typeinfo = `{ name, base }`, vtable = array of method pointers.
+    fn build_class_metadata(&mut self) -> Result<(), String> {
+        let pointer_type = self.context.ptr_type(AddressSpace::default());
+        let classes: Vec<u32> = self
+            .sema
+            .type_defs
+            .iter()
+            .enumerate()
+            .filter(|(_, definition)| definition.kind == TypeDefKind::Class)
+            .map(|(index, _)| index as u32)
+            .collect();
+
+        // Type information first (it may reference base type information).
+        let typeinfo_type = pointer_type.array_type(2);
+        for &index in &classes {
+            let name = self.sema.type_defs[index as usize].qualified_name.clone();
+            let string_value = self.context.const_string(name.as_bytes(), false);
+            let name_global = self.module.add_global(
+                string_value.get_type(),
+                None,
+                &format!("nsc.class_name.{index}"),
+            );
+            name_global.set_initializer(&string_value);
+            name_global.set_constant(true);
+            let typeinfo_global =
+                self.module
+                    .add_global(typeinfo_type, None, &format!("nsc.typeinfo.{index}"));
+            let initializer = pointer_type
+                .const_array(&[name_global.as_pointer_value(), pointer_type.const_zero()]);
+            typeinfo_global.set_initializer(&initializer);
+            typeinfo_global.set_constant(true);
+            self.typeinfo_globals.insert(index, typeinfo_global);
+        }
+        for &index in &classes {
+            let base_global = match self.sema.type_defs[index as usize].base {
+                Some(base_type) => match self.sema.types.get(base_type) {
+                    Type::Named(base_index) => self.typeinfo_globals.get(base_index).copied(),
+                    _ => None,
+                },
+                None => None,
+            };
+            let name_pointer = {
+                let name = self.sema.type_defs[index as usize].qualified_name.clone();
+                let string_value = self.context.const_string(name.as_bytes(), false);
+                // Reuse the existing name global by name lookup.
+                self.module
+                    .get_global(&format!("nsc.class_name.{index}"))
+                    .unwrap_or_else(|| {
+                        let global = self.module.add_global(
+                            string_value.get_type(),
+                            None,
+                            &format!("nsc.class_name.{index}"),
+                        );
+                        global.set_initializer(&string_value);
+                        global.set_constant(true);
+                        global
+                    })
+            };
+            let base_pointer = base_global.map_or_else(
+                || pointer_type.const_zero(),
+                |global| global.as_pointer_value(),
+            );
+            let initializer =
+                pointer_type.const_array(&[name_pointer.as_pointer_value(), base_pointer]);
+            if let Some(typeinfo_global) = self.typeinfo_globals.get(&index) {
+                typeinfo_global.set_initializer(&initializer);
+            }
+        }
+
+        // Virtual dispatch tables reference the declared functions.
+        for &index in &classes {
+            let slots = self.sema.type_defs[index as usize].vtable.clone();
+            let vtable_type = pointer_type.array_type(slots.len() as u32);
+            let vtable_global =
+                self.module
+                    .add_global(vtable_type, None, &format!("nsc.vtable.{index}"));
+            let values: Vec<PointerValue<'ctx>> = slots
+                .iter()
+                .filter_map(|method| {
+                    self.functions
+                        .get(method)
+                        .map(|function| function.as_global_value().as_pointer_value())
+                })
+                .collect();
+            let initializer = pointer_type.const_array(&values);
+            vtable_global.set_initializer(&initializer);
+            vtable_global.set_constant(true);
+            self.vtable_globals.insert(index, vtable_global);
         }
         Ok(())
     }
@@ -1443,12 +1541,13 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             NodeKind::Name(_) | NodeKind::MemberAccess(_) | NodeKind::PointerMemberAccess(_) => {
                 self.gen_value_from_resolution(node)
             }
-            NodeKind::This => self.gen_this_value(),
+            NodeKind::This | NodeKind::Base => self.gen_this_value(),
             NodeKind::Index(index) => self.gen_index_expr(node, &index),
             NodeKind::Call(call) => self.gen_call_expr(node, &call),
             NodeKind::Cast(cast) => self.gen_cast_expr(node, &cast),
             NodeKind::Unary(unary) => self.gen_unary_expr(node, &unary),
             NodeKind::Binary(binary) => self.gen_binary_expr(node, &binary),
+            NodeKind::Is(is_expression) => self.gen_is_expr(node, &is_expression),
             NodeKind::Conditional(conditional) => self.gen_conditional_expr(node, &conditional),
             NodeKind::ArrayLiteral(literal_value) => self.gen_array_literal(node, &literal_value),
             NodeKind::CompileTimeExpr(inner) => self.gen_expr(inner),
@@ -1508,7 +1607,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .into())
             }
             Some(Resolution::Field { .. }) => self.gen_field_load(node),
-            Some(Resolution::This) => self.gen_this_value(),
+            Some(Resolution::This) | Some(Resolution::Base) => self.gen_this_value(),
             Some(Resolution::Construct { .. }) => self.gen_construction(node),
             Some(Resolution::Function(_)) => Err("function values are not lowered yet".to_string()),
             Some(Resolution::Type(_)) | None => Err("name cannot be used as a value".to_string()),
@@ -1585,7 +1684,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .globals
                     .get(&global)
                     .map(|global| global.as_pointer_value())),
-                Some(Resolution::This) => {
+                Some(Resolution::This) | Some(Resolution::Base) => {
                     let slot = self
                         .current_this_slot
                         .ok_or_else(|| "no this slot".to_string())?;
@@ -1678,6 +1777,16 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         index: IntValue<'ctx>,
     ) -> Result<PointerValue<'ctx>, String> {
         let (element_size, _) = self.sema.size_align(element_type);
+        self.address_with_size(base, element_size, index)
+    }
+
+    /// Address `base + index * element_size` (all sizes in bytes).
+    fn address_with_size(
+        &self,
+        base: PointerValue<'ctx>,
+        element_size: u64,
+        index: IntValue<'ctx>,
+    ) -> Result<PointerValue<'ctx>, String> {
         let i64_type = self.context.i64_type();
         let base_integer = self
             .builder
@@ -1700,6 +1809,20 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 "element",
             )
             .map_err(|error| format!("cannot convert address: {error}"))
+    }
+
+    /// Loads the pointer stored `offset` bytes into `base`.
+    fn load_pointer_at(
+        &mut self,
+        base: PointerValue<'ctx>,
+        offset: u64,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let address =
+            self.address_with_size(base, 1, self.context.i64_type().const_int(offset, false))?;
+        let pointer_type = self.context.ptr_type(AddressSpace::default());
+        self.builder
+            .build_load(pointer_type, address, "loaded_pointer")
+            .map_err(|error| format!("cannot load pointer: {error}"))
     }
 
     fn as_i64(&self, value: IntValue<'ctx>) -> Result<IntValue<'ctx>, String> {
@@ -1908,23 +2031,78 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .functions
                     .get(&index)
                     .ok_or_else(|| "missing callee".to_string())?;
-                let parameter_count = self.sema.functions[index as usize].parameters.len();
-                let mut arguments = Vec::with_capacity(parameter_count);
-                if self.sema.functions[index as usize].method_of.is_some() {
+                let is_method = self.sema.functions[index as usize].method_of.is_some();
+                let mut arguments: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+                    Vec::with_capacity(call.arguments.len() + usize::from(is_method));
+                let mut receiver = None;
+                let mut base_call = false;
+                if is_method {
                     let NodeKind::MemberAccess(access) = self.ast.node(call.callee).kind.clone()
                     else {
                         return Err("method call requires a receiver".to_string());
                     };
-                    let receiver = self.gen_instance_pointer(access.base)?;
-                    arguments.push(receiver.into());
+                    base_call = matches!(self.ast.node(access.base).kind, NodeKind::Base);
+                    let receiver_pointer = self.gen_instance_pointer(access.base)?;
+                    receiver = Some(receiver_pointer);
+                    arguments.push(receiver_pointer.into());
                 }
                 for argument in &call.arguments {
                     arguments.push(self.gen_expr(argument.value)?.into());
                 }
-                let call_site = self
-                    .builder
-                    .build_call(function, &arguments, "call")
-                    .map_err(|error| format!("cannot call function: {error}"))?;
+                let call_site = if let Some(receiver_pointer) = receiver {
+                    let receiver_type = if is_method {
+                        match self.ast.node(call.callee).kind.clone() {
+                            NodeKind::MemberAccess(access) => self.type_of(access.base),
+                            _ => TypeId::ERROR,
+                        }
+                    } else {
+                        TypeId::ERROR
+                    };
+                    let slot = if base_call {
+                        None
+                    } else {
+                        self.vtable_slot(receiver_type, index)
+                    };
+                    match slot {
+                        Some(slot) => {
+                            // Virtual dispatch: load the slot from the vtable in
+                            // the instance header (§3.7.1).
+                            let pointer_type = self.context.ptr_type(AddressSpace::default());
+                            let vtable = self
+                                .builder
+                                .build_load(pointer_type, receiver_pointer, "vtable")
+                                .map_err(|error| format!("cannot load vtable: {error}"))?
+                                .into_pointer_value();
+                            let slot_address = self.address_with_size(
+                                vtable,
+                                8,
+                                self.context.i64_type().const_int(slot as u64, false),
+                            )?;
+                            let callee_pointer = self
+                                .builder
+                                .build_load(pointer_type, slot_address, "vslot")
+                                .map_err(|error| format!("cannot load vtable slot: {error}"))?
+                                .into_pointer_value();
+                            let signature = self.function_type(index)?;
+                            self.builder
+                                .build_indirect_call(
+                                    signature,
+                                    callee_pointer,
+                                    &arguments,
+                                    "virtual_call",
+                                )
+                                .map_err(|error| format!("cannot dispatch call: {error}"))?
+                        }
+                        None => self
+                            .builder
+                            .build_call(function, &arguments, "call")
+                            .map_err(|error| format!("cannot call function: {error}"))?,
+                    }
+                } else {
+                    self.builder
+                        .build_call(function, &arguments, "call")
+                        .map_err(|error| format!("cannot call function: {error}"))?
+                };
                 match self.sema.functions[index as usize].return_type {
                     Some(_) => match call_site.try_as_basic_value() {
                         ValueKind::Basic(value) => Ok(value),
@@ -1941,7 +2119,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
 
     /// Address of the instance a call or field access operates on.
     fn gen_instance_pointer(&mut self, node: NodeId) -> Result<PointerValue<'ctx>, String> {
-        if matches!(self.ast.node(node).kind, NodeKind::This) {
+        if matches!(self.ast.node(node).kind, NodeKind::This | NodeKind::Base) {
             let slot = self
                 .current_this_slot
                 .ok_or_else(|| "no this slot".to_string())?;
@@ -2095,17 +2273,26 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .map_err(|error| format!("cannot initialize instance: {error}"))?;
         if let Type::Named(class_index) = self.sema.types.get(type_id).clone() {
             if self.sema.type_defs[class_index as usize].kind == TypeDefKind::Class {
-                // Initialize the class header with a zero vtable/typeinfo for now.
                 let instance_struct = self.struct_type(class_index)?;
-                let pointer_type = self.context.ptr_type(AddressSpace::default());
-                let zero = pointer_type.const_zero();
-                for field_index in 0..2u32 {
+                let vtable_pointer = self
+                    .vtable_globals
+                    .get(&class_index)
+                    .map(|global| global.as_pointer_value())
+                    .unwrap_or_else(|| self.context.ptr_type(AddressSpace::default()).const_zero());
+                let typeinfo_pointer = self
+                    .typeinfo_globals
+                    .get(&class_index)
+                    .map(|global| global.as_pointer_value())
+                    .unwrap_or_else(|| self.context.ptr_type(AddressSpace::default()).const_zero());
+                for (field_index, header_value) in
+                    [vtable_pointer, typeinfo_pointer].into_iter().enumerate()
+                {
                     let pointer = self
                         .builder
-                        .build_struct_gep(instance_struct, storage, field_index, "header")
+                        .build_struct_gep(instance_struct, storage, field_index as u32, "header")
                         .map_err(|error| format!("cannot initialize header: {error}"))?;
                     self.builder
-                        .build_store(pointer, zero)
+                        .build_store(pointer, header_value)
                         .map_err(|error| format!("cannot initialize header: {error}"))?;
                 }
             }
@@ -2617,6 +2804,153 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
 
     fn is_signed(&self, ty: TypeId) -> bool {
         matches!(self.sema.types.get(ty), Type::Integer { signed: true, .. })
+    }
+
+    fn vtable_slot(&self, receiver_type: TypeId, method: u32) -> Option<usize> {
+        let Type::Named(index) = self.sema.types.get(receiver_type) else {
+            return None;
+        };
+        let definition = &self.sema.type_defs[*index as usize];
+        if definition.kind != TypeDefKind::Class {
+            return None;
+        }
+        definition.vtable.iter().position(|entry| *entry == method)
+    }
+
+    fn gen_is_expr(
+        &mut self,
+        node: NodeId,
+        is_expression: &IsExpr,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        match &is_expression.target {
+            IsTarget::Identifier(_) => {
+                let target_type = match self.sema.resolutions[node as usize].clone() {
+                    Some(Resolution::Type(target_type)) => target_type,
+                    _ => return Err("missing is target type".to_string()),
+                };
+                let Type::Named(target_index) = self.sema.types.get(target_type).clone() else {
+                    return Err("is target must be a class".to_string());
+                };
+                let target_typeinfo = *self
+                    .typeinfo_globals
+                    .get(&target_index)
+                    .ok_or_else(|| "missing target type information".to_string())?;
+                let pointer_type = self.context.ptr_type(AddressSpace::default());
+                let value = self.gen_expr(is_expression.value)?;
+                let instance = value.into_pointer_value();
+                let current_typeinfo = self.load_pointer_at(instance, 8)?.into_pointer_value();
+                let current_slot = self
+                    .builder
+                    .build_alloca(pointer_type, "is_current")
+                    .map_err(|error| format!("cannot allocate is state: {error}"))?;
+                self.builder
+                    .build_store(current_slot, current_typeinfo)
+                    .map_err(|error| format!("cannot store is state: {error}"))?;
+                let result_slot = self
+                    .builder
+                    .build_alloca(self.context.i8_type(), "is_result")
+                    .map_err(|error| format!("cannot allocate is result: {error}"))?;
+                self.builder
+                    .build_store(result_slot, self.context.i8_type().const_zero())
+                    .map_err(|error| format!("cannot store is result: {error}"))?;
+
+                let function = self.current_llvm_function()?;
+                let loop_block = self.context.append_basic_block(function, "is_loop");
+                let advance_block = self.context.append_basic_block(function, "is_base");
+                let true_block = self.context.append_basic_block(function, "is_true");
+                let end_block = self.context.append_basic_block(function, "is_end");
+                self.builder
+                    .build_unconditional_branch(loop_block)
+                    .map_err(|error| format!("cannot branch: {error}"))?;
+
+                self.builder.position_at_end(loop_block);
+                let current = self
+                    .builder
+                    .build_load(pointer_type, current_slot, "current")
+                    .map_err(|error| format!("cannot load is state: {error}"))?
+                    .into_pointer_value();
+                let matches = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        current,
+                        target_typeinfo.as_pointer_value(),
+                        "is_match",
+                    )
+                    .map_err(|error| format!("cannot compare types: {error}"))?;
+                self.builder
+                    .build_conditional_branch(matches, true_block, advance_block)
+                    .map_err(|error| format!("cannot branch: {error}"))?;
+
+                self.builder.position_at_end(advance_block);
+                let is_null = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        current,
+                        pointer_type.const_zero(),
+                        "is_null",
+                    )
+                    .map_err(|error| format!("cannot compare types: {error}"))?;
+                let next_block = self.context.append_basic_block(function, "is_next");
+                self.builder
+                    .build_conditional_branch(is_null, end_block, next_block)
+                    .map_err(|error| format!("cannot branch: {error}"))?;
+                self.builder.position_at_end(next_block);
+                let base_typeinfo = self.load_pointer_at(current, 8)?;
+                self.builder
+                    .build_store(current_slot, base_typeinfo)
+                    .map_err(|error| format!("cannot store is state: {error}"))?;
+                self.builder
+                    .build_unconditional_branch(loop_block)
+                    .map_err(|error| format!("cannot branch: {error}"))?;
+
+                self.builder.position_at_end(true_block);
+                self.builder
+                    .build_store(result_slot, self.context.i8_type().const_int(1, false))
+                    .map_err(|error| format!("cannot store is result: {error}"))?;
+                self.builder
+                    .build_unconditional_branch(end_block)
+                    .map_err(|error| format!("cannot branch: {error}"))?;
+
+                self.builder.position_at_end(end_block);
+                self.builder
+                    .build_load(self.context.i8_type(), result_slot, "is_result")
+                    .map_err(|error| format!("cannot load is result: {error}"))
+            }
+            IsTarget::Illegal => {
+                let value = self.gen_expr(is_expression.value)?.into_float_value();
+                let is_nan = self
+                    .builder
+                    .build_float_compare(FloatPredicate::UNO, value, value, "is_illegal")
+                    .map_err(|error| format!("cannot compare: {error}"))?;
+                self.boolean_from_i1(is_nan)
+            }
+            IsTarget::Infinite { negative } => {
+                let value = self.gen_expr(is_expression.value)?.into_float_value();
+                let infinity = value.get_type().const_float(f64::INFINITY);
+                let infinity = if *negative {
+                    let zero = value.get_type().const_zero();
+                    self.builder
+                        .build_float_sub(zero, infinity, "negative_infinity")
+                        .map_err(|error| format!("cannot build negative infinity: {error}"))?
+                } else {
+                    infinity
+                };
+                let is_infinite = self
+                    .builder
+                    .build_float_compare(FloatPredicate::OEQ, value, infinity, "is_infinite")
+                    .map_err(|error| format!("cannot compare: {error}"))?;
+                self.boolean_from_i1(is_infinite)
+            }
+        }
+    }
+
+    fn boolean_from_i1(&self, value: IntValue<'ctx>) -> Result<BasicValueEnum<'ctx>, String> {
+        self.builder
+            .build_int_z_extend(value, self.context.i8_type(), "is_bool")
+            .map(Into::into)
+            .map_err(|error| format!("cannot convert boolean: {error}"))
     }
 
     fn gen_conditional_expr(

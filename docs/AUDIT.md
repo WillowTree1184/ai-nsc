@@ -40,7 +40,7 @@ only after the reproduction is re-run and its regression test is green.
 | 18 | MED | §6.3, §8.5, §14.1 | Duplicate declarations mostly undiagnosed (fields, enum members, variants, unions; signatures only at call sites; duplicate `Main`) | fixed (a5cc9cf) |
 | 19 | MED | §9.10, §9.11 | Abstract class instantiation accepted; sealed-base check incomplete for classes without fields | fixed (a5cc9cf) |
 | 20 | MED | §5.4 | Heap: type inference from the initializer missing; allocator expression ignored (always `malloc`) | open |
-| 21 | MED | §5.8 | `dispose` only accepts heap-allocated variables; spec example `dispose made;` (on a local) rejected; pointer-member dispose unsupported | open |
+| 21 | MED | §5.8 | `dispose` only accepts heap-allocated variables; spec example `dispose made;` (on a local) rejected; pointer-member dispose unsupported | fixed (scope-lifetime values dispose destructor-only; pointer-member dispose still unsupported) (97f6ec6) |
 | 22 | MED | §5.10.2, §5.10.4 | Missing-return branch not diagnosed; `finally` containing `return`/`break`/`continue` not diagnosed | fixed (bf2416a + bacf958: `finally` control-transfer rejection and a conservative all-paths return judgement; loops are not proven to exit, so a trailing return may be required) |
 | 23 | MED | §2.7.11, §2.7.12, §5.3 | `illegal`/`uninitialized` misuse undiagnosed; `fixed Bad: integer(4);` (no initializer) accepted | partial (72587df: constant-initializer and illegal-comparison diagnostics; `uninitialized` placement rule still open) |
 | 24 | MED | §3.7.5 | Variant name-elision sugar missing (`local s: Status = Idle;`, `= Loading(50);`); built-in variant equality missing | open |

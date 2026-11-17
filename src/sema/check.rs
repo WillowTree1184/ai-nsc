@@ -3637,13 +3637,10 @@ impl<'a> Sema<'a> {
             NodeKind::CompileTimeExpr(inner) => {
                 let ty = self.check_expr(inner, expected);
                 // A '#(...)' expression must be evaluable at compile time (§11.2).
-                self.suppress_errors += 1;
-                let constant = self.eval_const_int(inner);
-                self.suppress_errors -= 1;
-                if constant.is_none() {
+                if !self.is_compile_time_constant(inner) {
                     self.unsupported(
                         self.span_of(node),
-                        "compile-time expressions that are not integer constants",
+                        "compile-time expressions that depend on run-time values",
                     );
                 }
                 ty
@@ -4300,6 +4297,42 @@ impl<'a> Sema<'a> {
                 }
             }
             _ => None,
+        }
+    }
+
+    /// Whether an expression is a compile-time constant (§11.2): literals,
+    /// operators over constants, fixed globals and the compiler API.
+    fn is_compile_time_constant(&self, node: NodeId) -> bool {
+        match self.node_kind(node) {
+            NodeKind::IntegerLiteral(_)
+            | NodeKind::FloatLiteral(_)
+            | NodeKind::CharacterLiteral(_)
+            | NodeKind::StringLiteral(_)
+            | NodeKind::VerbatimStringLiteral(_)
+            | NodeKind::BooleanLiteral(_)
+            | NodeKind::InfiniteLiteral
+            | NodeKind::IllegalLiteral => true,
+            NodeKind::Unary(unary) => self.is_compile_time_constant(unary.operand),
+            NodeKind::Binary(binary) => {
+                self.is_compile_time_constant(binary.left)
+                    && self.is_compile_time_constant(binary.right)
+            }
+            NodeKind::Conditional(conditional) => {
+                self.is_compile_time_constant(conditional.condition)
+                    && self.is_compile_time_constant(conditional.then_value)
+                    && self.is_compile_time_constant(conditional.else_value)
+            }
+            NodeKind::Cast(cast) => self.is_compile_time_constant(cast.value),
+            NodeKind::CompileTimeExpr(inner) => self.is_compile_time_constant(inner),
+            NodeKind::Call(call) => builtin_size_of_type_argument(self.ast, call.callee).is_some(),
+            NodeKind::Name(name) => match self.lookup(&name.name) {
+                Some(Symbol::Global(global)) => {
+                    let info = &self.result.globals[*global as usize];
+                    info.fixed && info.init.is_some()
+                }
+                _ => false,
+            },
+            _ => false,
         }
     }
 

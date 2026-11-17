@@ -2133,3 +2133,20 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 60);
 }
+
+#[test]
+fn compile_time_expressions_accept_non_integer_constants() {
+    let source = "\
+fixed Flag: boolean = true;
+fixed Pi: float(8) = 3.5;
+
+fixed Main(): integer(4)
+{
+    local mark: boolean = #(Flag);
+    local ratio: float(8) = #(Pi * 2.0);
+    local casted: integer(4) = #(Cast<integer(4)>(3.9));
+    if (mark) { return casted + Cast<integer(4)>(ratio); }
+    return 0;
+}";
+    assert_eq!(run_program(source), 10);
+}

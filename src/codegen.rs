@@ -1674,20 +1674,46 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .build_load(llvm_type, pointer, "compound_current")
             .map_err(|error| format!("cannot load target: {error}"))?;
         let value = self.gen_expr(statement.value)?;
-        let result = match statement.op {
-            BinaryOp::Add
-            | BinaryOp::Subtract
-            | BinaryOp::Multiply
-            | BinaryOp::Divide
-            | BinaryOp::Remainder
-            | BinaryOp::BitwiseAnd
-            | BinaryOp::BitwiseOr
-            | BinaryOp::BitwiseXor
-            | BinaryOp::ShiftLeft
-            | BinaryOp::ShiftRight => {
-                self.build_arithmetic(statement.op, current, value, target_type, statement.target)?
+        // Pointer compound arithmetic (§3.6.2): `p += i` / `p -= i`.
+        let result = if matches!(self.sema.types.get(target_type), Type::Pointer { .. })
+            && matches!(statement.op, BinaryOp::Add | BinaryOp::Subtract)
+        {
+            let base = current.into_pointer_value();
+            let offset = self.pointer_offset(value.into_int_value())?;
+            let offset = if statement.op == BinaryOp::Subtract {
+                self.builder
+                    .build_int_neg(offset, "negate_offset")
+                    .map_err(|error| format!("cannot negate offset: {error}"))?
+            } else {
+                offset
+            };
+            let unit = match self.sema.types.get(target_type) {
+                Type::Pointer {
+                    target: Some(target),
+                } => self.sema.size_align(*target).0.max(1),
+                _ => 1,
+            };
+            self.address_with_size(base, unit, offset)?.into()
+        } else {
+            match statement.op {
+                BinaryOp::Add
+                | BinaryOp::Subtract
+                | BinaryOp::Multiply
+                | BinaryOp::Divide
+                | BinaryOp::Remainder
+                | BinaryOp::BitwiseAnd
+                | BinaryOp::BitwiseOr
+                | BinaryOp::BitwiseXor
+                | BinaryOp::ShiftLeft
+                | BinaryOp::ShiftRight => self.build_arithmetic(
+                    statement.op,
+                    current,
+                    value,
+                    target_type,
+                    statement.target,
+                )?,
+                _ => return Err("unsupported compound assignment operator".to_string()),
             }
-            _ => return Err("unsupported compound assignment operator".to_string()),
         };
         self.builder
             .build_store(pointer, result)

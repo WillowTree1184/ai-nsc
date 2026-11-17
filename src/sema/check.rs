@@ -2666,8 +2666,27 @@ impl<'a> Sema<'a> {
                 let Some(target_type) = target_type else {
                     return;
                 };
-                let value_type = self.check_expr(statement.value, Some(target_type));
-                if let Some(value_type) = value_type {
+                // A pointer target accepts any integer offset (§3.6.2), so the
+                // literal must not be typed from the pointer.
+                let pointer_target = matches!(self.type_of(target_type), Type::Pointer { .. });
+                let value_type = self.check_expr(
+                    statement.value,
+                    if pointer_target {
+                        None
+                    } else {
+                        Some(target_type)
+                    },
+                );
+                if pointer_target {
+                    if let Some(value_type) = value_type {
+                        if !self.is_integer(value_type) {
+                            self.error(
+                                self.span_of(statement.value),
+                                "pointer arithmetic requires an integer offset",
+                            );
+                        }
+                    }
+                } else if let Some(value_type) = value_type {
                     self.expect_assignable(self.span_of(statement.value), value_type, target_type);
                 }
                 if !self.compound_operator_allowed(statement.op, target_type) {
@@ -2838,11 +2857,11 @@ impl<'a> Sema<'a> {
 
     fn compound_operator_allowed(&self, op: BinaryOp, ty: TypeId) -> bool {
         match op {
-            BinaryOp::Add
-            | BinaryOp::Subtract
-            | BinaryOp::Multiply
-            | BinaryOp::Divide
-            | BinaryOp::Remainder => self.is_numeric(ty),
+            // Pointers support `+=`/`-=` with an integer offset (§3.6.2).
+            BinaryOp::Add | BinaryOp::Subtract => {
+                self.is_numeric(ty) || matches!(self.type_of(ty), Type::Pointer { .. })
+            }
+            BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Remainder => self.is_numeric(ty),
             BinaryOp::ShiftLeft | BinaryOp::ShiftRight => self.is_integer(ty),
             BinaryOp::BitwiseAnd | BinaryOp::BitwiseOr | BinaryOp::BitwiseXor => {
                 self.is_integer(ty)

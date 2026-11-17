@@ -1948,3 +1948,17 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 4);
 }
+
+#[test]
+fn pointer_compound_assignment_scales_by_the_pointee_size() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local values[4]: integer(4) = { 10, 20, 30, 40 };
+    local p: pointer integer(4) = Cast<pointer integer(4)>(values);
+    p += 2;
+    p -= 1;
+    return Cast<integer(4)>(p[0]);
+}";
+    assert_eq!(run_program(source), 20);
+}

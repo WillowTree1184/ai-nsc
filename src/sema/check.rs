@@ -1986,6 +1986,9 @@ impl<'a> Sema<'a> {
             Initializer::Expression(expression) => Some(expression),
             Initializer::Block(_) => None,
         });
+        if init.is_none() {
+            self.error(self.span_of(node), "a constant must be initialized (§5.3)");
+        }
         let scope = self.scope_path.clone();
         let mangled = mangle_function(&scope, &declaration.name, &[self.spelling(ty)]);
         let index = self.result.globals.len() as u32;
@@ -2785,6 +2788,9 @@ impl<'a> Sema<'a> {
             if matches!(self.type_of(ty), Type::Function { .. }) {
                 self.unsupported(self.span_of(node), "nested function definitions (closures)");
                 return;
+            }
+            if declaration.init.is_none() {
+                self.error(self.span_of(node), "a constant must be initialized (§5.3)");
             }
             if let Some(initializer) = declaration.init {
                 match initializer {
@@ -4388,6 +4394,22 @@ impl<'a> Sema<'a> {
         let (Some(left_type), Some(right_type)) = (left_type, right_type) else {
             return None;
         };
+        if matches!(
+            binary.op,
+            BinaryOp::Equal
+                | BinaryOp::NotEqual
+                | BinaryOp::Less
+                | BinaryOp::Greater
+                | BinaryOp::LessEqual
+                | BinaryOp::GreaterEqual
+        ) && (matches!(self.node_kind(binary.left), NodeKind::IllegalLiteral)
+            || matches!(self.node_kind(binary.right), NodeKind::IllegalLiteral))
+        {
+            self.error(
+                self.span_of(node),
+                "the illegal value literal must not be used as a comparison operand",
+            );
+        }
         if let Some(result) = self.check_overloaded_binary(node, binary.op, left_type, right_type) {
             return Some(result);
         }

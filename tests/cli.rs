@@ -332,3 +332,30 @@ fixed Main(): integer(4)
     );
     assert!(stderr.contains("unknown name 'Value'"), "{stderr}");
 }
+
+#[test]
+fn constant_requires_an_initializer() {
+    let stderr = check_source(
+        "\
+fixed Bad: integer(4);
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(stderr.contains("must be initialized"), "{stderr}");
+}
+
+#[test]
+fn illegal_value_literal_cannot_be_compared() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    local ratio: float(8) = 1.5;
+    if (ratio == illegal) { return 1; }
+    return 0;
+}",
+    );
+    assert!(
+        stderr.contains("must not be used as a comparison operand"),
+        "{stderr}"
+    );
+}

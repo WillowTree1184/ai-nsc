@@ -977,41 +977,19 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             NodeKind::Use(_) => Ok(()),
             NodeKind::CompileTimeBlock(block) => self.gen_block_contents(block),
             NodeKind::CompileTimeIf(statement) => {
-                let condition = self.gen_expr(statement.condition)?.into_int_value();
-                let condition = self.as_boolean_i1(condition);
-                let function = self.current_llvm_function()?;
-                let then_block = self.context.append_basic_block(function, "ct_then");
-                let else_block = self.context.append_basic_block(function, "ct_else");
-                let end_block = self.context.append_basic_block(function, "ct_end");
-                self.builder
-                    .build_conditional_branch(condition, then_block, else_block)
-                    .map_err(|error| format!("cannot branch: {error}"))?;
-                self.builder.position_at_end(then_block);
-                self.gen_block_contents(statement.then_block)?;
-                if self
-                    .builder
-                    .get_insert_block()
-                    .is_some_and(|block| block.get_terminator().is_none())
-                {
-                    self.builder
-                        .build_unconditional_branch(end_block)
-                        .map_err(|error| format!("cannot branch: {error}"))?;
+                let taken = self
+                    .sema
+                    .compile_time_conditions
+                    .get(&node)
+                    .copied()
+                    .unwrap_or(false);
+                if taken {
+                    self.gen_block_contents(statement.then_block)
+                } else if let Some(else_block) = statement.else_block {
+                    self.gen_block_contents(else_block)
+                } else {
+                    Ok(())
                 }
-                self.builder.position_at_end(else_block);
-                if let Some(else_block) = statement.else_block {
-                    self.gen_block_contents(else_block)?;
-                }
-                if self
-                    .builder
-                    .get_insert_block()
-                    .is_some_and(|block| block.get_terminator().is_none())
-                {
-                    self.builder
-                        .build_unconditional_branch(end_block)
-                        .map_err(|error| format!("cannot branch: {error}"))?;
-                }
-                self.builder.position_at_end(end_block);
-                Ok(())
             }
             _ => Err("unsupported statement in code generation".to_string()),
         }

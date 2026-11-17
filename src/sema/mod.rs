@@ -477,6 +477,8 @@ pub struct SemaResult {
     pub match_patterns: HashMap<(NodeId, u32), MatchPatternInfo>,
     /// Checked catch clauses, keyed by trap statement node.
     pub trap_catches: HashMap<NodeId, Vec<CatchInfo>>,
+    /// Compile-time `#if` decisions, keyed by statement node.
+    pub compile_time_conditions: HashMap<NodeId, bool>,
     /// Number of errors reported.
     pub error_count: u32,
 }

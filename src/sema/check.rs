@@ -1899,6 +1899,77 @@ impl<'a> Sema<'a> {
     // Constant evaluation (array sizes, literal typing helpers)
     // ==================================================================
 
+    /// Evaluates a compile-time constant boolean used by `#if` (§11.6).
+    pub(crate) fn eval_compile_time_bool(&mut self, node: NodeId, depth: u32) -> Option<bool> {
+        if depth > 16 {
+            return None;
+        }
+        match self.node_kind(node).clone() {
+            NodeKind::BooleanLiteral(value) => Some(value),
+            NodeKind::Unary(unary) if unary.op == UnaryOp::LogicalNot => {
+                Some(!self.eval_compile_time_bool(unary.operand, depth + 1)?)
+            }
+            NodeKind::Binary(binary) => match binary.op {
+                BinaryOp::LogicalAnd => {
+                    let left = self.eval_compile_time_bool(binary.left, depth + 1)?;
+                    if !left {
+                        Some(false)
+                    } else {
+                        self.eval_compile_time_bool(binary.right, depth + 1)
+                    }
+                }
+                BinaryOp::LogicalOr => {
+                    let left = self.eval_compile_time_bool(binary.left, depth + 1)?;
+                    if left {
+                        Some(true)
+                    } else {
+                        self.eval_compile_time_bool(binary.right, depth + 1)
+                    }
+                }
+                BinaryOp::Equal
+                | BinaryOp::NotEqual
+                | BinaryOp::Greater
+                | BinaryOp::Less
+                | BinaryOp::GreaterEqual
+                | BinaryOp::LessEqual => {
+                    let left = self.eval_const_int(binary.left)?;
+                    let right = self.eval_const_int(binary.right)?;
+                    Some(match binary.op {
+                        BinaryOp::Equal => left == right,
+                        BinaryOp::NotEqual => left != right,
+                        BinaryOp::Greater => left > right,
+                        BinaryOp::Less => left < right,
+                        BinaryOp::GreaterEqual => left >= right,
+                        BinaryOp::LessEqual => left <= right,
+                        _ => return None,
+                    })
+                }
+                _ => None,
+            },
+            NodeKind::Name(name) => match self.lookup(&name.name).cloned() {
+                Some(Symbol::Global(global)) => {
+                    let (fixed, init) = {
+                        let info = &self.result.globals[global as usize];
+                        (info.fixed, info.init)
+                    };
+                    if !fixed {
+                        return None;
+                    }
+                    let init = init?;
+                    match self.node_kind(init).clone() {
+                        NodeKind::BooleanLiteral(_) | NodeKind::Unary(_) | NodeKind::Binary(_) => {
+                            self.eval_compile_time_bool(init, depth + 1)
+                        }
+                        _ => None,
+                    }
+                }
+                Some(Symbol::Local(_)) => None,
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     pub(crate) fn eval_const_int(&mut self, node: NodeId) -> Option<i128> {
         match self.node_kind(node).clone() {
             NodeKind::IntegerLiteral(literal) => match literal::decode_integer(&literal.raw) {
@@ -2412,9 +2483,20 @@ impl<'a> Sema<'a> {
             }
             NodeKind::CompileTimeBlock(block) => self.check_block(block),
             NodeKind::CompileTimeIf(statement) => {
-                self.check_expr(statement.condition, None);
-                self.check_block(statement.then_block);
-                if let Some(else_block) = statement.else_block {
+                self.check_expr(statement.condition, Some(TypeId::BOOLEAN));
+                let taken = self
+                    .eval_compile_time_bool(statement.condition, 0)
+                    .unwrap_or_else(|| {
+                        self.error(
+                            self.span_of(statement.condition),
+                            "the '#if' condition must be a compile-time constant",
+                        );
+                        false
+                    });
+                self.result.compile_time_conditions.insert(node, taken);
+                if taken {
+                    self.check_block(statement.then_block);
+                } else if let Some(else_block) = statement.else_block {
                     self.check_block(else_block);
                 }
             }

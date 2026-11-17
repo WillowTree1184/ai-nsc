@@ -1078,3 +1078,60 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 9);
 }
+
+#[test]
+fn compile_time_if_selects_a_branch() {
+    let source = "\
+fixed UseExtra: boolean = true;
+fixed Mode: integer(4) = 2;
+
+fixed Main(): integer(4)
+{
+    local result: integer(4) = 0;
+
+    #if UseExtra
+    {
+        result += 5;
+    }
+    else
+    {
+        result += 100;
+    }
+
+    #if Mode == 2
+    {
+        result += 7;
+    }
+    else
+    {
+        result += 1000;
+    }
+
+    #if !false && (Mode > 1)
+    {
+        result += 1;
+    }
+
+    return result;
+}";
+    assert_eq!(run_program(source), 13);
+}
+
+#[test]
+fn untaken_compile_time_branch_is_not_checked() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local result: integer(4) = 1;
+    #if false
+    {
+        local broken: boolean = 12345;
+    }
+    else
+    {
+        result += 2;
+    }
+    return result;
+}";
+    assert_eq!(run_program(source), 3);
+}

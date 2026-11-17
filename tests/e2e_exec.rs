@@ -1862,3 +1862,20 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 7);
 }
+
+#[test]
+fn nested_fixed_arrays_flatten_to_combined_dimensions() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local matrix: array(2) array(3) integer(4);
+    local flat: array(2, 3) integer(4);
+    matrix[1][2] = 5;
+    flat = matrix;
+    matrix[0][1] = 4;
+    return flat[1][2] + flat[0][1];
+}";
+    // The assignment copies the whole flattened array; the later write to
+    // `matrix` is not visible through `flat`.
+    assert_eq!(run_program(source), 5);
+}

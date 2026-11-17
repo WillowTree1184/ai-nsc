@@ -40,7 +40,19 @@ impl<'a> Sema<'a> {
                     }
                 }
                 let element = self.resolve_type(array.element)?;
-                Some(self.result.types.array(dimensions, element))
+                // Nested fixed arrays are one array with combined dimensions
+                // (`array(3) array(4) T` == `array(3,4) T`, §3.6.1).
+                match self.result.types.get(element).clone() {
+                    Type::Array {
+                        dimensions: inner,
+                        element: inner_element,
+                    } => {
+                        let mut combined = dimensions;
+                        combined.extend(inner);
+                        Some(self.result.types.array(combined, inner_element))
+                    }
+                    _ => Some(self.result.types.array(dimensions, element)),
+                }
             }
             NodeKind::PointerType(target) => {
                 let target = match target {

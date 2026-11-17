@@ -21,6 +21,7 @@ pub mod driver;
 pub mod lexer;
 pub mod literal;
 pub mod parser;
+pub mod sema;
 pub mod source;
 
 pub use diagnostics::{DiagnosticEngine, Severity};

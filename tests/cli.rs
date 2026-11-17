@@ -89,11 +89,30 @@ fn invalid_optimization_level_fails() {
 }
 
 #[test]
-fn existing_input_reports_pending_front_end() {
-    let directory = std::env::temp_dir().join(format!("ainsc-cli-{}", std::process::id()));
+fn check_accepts_a_valid_program() {
+    let directory = std::env::temp_dir().join(format!("ainsc-cli-ok-{}", std::process::id()));
     std::fs::create_dir_all(&directory).expect("create temp dir");
-    let source = directory.join("main.nova");
-    std::fs::write(&source, "let answer = 42;\n").expect("write source");
+    let source = directory.join("main.ns");
+    std::fs::write(&source, "fixed Main(): integer(4) { return 0; }\n").expect("write source");
+
+    let output = ai_nsc()
+        .args(["check", source.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(!stderr.contains("error:"), "stderr: {stderr}");
+
+    std::fs::remove_dir_all(&directory).expect("clean temp dir");
+}
+
+#[test]
+fn check_rejects_an_invalid_program() {
+    let directory = std::env::temp_dir().join(format!("ainsc-cli-bad-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let source = directory.join("main.ns");
+    std::fs::write(&source, "fixed Main(): integer(4) { return true; }\n").expect("write source");
 
     let output = ai_nsc()
         .args(["check", source.to_str().expect("utf-8 path")])
@@ -102,7 +121,7 @@ fn existing_input_reports_pending_front_end() {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(!output.status.success());
-    assert!(stderr.contains("not implemented yet"), "{stderr}");
+    assert!(stderr.contains("error:"), "stderr: {stderr}");
 
     std::fs::remove_dir_all(&directory).expect("clean temp dir");
 }

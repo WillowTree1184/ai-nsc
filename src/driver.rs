@@ -6,11 +6,12 @@
 
 use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::diagnostics::{DiagnosticEngine, Severity};
 use crate::source::SourceManager;
-use crate::{HOST_TRIPLE, LLVM_VERSION, VERSION};
+use crate::{codegen, lexer, parser, sema, HOST_TRIPLE, LLVM_VERSION, VERSION};
 
 /// What the user asked the compiler to do.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -224,33 +225,188 @@ fn compile(options: &Options) -> i32 {
         eprintln!("ai-nsc: no input files");
         return 1;
     }
-
-    let mut sources = SourceManager::new();
-    let mut loaded_all = true;
-    for input in &options.inputs {
-        if let Err(error) = sources.load_file(input) {
-            eprintln!("ai-nsc: cannot read '{}': {error}", input.display());
-            loaded_all = false;
-        }
-    }
-    if !loaded_all {
+    if options.inputs.len() > 1 {
+        eprintln!("ai-nsc: multiple input files are not supported yet");
         return 1;
     }
+    let input = &options.inputs[0];
+
+    let mut sources = SourceManager::new();
+    let file = match sources.load_file(input) {
+        Ok(file) => file,
+        Err(error) => {
+            eprintln!("ai-nsc: cannot read '{}': {error}", input.display());
+            return 1;
+        }
+    };
+    let source = sources.text(file).unwrap_or_default().to_string();
 
     let mut diagnostics = DiagnosticEngine::new();
-    if let Some(color) = options.color {
-        diagnostics.set_color(color);
-    } else {
-        diagnostics.set_color(io::stderr().is_terminal());
+    match options.color {
+        Some(color) => diagnostics.set_color(color),
+        None => diagnostics.set_color(io::stderr().is_terminal()),
     }
-    diagnostics.report_stderr(
-        &sources,
-        Severity::Error,
-        None,
-        "the NovaSharp front end is not implemented yet: the language grammar \
-         specification is still pending",
+
+    // ---- lexer ---------------------------------------------------------
+    let lexed = lexer::tokenize(file, &source);
+    for error in &lexed.errors {
+        diagnostics.report_stderr(&sources, Severity::Error, Some(error.span), &error.message);
+    }
+    if !lexed.errors.is_empty() {
+        return 1;
+    }
+    if options.dump_tokens {
+        for token in &lexed.tokens {
+            println!(
+                "{:?} {}..{} {:?}",
+                token.kind,
+                token.span.start,
+                token.span.end,
+                token.text(&source)
+            );
+        }
+    }
+
+    // ---- parser --------------------------------------------------------
+    let parsed = parser::parse(file, &source, &lexed.tokens);
+    for error in &parsed.errors {
+        diagnostics.report_stderr(&sources, Severity::Error, Some(error.span), &error.message);
+    }
+    if !parsed.errors.is_empty() {
+        return 1;
+    }
+    if options.dump_ast {
+        println!("{:#?}", parsed.ast);
+    }
+
+    // ---- semantic analysis --------------------------------------------
+    let sema_result = sema::analyze(&parsed.ast, &sources, &mut diagnostics);
+    if sema_result.error_count > 0 {
+        return 1;
+    }
+    if options.action == Some(Action::Check) {
+        return 0;
+    }
+
+    // ---- code generation ----------------------------------------------
+    let codegen_options = codegen::CodegenOptions {
+        optimization_level: options.optimization_level,
+    };
+    let ir = match codegen::generate(&parsed.ast, &sema_result, &codegen_options) {
+        Ok(ir) => ir,
+        Err(message) => {
+            diagnostics.report_stderr(&sources, Severity::Error, None, &message);
+            return 1;
+        }
+    };
+
+    let default_stem = input.file_stem().map_or_else(
+        || "a".to_string(),
+        |stem| stem.to_string_lossy().into_owned(),
     );
-    1
+
+    match options.action {
+        Some(Action::EmitIr) => match &options.output {
+            Some(path) => match std::fs::write(path, ir.as_bytes()) {
+                Ok(()) => 0,
+                Err(error) => {
+                    eprintln!("ai-nsc: cannot write '{}': {error}", path.display());
+                    1
+                }
+            },
+            None => {
+                print!("{ir}");
+                0
+            }
+        },
+        Some(Action::EmitObj) => {
+            let output = options
+                .output
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(format!("{default_stem}.o")));
+            match run_clang(&ir, &output, true, options) {
+                Ok(()) => 0,
+                Err(message) => {
+                    eprintln!("ai-nsc: {message}");
+                    1
+                }
+            }
+        }
+        Some(Action::Build) => {
+            let output = options
+                .output
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(default_stem));
+            match run_clang(&ir, &output, false, options) {
+                Ok(()) => 0,
+                Err(message) => {
+                    eprintln!("ai-nsc: {message}");
+                    1
+                }
+            }
+        }
+        Some(Action::Run) => {
+            let executable = std::env::temp_dir().join(format!(
+                "ainsc-run-{}-{}",
+                std::process::id(),
+                input.file_stem().map_or_else(
+                    || "program".to_string(),
+                    |stem| stem.to_string_lossy().into_owned()
+                )
+            ));
+            if let Err(message) = run_clang(&ir, &executable, false, options) {
+                eprintln!("ai-nsc: {message}");
+                return 1;
+            }
+            let status = Command::new(&executable).status();
+            let _ = std::fs::remove_file(&executable);
+            match status {
+                Ok(status) => status.code().unwrap_or(1),
+                Err(error) => {
+                    eprintln!("ai-nsc: cannot run '{}': {error}", executable.display());
+                    1
+                }
+            }
+        }
+        Some(Action::Check | Action::Help | Action::Version) | None => 0,
+    }
+}
+
+/// Assembles/links `ir` with clang.
+fn run_clang(ir: &str, output: &Path, compile_only: bool, options: &Options) -> Result<(), String> {
+    let directory = std::env::temp_dir();
+    let unique = format!(
+        "ainsc-ir-{}-{}.ll",
+        std::process::id(),
+        output
+            .file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+            .replace(['/', '\\'], "_")
+    );
+    let ir_path = directory.join(unique);
+    std::fs::write(&ir_path, ir).map_err(|error| format!("cannot write IR: {error}"))?;
+
+    let clang = std::env::var("AINSC_CLANG").unwrap_or_else(|_| "clang".to_string());
+    let mut command = Command::new(&clang);
+    command.arg(&ir_path);
+    if compile_only {
+        command.arg("-c");
+    }
+    if let Some(target) = &options.target {
+        command.arg(format!("--target={target}"));
+    }
+    command.arg(format!("-O{}", options.optimization_level));
+    command.arg("-o").arg(output);
+    let result = command.output();
+    let _ = std::fs::remove_file(&ir_path);
+    let output_result = result.map_err(|error| format!("cannot run '{clang}': {error}"))?;
+    if !output_result.status.success() {
+        return Err(format!(
+            "'{clang}' failed:\n{}",
+            String::from_utf8_lossy(&output_result.stderr)
+        ));
+    }
+    Ok(())
 }
 
 fn print_version() {

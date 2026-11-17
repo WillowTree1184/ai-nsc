@@ -38,7 +38,7 @@ documents are reviewed before parser code lands.
 - [x] Recursive-descent parser with precedence climbing (`src/parser/`)
 - [x] Panic-mode recovery at statement/declaration boundaries
 - [x] Conformance test: all 89 program examples in the spec parse
-- [ ] `--dump-tokens` and `--dump-ast` wired into the driver
+- [x] `--dump-tokens` and `--dump-ast` wired into the driver
 - [ ] Diagnostics for unexpected tokens, unterminated literals/comments, etc. (lexer side done)
 - [ ] Snapshot tests for AST dumps and error messages
 
@@ -56,14 +56,17 @@ error path has a malformed-input test.
 Acceptance: a negative-test suite of ill-typed programs produces precise, located
 diagnostics; all valid examples type-check.
 
-## Phase 4 — IR generation
+## Phase 4 — IR generation (in progress)
 
-- [ ] NovaSharp → LLVM type mapping; value/reference representation
-- [ ] Function codegen: locals, parameters, calls, returns
-- [ ] Control flow: conditionals, loops, break/continue, short-circuit operators
-- [ ] Aggregates: strings, arrays, collections as specified
-- [ ] `emit-ir` and `emit-obj` actions wired to inkwell + `clang`
-- [ ] `module.verify()` on every generated module
+- [x] NovaSharp → LLVM type mapping; mangled symbols per §13.2; generated `main` launcher
+- [x] Function codegen: locals, parameters, calls, returns (including recursion)
+- [x] Control flow: conditionals, loops, break/continue, short-circuit operators, `match`
+- [x] Aggregates: strings and fixed arrays, enumerations, structures (value layout)
+- [x] `emit-ir`, `emit-obj`, `build` and `run` actions wired through `clang`
+- [x] `module.verify()` on every generated module
+- [ ] Classes, interfaces, variants/unions and virtual dispatch
+- [ ] Runtime exception model (`trap`/`throw`/`finally`, division/out-of-range traps)
+- [ ] `heap` allocation, `dispose` and NOLAA analysis
 
 Acceptance: IR golden tests with `FileCheck-18`; objects link and run for the full example
 suite.

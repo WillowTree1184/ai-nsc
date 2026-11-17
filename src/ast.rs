@@ -81,7 +81,7 @@ pub struct Node {
 /// The variants are grouped: structure, declarations, statements, expressions,
 /// literals, special names and types.
 #[allow(clippy::large_enum_variant)]
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum NodeKind {
     // ------------------------------------------------------------------
     // Structure
@@ -136,7 +136,7 @@ pub enum NodeKind {
     /// `target = value` statement.
     Set(SetStmt),
     /// `target op= value` statement.
-    CompoundSet(SetStmt),
+    CompoundSet(CompoundSetStmt),
     /// `dispose target` statement.
     Dispose(DisposeStmt),
     /// `if` statement.
@@ -667,6 +667,17 @@ pub struct SetStmt {
     pub target: NodeId,
     /// Assigned value.
     pub value: NodeId,
+}
+
+/// Compound assignment statement (§5.7).
+#[derive(Clone, Debug)]
+pub struct CompoundSetStmt {
+    /// Assignment target.
+    pub target: NodeId,
+    /// Assigned value.
+    pub value: NodeId,
+    /// The arithmetic/bitwise operator combined with the assignment.
+    pub op: BinaryOp,
 }
 
 /// `dispose target` (§5.8).

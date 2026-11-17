@@ -2208,15 +2208,16 @@ impl<'a> Parser<'a> {
                 }),
             ));
         }
-        if self.compound_assignment_op().is_some() {
+        if let Some(op) = self.compound_assignment_op() {
             self.bump();
             let value = self.parse_expression()?;
             let span = self.span_between(start_token, self.position);
             return Some(self.ast.push(
                 span,
-                NodeKind::CompoundSet(SetStmt {
+                NodeKind::CompoundSet(CompoundSetStmt {
                     target: expression,
                     value,
+                    op,
                 }),
             ));
         }

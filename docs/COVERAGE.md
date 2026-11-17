@@ -7,9 +7,17 @@ Status against `docs/grammar/Draft 1.12.md` (draft). Legend:
 - ⛔ not implemented yet (diagnosed as "not implemented yet", never silently miscompiled)
 
 Verification gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-`cargo test` (118 tests: 40 lib unit including 4 AST-clone tests, 12 CLI, 2 codegen/LLVM,
-52 end-to-end execution, 10 parser, 1 spec-example conformance), plus the CLI
+`cargo test` (130 tests: 40 lib unit including 4 AST-clone tests, 16 CLI, 2 codegen/LLVM,
+61 end-to-end execution, 10 parser, 1 spec-example conformance), plus the CLI
 `ai-nsc check/emit-ir/run` smoke path.
+
+Audit-driven corrections landed in `a5cc9cf` (see `docs/AUDIT.md` for the register):
+enumeration values/casts, ABI spellings of constructed types, `match` logical
+control flow (`break`/`continue`/named labels) and user-defined operator patterns,
+inner-`catch` propagation to outer traps, float→integer wrapping, array↔pointer
+cast aliasing, raw `\x` byte escapes, sealed/abstract class checks, duplicate
+declarations and duplicate `Main`. The rows below that were affected have their
+notes updated accordingly.
 
 Known conformance defects that are already reproduced are tracked separately in
 `docs/AUDIT.md`; a ✅ below means the feature has tests, not that every defect in the
@@ -21,13 +29,13 @@ area is fixed.
 | Literal decoding (integer/float/character/string, encodings) | ✅ | `src/literal.rs` unit tests |
 | §3.2 basic types, integer families, no implicit basic conversions | ✅ | e2e arithmetic/precedence tests |
 | §3.5 value/reference semantics, class values are references | ✅ | e2e object model tests |
-| §3.6.1 arrays (fixed dimensions), indexing, bounds check | ✅ | e2e arrays; bounds raise `OutOfRangeException` |
+| §3.6.1 arrays (fixed dimensions), indexing, bounds check, array↔pointer casts | ✅ | e2e arrays; bounds raise `OutOfRangeException`; casts reference the same storage |
 | §3.6.2 pointers | 🟡 | pointer types, member access, built-in pointer ops; `&`/`*` reference expressions pending |
 | §3.6.3 function types / calling conventions | 🟡 | signatures parsed and checked; indirect calls through pointers pending |
-| §3.7.1 classes: layout, inheritance, vtable/RTTI, construction, destructors | 🟡 | layout, construction, virtual dispatch, RTTI, `base`; statics pending |
+| §3.7.1 classes: layout, inheritance, vtable/RTTI, construction, destructors | 🟡 | layout, construction, virtual dispatch, RTTI, `base`, `base.Construct(...)`, sealed/abstract checks; §3.7.1 constructor-chain diagnostics and statics pending |
 | §3.7.2 structures: exact layout | ✅ | layout rules + tests |
 | §3.7.3 interfaces: contracts, dispatch, RTTI | ✅ | e2e interface dispatch/RTTI tests |
-| §3.7.4 enumerations | ✅ | member values, implicit-to-underlying conversion |
+| §3.7.4 enumerations | ✅ | member values, implicit-to-underlying conversion, explicit integer↔enumeration casts |
 | §3.7.5 variants | ✅ | state/payload layout, member construction, `is` + match patterns |
 | §3.7.6 unions | ✅ | overlap layout, `aligned(N)`, member construction/punning |
 | §3.7.7 base list | ✅ | one class + interfaces; monomorphized generic targets (`Class : Base<T>`, generic interface implementations) |
@@ -43,7 +51,7 @@ area is fixed.
 | §4.9.6/4.9.7 `&`/`*` reference expressions | ⛔ | diagnosed |
 | §4.9.26 `??` | ⛔ | diagnosed (needs `Result`) |
 | §4.9.27 `?:` conditional | ✅ | conditional expression e2e |
-| §5 statements (blocks, locals, fixed, set/compound, if, while, do, for, match, break/continue, return, export) | ✅ | e2e statement tests |
+| §5 statements (blocks, locals, fixed, set/compound, if, while, do, for, match, break/continue, return, export) | ✅ | e2e statement tests; `match` is a logical control flow (`break`/`continue`/named labels) and pattern comparisons use operator overloads |
 | §5.10.3/4 `throw`, `trap`/`catch`/`finally` | 🟡 | source-level + runtime exceptions; `finally` on `return`/`break`/`continue` pending; heap-failure exceptions pending |
 | §6 names/modules/`use`, scopes, shadowing | 🟡 | modules/scopes/`use` parsed and resolved; multiple input files pending |
 | §7/§13/§14 ABI: name mangling, class layout, launcher, exit code | ✅ | mangling unit tests, LLVM smoke + e2e exit codes |

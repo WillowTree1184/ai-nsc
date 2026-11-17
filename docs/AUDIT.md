@@ -4,9 +4,10 @@ Working list of reproduced conformance defects against
 `docs/grammar/Draft 1.12.md`. The audit was a read-only review of the compiler at
 commit `51bd259` (the commit before generics landed): each item was found by reading
 the implementation against the specification and then reproducing it by compiling
-small `.ns` programs. No fix here is committed as of `3a34c91`; a fix in flight in
-the working tree must still be checked against the reproduction before its row is
-closed.
+small `.ns` programs. Rows marked `fixed (a5cc9cf)` were re-checked against their
+reproduction and have a regression test in `tests/e2e_exec.rs` / `tests/cli.rs`;
+the remaining rows are still open. A fix in flight in the working tree must still
+be checked against the reproduction before its row is closed.
 
 **How to reproduce.** Build once with
 `CARGO_HOME=/tmp/ainsc-cargo LLVM_SYS_181_PREFIX=/usr/lib/llvm-18 cargo build`,
@@ -19,25 +20,25 @@ only after the reproduction is re-run and its regression test is green.
 
 | # | Severity | Spec § | Defect | Status |
 |---|---|---|---|---|
-| 1 | HIGH | §3.7.4 | Enumeration member used as a value panics the compiler (`type_defs` indexed by `TypeId`) | open |
-| 2 | HIGH | §3.7.4 | Integer↔enumeration explicit casts unsupported ("unsupported cast") | open |
-| 3 | HIGH | §3.6.1 | Array→pointer cast points at a temporary copy; writes are lost | open |
-| 4 | HIGH | §3.6.1 | Pointer→fixed-array cast copies; writes never reach the pointee | open |
-| 5 | HIGH | §5.9.1, §5.9.6 | `match` is not a labelled control flow in codegen; `break`/`continue`/named labels misbehave | open |
-| 6 | HIGH | §5.9.6 | `match` value/comparison patterns bypass user-defined `==`/`<`/`>` overloads | open |
-| 7 | HIGH | §3.7.1 | Base-class constructor is never called during derived construction | open |
-| 8 | HIGH | ABI §13.2 | Mangled symbols embed internal type ids (`named(<id>)`), so symbols depend on declaration order | open |
-| 9 | HIGH | §5.10.4 | An unmatched inner `catch` does not reach the enclosing `trap`; the program aborts | open |
-| 10 | HIGH | §3.2 | Float→integer explicit cast emits bare `fptosi`/`fptoui` (UB out of range; spec requires wrapping) | open |
+| 1 | HIGH | §3.7.4 | Enumeration member used as a value panics the compiler (`type_defs` indexed by `TypeId`) | fixed (a5cc9cf) |
+| 2 | HIGH | §3.7.4 | Integer↔enumeration explicit casts unsupported ("unsupported cast") | fixed (a5cc9cf) |
+| 3 | HIGH | §3.6.1 | Array→pointer cast points at a temporary copy; writes are lost | fixed (a5cc9cf) |
+| 4 | HIGH | §3.6.1 | Pointer→fixed-array cast copies; writes never reach the pointee | fixed (a5cc9cf) |
+| 5 | HIGH | §5.9.1, §5.9.6 | `match` is not a labelled control flow in codegen; `break`/`continue`/named labels misbehave | fixed (a5cc9cf) |
+| 6 | HIGH | §5.9.6 | `match` value/comparison patterns bypass user-defined `==`/`<`/`>` overloads | fixed (a5cc9cf) |
+| 7 | HIGH | §3.7.1 | Base-class constructor is never called during derived construction | partial (a5cc9cf: `base.Construct(...)` verified; §3.7.1 first-statement diagnostic still missing) |
+| 8 | HIGH | ABI §13.2 | Mangled symbols embed internal type ids (`named(<id>)`), so symbols depend on declaration order | fixed (a5cc9cf) |
+| 9 | HIGH | §5.10.4 | An unmatched inner `catch` does not reach the enclosing `trap`; the program aborts | fixed (a5cc9cf) |
+| 10 | HIGH | §3.2 | Float→integer explicit cast emits bare `fptosi`/`fptoui` (UB out of range; spec requires wrapping) | fixed (a5cc9cf) |
 | 11 | MED/HIGH | §3.6.2 | Pointer arithmetic missing (`p + i`, `p - i`, `p - q`); no pointer builtin overloads, no `Type.SizeOf<T>()` | open |
-| 12 | MED | §2.7.7 | `\x hh` escape produces a UTF-8 encoded scalar (2 bytes) instead of one raw byte | open |
+| 12 | MED | §2.7.7 | `\x hh` escape produces a UTF-8 encoded scalar (2 bytes) instead of one raw byte | fixed (a5cc9cf) |
 | 13 | MED | §6.4 | `owner` / `owner.owner` unsupported ("owner expressions are not implemented yet") | open |
 | 14 | MED | §5.6 | `use` statement is a no-op/error; imported members are not visible | open |
 | 15 | MED | §8.2 | `&` parameters other than `this` unsupported (spec example `Scale(value: &integer(4), …)` rejected) | open |
 | 16 | MED | §3.6.1 | VLAs (dimensions from runtime values) unsupported; dimensions are forced to constants | open |
 | 17 | MED | §3.6.1 | `array(3) array(4) T` and `array(3,4) T` are distinct interned types (no flattening); fixed-array↔fixed-array casts rejected | open |
-| 18 | MED | §6.3, §8.5, §14.1 | Duplicate declarations mostly undiagnosed (fields, enum members, variants, unions; signatures only at call sites; duplicate `Main`) | open |
-| 19 | MED | §9.10, §9.11 | Abstract class instantiation accepted; sealed-base check incomplete for classes without fields | open |
+| 18 | MED | §6.3, §8.5, §14.1 | Duplicate declarations mostly undiagnosed (fields, enum members, variants, unions; signatures only at call sites; duplicate `Main`) | fixed (a5cc9cf) |
+| 19 | MED | §9.10, §9.11 | Abstract class instantiation accepted; sealed-base check incomplete for classes without fields | fixed (a5cc9cf) |
 | 20 | MED | §5.4 | Heap: type inference from the initializer missing; allocator expression ignored (always `malloc`) | open |
 | 21 | MED | §5.8 | `dispose` only accepts heap-allocated variables; spec example `dispose made;` (on a local) rejected; pointer-member dispose unsupported | open |
 | 22 | MED | §5.10.2, §5.10.4 | Missing-return branch not diagnosed; `finally` containing `return`/`break`/`continue` not diagnosed | open |

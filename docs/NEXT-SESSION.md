@@ -2,12 +2,14 @@
 
 ## State
 
-- Branch `master`; latest commit `3a34c91` "Implement generics with compile-time
-  monomorphization" (see `git log --oneline`). Working tree may be dirty while a
-  concurrent session lands fixes — check `git status` before committing.
+- Branch `master`; latest commit `a5cc9cf` "Fix high-severity conformance defects
+  found by the spec audit"; previous `3a34c91` "Implement generics with
+  compile-time monomorphization" (see `git log --oneline`). Working tree may be
+  dirty while a concurrent session lands fixes — check `git status` before
+  committing.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  — **118 tests green** (40 lib unit including 4 AST-clone tests, 12 CLI,
-  2 codegen/LLVM, 52 end-to-end execution, 10 parser, 1 spec-example conformance).
+  — **130 tests green** (40 lib unit including 4 AST-clone tests, 16 CLI,
+  2 codegen/LLVM, 61 end-to-end execution, 10 parser, 1 spec-example conformance).
 - Build flags (required on this host):
   `CARGO_HOME=/tmp/ainsc-cargo LLVM_SYS_181_PREFIX=/usr/lib/llvm-18`
 - CLI: `target/debug/ai-nsc check|emit-ir|emit-obj|build|run <file.ns>`.
@@ -88,18 +90,24 @@ monomorphization (§10):
 Work `docs/AUDIT.md` in severity order; every item has a reproduction. Fix a
 group, add regression tests, keep the full suite green, then close its rows.
 
-1. **HIGH group** (audit #1–#10): enumeration member codegen panic and
-   integer↔enumeration casts; array↔pointer cast aliasing (both directions);
-   `match` labelled control flow (`break`/`continue`/named labels); `match`
-   operator patterns; base-class constructor call; ABI spelling of named types in
-   mangled names; `catch`→outer-`trap` propagation; float→integer wrapping.
-2. **MED items** (#11–#25), starting with MED/HIGH #11 pointer arithmetic
-   (`p + i`, `p - i`, `p - q`, pointer builtin overloads, `Type.SizeOf<T>()`),
-   then the rest: `\x` escape, `owner`, `use` imports, non-`this` `&`
-   parameters, VLAs, array flattening/casts, duplicate declarations,
-   abstract/sealed, heap inference/allocator, `dispose`, missing-return/`finally`
-   diagnostics, `illegal`/`uninitialized`, variant elision/equality, and the
-   warning subsystem. The LOW items (#26–#31) are lower priority but cheap.
+Done in `a5cc9cf`: audit #1–#6, #8–#10, #12, #18 (duplicate fields/enum
+members/variant states/union members/function signatures/`Main`) and #19
+(abstract instantiation, sealed bases) are fixed with regression tests; #7 is
+partial (explicit `base.Construct(...)` works, but the §3.7.1 "first statement
+must call the base constructor" diagnostic and the "derived class must declare a
+constructor when the base one is non-trivial" diagnostic are still missing).
+The fixes also removed a latent `type_id_for_node` collision between the
+synthetic built-in exception declarations and the first AST node of a file.
+
+1. **Finish the HIGH group**: audit #7 (constructor-chain diagnostics) and then
+   MED/HIGH **#11 pointer arithmetic** (`p + i`, `p - i`, `p - q`, pointer
+   builtin overloads, `Type.SizeOf<T>()`).
+2. **MED items** (#13–#25) in order: `owner`, `use` imports, non-`this` `&`
+   parameters, VLAs, array flattening/casts, heap inference/allocator, `dispose`,
+   missing-return/`finally` diagnostics, `illegal`/`uninitialized`, variant
+   elision/equality, and the warning subsystem (no `Severity::Warning` sites
+   exist yet, so every spec-mandated warning is missing). The LOW items
+   (#26–#31) are lower priority but cheap.
 3. **Only then** the remaining `COVERAGE.md` 🟡/⛔ items: compile-time execution
    `#(...)`/`#{...}` (incl. use of generic parameters in compile-time code),
    `??` with `Optional`/`Result`, the Built-In Library, static members,

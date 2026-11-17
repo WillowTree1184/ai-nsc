@@ -1,0 +1,40 @@
+# Build trees
+/out/
+/build/
+/build-*/
+/install/
+compile_commands.json
+
+# Editor / language server state
+.cache/
+.clangd/
+.vscode/
+.idea/
+*.swp
+*~
+
+# Compiler and toolchain output
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.ll
+*.bc
+*.s
+*.gch
+*.pch
+
+# Test artifacts
+*.gcda
+*.gcno
+*.profraw
+*.profdata
+.out
+
+# Misc
+.DS_Store
+core
+core.*

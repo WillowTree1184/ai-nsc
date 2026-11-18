@@ -28,10 +28,10 @@
 
 ## Remaining backlog (in rough priority order)
 
-1. Compile-time blocks (`#{...}`): integer `#(...)` end products are folded (#64)
-   and compile-time-only `#{}` blocks are no longer emitted (#71); blocks with
-   run-time statements are still lowered as runtime equivalents, so full
-   end-product minimisation remains open (§11.4).
+1. Compile-time blocks (`#{...}`): integer `#(...)` end products are folded (#64),
+   compile-time-only `#{}` blocks are no longer emitted (#71), and side effects
+   are warned about (#75); blocks with run-time statements are still lowered as
+   run-time equivalents, so full compile-time execution remains open (§11.4).
 2. NOLAA: general CFG safe-point insertion and full alias analysis (§12.2);
    `Bind` groups, `AssumeNoDemandNext`, block-end/return/break/continue safe
    points and escape propagation are implemented.

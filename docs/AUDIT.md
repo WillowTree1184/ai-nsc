@@ -293,3 +293,4 @@ report an error (§4.8).
 | 72 | LOW | §12.2 | `NOLAA.AssumeNoDemandNext` was a no-op | fixed (ebac2c9: next-statement demand suppression, one-statement scope) |
 | 73 | MED | §13, §14 | `--target` only reached clang; LLVM module had no triple/data layout | fixed (d1d6d9b: x86/aarch64 target machine + triple/layout, cross object emission, cross-linking diagnosed) |
 | 74 | LOW | §13, §14 | Only x86/aarch64 target backends wired | fixed (2bd5ce1: x86_64/aarch64/riscv64 cross code generation and objects; 32-bit targets diagnosed) |
+| 75 | LOW | §11.4 | Compile-time block side effects emitted without warning | fixed (1b5b962: side-effect detection walk and specification-mandated warning; runtime-equivalent lowering documented) |

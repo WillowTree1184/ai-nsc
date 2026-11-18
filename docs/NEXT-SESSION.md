@@ -3,8 +3,8 @@
 ## State
 
 - Branch `master`; the last feature commit is `98e56b3` "Execute top-level
-  compile-time code in file order (§11.2, §11.4, §11.6)"; this documentation
-  refresh is the commit that follows it (see `git log --oneline`). Check
+  compile-time code in file order (§11.2, §11.4, §11.6)"; the documentation refresh
+  is `da9a125` (see `git log --oneline`). Check
   `git status` before committing.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
   — **234 tests green** (40 lib unit including 4 AST-clone tests, 55 CLI,

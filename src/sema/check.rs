@@ -380,7 +380,15 @@ impl<'a> Sema<'a> {
 
         let struct_alignment = match self.node_kind(node) {
             NodeKind::Structure(declaration) => declaration.modifiers.aligned,
-            NodeKind::Class(declaration) => declaration.modifiers.aligned,
+            NodeKind::Class(declaration) => {
+                if declaration.modifiers.aligned.is_some() {
+                    self.error(
+                        self.span_of(node),
+                        "'aligned' is only allowed on structure declarations",
+                    );
+                }
+                None
+            }
             _ => None,
         };
 
@@ -463,8 +471,18 @@ impl<'a> Sema<'a> {
                         );
                         continue;
                     }
+                    if is_class && field.modifiers.aligned.is_some() {
+                        self.error(
+                            self.span_of(*member),
+                            "'aligned' is only allowed on structure fields",
+                        );
+                    }
                     let (size, natural_align) = self.size_align(ty);
-                    let field_alignment = field.modifiers.aligned.or(struct_alignment);
+                    let field_alignment = if is_class {
+                        None
+                    } else {
+                        field.modifiers.aligned.or(struct_alignment)
+                    };
                     let alignment = match field_alignment {
                         Some(0) => 0,
                         Some(requested) => u64::from(requested),
@@ -2136,11 +2154,13 @@ impl<'a> Sema<'a> {
         let mut layout = Vec::with_capacity(members.len());
         for member in &members {
             let (size, member_align) = self.size_align(member.ty);
-            let (member_offset, effective_align) = match member.aligned {
-                Some(0) => (0, member_align),
-                Some(requested) => (u64::from(requested), member_align.max(u64::from(requested))),
-                None => (0, member_align),
+            // `aligned(N)` on a union member is a byte offset from the union's
+            // base, not an alignment request (§9.14): it must not be adjusted.
+            let member_offset = match member.aligned {
+                Some(offset) => u64::from(offset),
+                None => 0,
             };
+            let effective_align = member_align;
             offset = offset.max(member_offset + size);
             alignment = alignment.max(effective_align);
             layout.push(UnionMemberInfo {

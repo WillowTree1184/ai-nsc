@@ -3195,3 +3195,52 @@ fixed Main(): integer(4)
     // 2 + 10
     assert_eq!(run_program(source), 12);
 }
+
+#[test]
+fn aligned_modifier_controls_structure_packing() {
+    let source = "\
+structure Natural
+{
+    public A: integer(1);
+    public B: integer(4);
+}
+
+aligned(0) structure Packed
+{
+    public A: integer(1);
+    public B: integer(4);
+}
+
+fixed Main(): integer(4)
+{
+    local natural: cardinal(8) = Type.SizeOf<Natural>();
+    local packed: cardinal(8) = Type.SizeOf<Packed>();
+    return Cast<integer(4)>(natural) * 10 + Cast<integer(4)>(packed);
+}";
+    // natural: 8 bytes; packed: 5 bytes
+    assert_eq!(run_program(source), 85);
+}
+
+#[test]
+fn union_member_aligned_sets_explicit_offset() {
+    let source = "\
+union Word
+{
+    A: integer(4);
+    aligned(2) B: cardinal(1);
+}
+
+fixed Main(): integer(4)
+{
+    local word: Word;
+    word.A = 0x01020304;
+    local low_byte: cardinal(1) = word.B;
+    word.B = 0xFF;
+    local high_byte: integer(4) = (Cast<integer(4)>(word.A) >> 16) & 0xFF;
+    local score: integer(4) = 0;
+    if (low_byte == 0x02) { score += 1; }
+    if (high_byte == 0xFF) { score += 2; }
+    return score;
+}";
+    assert_eq!(run_program(source), 3);
+}

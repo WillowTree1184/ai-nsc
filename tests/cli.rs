@@ -1040,3 +1040,17 @@ fixed Main(): integer(4) { return 0; }",
     );
     assert!(stderr.contains("must be by-reference"), "{stderr}");
 }
+
+#[test]
+fn aligned_is_rejected_on_classes() {
+    let stderr = check_source(
+        "\
+aligned(16) class Boxed
+{
+    public Value: integer(4);
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(stderr.contains("only allowed on structure"), "{stderr}");
+}

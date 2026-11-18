@@ -2398,3 +2398,28 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 31);
 }
+
+#[test]
+fn function_values_and_literals_are_callable() {
+    let source = "\
+fixed Double(value: integer(4)): integer(4)
+{
+    return value * 2;
+}
+
+fixed Apply(f: function(integer(4)) integer(4), value: integer(4)): integer(4)
+{
+    return f(value);
+}
+
+fixed Main(): integer(4)
+{
+    local named: function(integer(4)) integer(4) = Double;
+    local block: function(integer(4)) integer(4) = (value: integer(4)) integer(4) => { return value * 2; };
+    local inline: function(integer(4)) integer(4) = (value: integer(4)) integer(4) => value + 1;
+    local inferred: function(integer(4)) integer(4) = (value) integer(4) => value * 3;
+    return Apply(named, 3) + Apply(block, 4) + Apply(inline, 5) + Apply(inferred, 2);
+}";
+    // 6 + 8 + 6 + 6
+    assert_eq!(run_program(source), 26);
+}

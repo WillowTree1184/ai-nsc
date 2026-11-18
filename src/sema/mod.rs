@@ -682,6 +682,8 @@ pub struct SemaResult {
     pub compile_time_conditions: HashMap<NodeId, bool>,
     /// Checked `??` expressions, keyed by expression node (§4.9.26).
     pub coalesce: HashMap<NodeId, CoalesceInfo>,
+    /// Function literals, keyed by literal expression node (§2.7.9).
+    pub function_literals: HashMap<NodeId, u32>,
     /// Number of errors reported.
     pub error_count: u32,
 }
@@ -859,6 +861,7 @@ pub fn analyze(
         disposed_locals: std::collections::HashSet::new(),
         compile_time_constants: Vec::new(),
         initializer_depth: 0,
+        bodies_checked: 0,
     };
     sema.run();
     sema.result.error_count = sema.engine.error_count();
@@ -899,6 +902,9 @@ pub(crate) struct Sema<'a> {
     /// Nesting depth of storage-initializer expressions; `uninitialized` is only
     /// legal there (§2.7.12).
     pub(crate) initializer_depth: u32,
+    /// Number of function bodies already type-checked, so later passes can pick
+    /// up literals discovered in initializers (§2.7.9).
+    pub(crate) bodies_checked: usize,
 }
 
 impl<'a> Sema<'a> {
@@ -1143,6 +1149,8 @@ impl<'a> Sema<'a> {
         self.build_vtables();
         self.check_function_bodies();
         self.check_global_initializers();
+        // Initializers may contain function literals; check their bodies too.
+        self.check_function_bodies();
         // Monomorphization can happen while bodies and initializers are checked;
         // instances created there still need layouts and virtual dispatch.
         self.finalize_variant_union_layouts();

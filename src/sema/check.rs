@@ -2649,7 +2649,7 @@ impl<'a> Sema<'a> {
         // Instantiating a generic type or function can add functions while
         // bodies are being checked (§10.2), so the loop follows the growing
         // function list instead of a snapshot.
-        let mut index = 0;
+        let mut index = self.bodies_checked;
         while index < self.result.functions.len() {
             let current = index;
             index += 1;
@@ -2721,6 +2721,7 @@ impl<'a> Sema<'a> {
             self.pop_scope();
             self.current_function = None;
         }
+        self.bodies_checked = self.result.functions.len();
         self.check_return_paths();
     }
 
@@ -4023,9 +4024,8 @@ impl<'a> Sema<'a> {
             }
             NodeKind::Is(is_expression) => self.check_is_expression(node, &is_expression),
             NodeKind::Coalesce(coalesce) => self.check_coalesce(node, &coalesce),
-            NodeKind::FunctionLiteral(_) => {
-                self.unsupported(self.span_of(node), "function literals (lambdas)");
-                None
+            NodeKind::FunctionLiteral(literal) => {
+                self.check_function_literal(node, &literal, expected)
             }
             NodeKind::Monomorphization(monomorphization) => {
                 match self.check_monomorphization(node, &monomorphization) {
@@ -5349,6 +5349,104 @@ impl<'a> Sema<'a> {
 
     /// Checks a `??` expression (§4.9.26): the left operand decides between its
     /// value and the alternative continuation.
+    /// Checks a function literal (§2.7.9) and registers a function for it.
+    ///
+    /// Parameter types may be omitted when the expected type provides them.
+    /// Captures are not implemented: identifiers from the enclosing function are
+    /// not visible inside the literal (they resolve as unknown names).
+    fn check_function_literal(
+        &mut self,
+        node: NodeId,
+        literal: &FunctionLiteral,
+        expected: Option<TypeId>,
+    ) -> Option<TypeId> {
+        let span = self.span_of(node);
+        let expected_parameters = expected.and_then(|expected| match self.types_of(expected) {
+            Type::Function {
+                parameters,
+                return_type,
+                ..
+            } => Some((parameters, return_type)),
+            _ => None,
+        });
+        let mut parameters = Vec::new();
+        for (position, parameter) in literal.parameters.iter().enumerate() {
+            if parameter.compile_time {
+                self.unsupported(parameter.span, "compile-time ('#') parameters");
+                return None;
+            }
+            let ty = match parameter.ty {
+                Some(ty_node) => self.resolve_type(ty_node)?,
+                None => match expected_parameters
+                    .as_ref()
+                    .and_then(|(parameters, _)| parameters.get(position).copied())
+                {
+                    Some(ty) => ty,
+                    None => {
+                        self.error(
+                            parameter.span,
+                            "cannot infer the parameter type of this function literal",
+                        );
+                        return None;
+                    }
+                },
+            };
+            parameters.push(ParameterInfo {
+                name: parameter.name.clone(),
+                ty,
+                by_ref: parameter.by_ref,
+            });
+        }
+        let return_type = literal.return_type.and_then(|ty| self.resolve_type(ty));
+        let function_type = self.result.types.function(
+            parameters.iter().map(|parameter| parameter.ty).collect(),
+            false,
+            None,
+            return_type,
+        );
+        let body = match self.node_kind(literal.body) {
+            NodeKind::Block(_) => FunctionBody::Block(literal.body),
+            NodeKind::VerbatimBlock(inner) => FunctionBody::Block(inner),
+            _ => FunctionBody::Expression(literal.body),
+        };
+        let index = self.result.functions.len() as u32;
+        let name = format!("lambda{index}");
+        let scope = self.scope_path.clone();
+        let spellings: Vec<String> = parameters
+            .iter()
+            .map(|parameter| self.spelling(parameter.ty))
+            .collect();
+        let mangled = mangle_function(&scope, &name, &spellings);
+        let generic_env = self.captured_generic_env();
+        let decl_scope = self.current_scope();
+        let span_of_function = span;
+        self.result.functions.push(FunctionInfo {
+            name,
+            scope,
+            node,
+            body: Some(body),
+            parameters,
+            method_of: None,
+            static_owner: None,
+            is_virtual: false,
+            is_override: false,
+            is_sealed: false,
+            is_abstract: false,
+            return_type,
+            mangled,
+            exposed_symbol: None,
+            generic_parameters: Vec::new(),
+            generic_arguments: Vec::new(),
+            template: None,
+            decl_scope,
+            generic_env,
+            locals: Vec::new(),
+            span: span_of_function,
+        });
+        self.result.function_literals.insert(node, index);
+        Some(function_type)
+    }
+
     fn check_coalesce(&mut self, node: NodeId, coalesce: &CoalesceExpr) -> Option<TypeId> {
         let span = self.span_of(node);
         let operand_type = self.check_expr(coalesce.value, None)?;

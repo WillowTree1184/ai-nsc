@@ -3072,6 +3072,18 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             NodeKind::Is(is_expression) => self.gen_is_expr(node, &is_expression),
             NodeKind::Conditional(conditional) => self.gen_conditional_expr(node, &conditional),
             NodeKind::Coalesce(coalesce) => self.gen_coalesce_expr(node, &coalesce),
+            NodeKind::FunctionLiteral(_) => {
+                let index = *self
+                    .sema
+                    .function_literals
+                    .get(&node)
+                    .ok_or_else(|| "missing function literal".to_string())?;
+                let function = *self
+                    .functions
+                    .get(&index)
+                    .ok_or_else(|| "missing literal function".to_string())?;
+                Ok(function.as_global_value().as_pointer_value().into())
+            }
             NodeKind::ArrayLiteral(literal_value) => self.gen_array_literal(node, &literal_value),
             NodeKind::CompileTimeExpr(inner) => self.gen_expr(inner),
             _ => Err("unsupported expression in code generation".to_string()),
@@ -3194,7 +3206,13 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 let llvm_type = self.llvm_type(self.type_of(node))?.into_int_type();
                 Ok(llvm_type.const_int(size, false).into())
             }
-            Some(Resolution::Function(_)) => Err("function values are not lowered yet".to_string()),
+            Some(Resolution::Function(index)) => {
+                let function = *self
+                    .functions
+                    .get(&index)
+                    .ok_or_else(|| "missing function value".to_string())?;
+                Ok(function.as_global_value().as_pointer_value().into())
+            }
             Some(Resolution::Type(_)) | None => Err("name cannot be used as a value".to_string()),
         }
     }
@@ -3943,7 +3961,45 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 let llvm_type = self.llvm_type(ty)?.into_int_type();
                 Ok(llvm_type.const_int(value as u64, false).into())
             }
-            _ => Err("call target is not a direct function yet".to_string()),
+            _ => {
+                // Indirect call through a function value (§3.6.3, §4.5).
+                let callee_type = self.type_of(call.callee);
+                let Type::Function {
+                    parameters,
+                    wildcard,
+                    return_type,
+                    ..
+                } = self.sema.types.get(callee_type).clone()
+                else {
+                    return Err("call target is not callable".to_string());
+                };
+                let pointer = self.gen_expr(call.callee)?.into_pointer_value();
+                let mut llvm_parameters = Vec::with_capacity(parameters.len());
+                for parameter in &parameters {
+                    llvm_parameters.push(self.llvm_type(*parameter)?.into());
+                }
+                let function_type = match return_type {
+                    Some(ty) => self.llvm_type(ty)?.fn_type(&llvm_parameters, wildcard),
+                    None => self.context.void_type().fn_type(&llvm_parameters, wildcard),
+                };
+                let mut arguments = Vec::with_capacity(call.arguments.len());
+                for argument in &call.arguments {
+                    arguments.push(self.gen_expr(argument.value)?.into());
+                }
+                let call_site = self
+                    .builder
+                    .build_indirect_call(function_type, pointer, &arguments, "indirect")
+                    .map_err(|error| format!("cannot call function value: {error}"))?;
+                match return_type {
+                    Some(_) => match call_site.try_as_basic_value() {
+                        ValueKind::Basic(value) => Ok(value),
+                        ValueKind::Instruction(_) => {
+                            Err("function value did not produce a value".to_string())
+                        }
+                    },
+                    None => Ok(self.context.i8_type().const_zero().into()),
+                }
+            }
         }
     }
 

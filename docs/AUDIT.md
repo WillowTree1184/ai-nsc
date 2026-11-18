@@ -256,3 +256,4 @@ report an error (§4.8).
 | 35 | HIGH | §4.9.26, §15.2 | `??` operator and built-in `Optional`/`Result` missing | fixed (394bdd4 built-in Optional/Result and continuations; 7b2a944 user-defined 'operator ??' decision operators) |
 | 36 | HIGH | §2.7.9, §4.5 | Function values, function literals and indirect calls missing | partial (648dbc3: named-function values, non-capturing literals, indirect calls; capturing closures remain unimplemented and are diagnosed as unknown names) |
 | 37 | HIGH | §4.5, §8.2 | Named arguments and default parameter values missing | fixed (12e923c: position/name mapping, defaults, diagnostics, works for functions/methods/static methods/constructors) |
+| 38 | MED | §9.7, §4.3 | `implicitable` conversion operators were never invoked implicitly | fixed (dc370e6: implicit invocation in assignments/initializers/arguments/returns; explicit cast still required for non-implicitable operators) |

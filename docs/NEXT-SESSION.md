@@ -39,9 +39,9 @@
 4. Array extension targets (`extension for array(...)`).
 5. Monomorphization volume optimization (§14.3.2).
 6. `verbatim` semantics; `scoped(operator symbol)`/conversion-specific targets.
-7. Cross-target ABI: x86 and aarch64 `--target` code generation and object
-   emission work with target data layout; foreign-target linking (needs a
-   target sysroot) and further architectures are diagnosed.
+7. Cross-target ABI: x86_64, aarch64 and riscv64 `--target` code generation and
+   object emission work with target data layout; 32-bit architectures and
+   foreign-target linking (needs a target sysroot) are diagnosed.
 8. Optional polish: more self-contained spec examples in the e2e suite,
    snapshot tests for diagnostics.
 

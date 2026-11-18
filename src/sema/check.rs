@@ -4029,6 +4029,55 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Whether every statement of a `#{}` block is compile-time only, so the
+    /// block has no run-time end products and need not be emitted (§11.4).
+    fn compile_time_only_block(&self, block: NodeId) -> bool {
+        let statements = match self.node_kind(block) {
+            NodeKind::Block(statements) => statements.clone(),
+            _ => return false,
+        };
+        statements.iter().all(|statement| {
+            let id = *statement;
+            match self.node_kind(id).clone() {
+                NodeKind::Local(declaration) => {
+                    declaration.items.iter().all(|item| match item.init {
+                        None => true,
+                        Some(init) => self.is_compile_time_constant(init),
+                    })
+                }
+                NodeKind::Fixed(declaration) => match declaration.init {
+                    None => true,
+                    Some(Initializer::Expression(expression)) => {
+                        self.is_compile_time_constant(expression)
+                    }
+                    Some(Initializer::Block(_)) => false,
+                },
+                NodeKind::ExpressionStmt(expression) => {
+                    builtin_compiler_function(self.ast, expression).is_some()
+                }
+                NodeKind::Use(_) => true,
+                NodeKind::CompileTimeBlock(inner) => self.compile_time_only_block(inner),
+                NodeKind::CompileTimeIf(statement) => {
+                    let taken = self
+                        .result
+                        .compile_time_conditions
+                        .get(&id)
+                        .copied()
+                        .unwrap_or(false);
+                    if taken {
+                        self.compile_time_only_block(statement.then_block)
+                    } else {
+                        match statement.else_block {
+                            Some(else_block) => self.compile_time_only_block(else_block),
+                            None => true,
+                        }
+                    }
+                }
+                _ => false,
+            }
+        })
+    }
+
     /// Schedules NOLAA auto-dispose for eligible heap units declared in `block`
     /// (§12.2): non-manual, not explicitly disposed, not abandoned and not
     /// escaping.
@@ -4329,10 +4378,24 @@ impl<'a> Sema<'a> {
                     return;
                 }
                 // Locals declared here are compile-time constants (§11.4).
+                let locals_before = self.current_function.map_or(0, |function| {
+                    self.result.functions[function as usize].locals.len()
+                });
                 self.compile_time_constants
                     .push(std::collections::HashMap::new());
                 self.check_block(block);
+                let compile_time_only = self.compile_time_only_block(block);
                 self.compile_time_constants.pop();
+                if compile_time_only {
+                    // No run-time end products: drop the block's locals so code
+                    // generation does not reserve storage for them (§11.4).
+                    if let Some(function) = self.current_function {
+                        self.result.functions[function as usize]
+                            .locals
+                            .truncate(locals_before);
+                    }
+                    self.result.compile_time_only_blocks.insert(node);
+                }
             }
             NodeKind::CompileTimeIf(statement) => {
                 if self.in_verbatim {
@@ -6321,6 +6384,14 @@ impl<'a> Sema<'a> {
     fn is_compile_time_constant(&self, node: NodeId) -> bool {
         if let NodeKind::Name(name) = self.node_kind(node) {
             if self.top_level_constants.contains_key(&name.name) {
+                return true;
+            }
+            if self
+                .compile_time_constants
+                .iter()
+                .rev()
+                .any(|environment| environment.contains_key(&name.name))
+            {
                 return true;
             }
         }

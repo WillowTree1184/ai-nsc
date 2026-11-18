@@ -1272,3 +1272,45 @@ fixed Main(): integer(4)
     );
     assert!(stderr.contains("trackable heap object"), "{stderr}");
 }
+
+#[test]
+fn compile_time_only_blocks_leave_no_run_time_code() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-ctblock-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(
+        &path,
+        "fixed Main(): integer(4)\n{\n    #{\n        local value: integer(4) = 2 + 3;\n        local other: integer(4) = value * 2;\n        Compiler.LogNote(\"compile-time only\");\n    }\n    return 0;\n}",
+    )
+    .expect("write program");
+    let output = ai_nsc()
+        .args(["emit-ir", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let ir = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // Only inspect the generated Main function: library helpers may allocate.
+    let main_start = ir
+        .find("define i32 @N04Main")
+        .unwrap_or_else(|| panic!("Main not found:\n{ir}"));
+    let main_body = &ir[main_start..];
+    let main_end = main_body.find("\n}").unwrap_or(main_body.len());
+    let main_ir = &main_body[..main_end];
+    assert!(main_ir.contains("ret i32 0"), "{main_ir}");
+    assert!(
+        !main_ir.contains("alloca i64"),
+        "compile-time locals should not be emitted:\n{main_ir}"
+    );
+    assert!(!main_ir.contains("add i32"), "{main_ir}");
+}

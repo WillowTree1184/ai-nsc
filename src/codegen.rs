@@ -1311,7 +1311,14 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 Ok(())
             }
             NodeKind::Use(_) => Ok(()),
-            NodeKind::CompileTimeBlock(block) => self.gen_block_contents(block),
+            NodeKind::CompileTimeBlock(block) => {
+                // Blocks without run-time end products are not emitted (§11.4).
+                if self.sema.compile_time_only_blocks.contains(&node) {
+                    Ok(())
+                } else {
+                    self.gen_block_contents(block)
+                }
+            }
             NodeKind::CompileTimeIf(statement) => {
                 let taken = self
                     .sema

@@ -16,7 +16,7 @@ pub mod types;
 
 pub(crate) use generics::MonomorphizedTarget;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::*;
 use crate::diagnostics::{DiagnosticEngine, Severity};
@@ -886,6 +886,9 @@ pub struct SemaResult {
     /// Integer values of compile-time expressions that can be emitted as
     /// constants (§11.4: keep only the required end products).
     pub compile_time_values: HashMap<NodeId, i128>,
+    /// `#{}` blocks that have no run-time end products and need no code
+    /// generation (§11.4).
+    pub compile_time_only_blocks: HashSet<NodeId>,
     /// Methods belonging to non-named owners (array extensions, §3.8.3).
     pub owner_methods: HashMap<TypeId, Vec<u32>>,
     /// Accessors belonging to non-named owners (array extensions, §3.8.3).

@@ -1551,3 +1551,20 @@ fn external_linkable_declarations_use_the_decoded_symbol() {
     assert!(ir.contains("declare i32 @abs(i32)"), "{ir}");
     assert!(!ir.contains("\\\"abs\\\""), "{ir}");
 }
+
+#[test]
+fn free_accessor_with_constant_backing_is_read_only() {
+    let stderr = check_source(
+        "\
+fixed Base: integer(4) = 7;
+
+accessor ReadBase: integer(4) => Base;
+
+fixed Main(): integer(4)
+{
+    ReadBase = 3;
+    return ReadBase;
+}",
+    );
+    assert!(stderr.contains("accessor is read-only"), "{stderr}");
+}

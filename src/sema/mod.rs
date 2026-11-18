@@ -422,6 +422,10 @@ pub enum FunctionBody {
     BuiltinAllocate,
     /// Built-In Library `DefaultAllocator.Deallocate` (§15.2).
     BuiltinDeallocate,
+    /// Read a module-level storage from a free accessor (§3.8.2).
+    FreeBackingGet(u32),
+    /// Write a module-level storage from a free accessor (§3.8.2).
+    FreeBackingSet(u32),
 }
 
 /// The overloadable operator kinds (§4.9.2).
@@ -665,6 +669,13 @@ pub enum Resolution {
         /// Implementation.
         method: u32,
     },
+    /// A free accessor read or write (§3.8.2).
+    FreeAccessor {
+        /// Getter function, if the accessor provides one.
+        getter: Option<u32>,
+        /// Setter function, if the accessor provides one.
+        setter: Option<u32>,
+    },
     /// An accessor member read or write (§3.8.2).
     Accessor {
         /// Getter method, if readable.
@@ -817,6 +828,24 @@ pub enum MatchPatternInfo {
     },
 }
 
+/// An accessor declared outside type bodies and extension blocks (§3.8.2):
+/// its members are function constants and its name acts as the property.
+#[derive(Clone, Debug)]
+pub struct FreeAccessorInfo {
+    /// Accessor name.
+    pub name: String,
+    /// Scope path where it was declared.
+    pub scope: Vec<String>,
+    /// Base accessibility.
+    pub accessibility: Accessibility,
+    /// Property type.
+    pub ty: TypeId,
+    /// Getter function constant.
+    pub getter: Option<u32>,
+    /// Setter function constant.
+    pub setter: Option<u32>,
+}
+
 /// An `extension for array(length: cardinal(4)) T` template (§3.8.3).
 #[derive(Clone, Debug)]
 pub struct ArrayExtensionTemplate {
@@ -897,6 +926,8 @@ pub struct SemaResult {
     pub owner_accessors: HashMap<TypeId, Vec<AccessorInfo>>,
     /// Operators belonging to non-named owners (array extensions, §3.8.3).
     pub owner_operators: HashMap<TypeId, Vec<OperatorInfo>>,
+    /// Accessors declared outside type bodies and extension blocks (§3.8.2).
+    pub free_accessors: Vec<FreeAccessorInfo>,
     /// `extension for array(...)` templates.
     pub array_extension_templates: Vec<ArrayExtensionTemplate>,
     /// Instantiated array extension methods per target array type.
@@ -1047,6 +1078,8 @@ pub(crate) enum Symbol {
     Local(LocalId),
     Global(u32),
     Module(usize),
+    /// An accessor declared outside type bodies and extension blocks (§3.8.2).
+    FreeAccessor(u32),
     This {
         owner: TypeId,
     },
@@ -2536,6 +2569,9 @@ impl<'a> Sema<'a> {
                 NodeKind::Local(_) => self.resolve_global_local(node),
                 NodeKind::Extension(_) => self.resolve_extension_declaration(node, None),
                 NodeKind::Use(statement) => self.resolve_use_statement(&statement),
+                NodeKind::Accessor(declaration) => {
+                    self.resolve_free_accessor(node, &declaration);
+                }
                 NodeKind::CompileTimeIf(statement) => {
                     let taken = self
                         .result

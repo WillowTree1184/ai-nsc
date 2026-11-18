@@ -1010,6 +1010,37 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                         .build_return(Some(&zero))
                         .map_err(|error| format!("cannot return: {error}"))?;
                 }
+                crate::sema::FunctionBody::FreeBackingGet(global) => {
+                    let global = *self
+                        .globals
+                        .get(&global)
+                        .ok_or_else(|| "missing accessor backing global".to_string())?;
+                    let value_type = return_type
+                        .ok_or_else(|| "free accessor getter requires a return type".to_string())?;
+                    let llvm_type = self.llvm_type(value_type)?;
+                    let value = self
+                        .builder
+                        .build_load(llvm_type, global.as_pointer_value(), "accessor_load")
+                        .map_err(|error| format!("cannot load accessor backing: {error}"))?;
+                    self.builder
+                        .build_return(Some(&value))
+                        .map_err(|error| format!("cannot return: {error}"))?;
+                }
+                crate::sema::FunctionBody::FreeBackingSet(global) => {
+                    let global = *self
+                        .globals
+                        .get(&global)
+                        .ok_or_else(|| "missing accessor backing global".to_string())?;
+                    let value = function
+                        .get_nth_param(0)
+                        .ok_or_else(|| "accessor setter has no value parameter".to_string())?;
+                    self.builder
+                        .build_store(global.as_pointer_value(), value)
+                        .map_err(|error| format!("cannot store accessor backing: {error}"))?;
+                    self.builder
+                        .build_return(None)
+                        .map_err(|error| format!("cannot return: {error}"))?;
+                }
                 crate::sema::FunctionBody::BackingGet { owner, field_index } => {
                     let this_pointer = self
                         .current_this_slot
@@ -2697,6 +2728,21 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
     }
 
     fn gen_set_statement(&mut self, statement: &SetStmt) -> Result<(), String> {
+        // Free accessor write: call the setter function constant (§3.8.2).
+        if let Some(Resolution::FreeAccessor { setter, .. }) =
+            self.sema.resolutions[statement.target as usize].clone()
+        {
+            let setter = setter.ok_or_else(|| "accessor is read-only".to_string())?;
+            let value = self.gen_expr(statement.value)?;
+            let function = *self
+                .functions
+                .get(&setter)
+                .ok_or_else(|| "missing accessor setter".to_string())?;
+            self.builder
+                .build_call(function, &[value.into()], "accessor_set")
+                .map_err(|error| format!("cannot call accessor setter: {error}"))?;
+            return Ok(());
+        }
         if let Some(Resolution::Indexer { setter, .. }) =
             self.sema.resolutions[statement.target as usize].clone()
         {
@@ -4380,6 +4426,23 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             Some(Resolution::Construct { .. })
             | Some(Resolution::ConstructVariant { .. })
             | Some(Resolution::ConstructUnion { .. }) => self.gen_construction(node),
+            Some(Resolution::FreeAccessor { getter, .. }) => {
+                let getter = getter.ok_or_else(|| "accessor is write-only".to_string())?;
+                let function = *self
+                    .functions
+                    .get(&getter)
+                    .ok_or_else(|| "missing accessor getter".to_string())?;
+                let call = self
+                    .builder
+                    .build_call(function, &[], "accessor_get")
+                    .map_err(|error| format!("cannot call accessor: {error}"))?;
+                match call.try_as_basic_value() {
+                    ValueKind::Basic(value) => Ok(value),
+                    ValueKind::Instruction(_) => {
+                        Err("accessor getter returns no value".to_string())
+                    }
+                }
+            }
             Some(Resolution::Accessor { getter, .. }) => {
                 let getter = getter.ok_or_else(|| "accessor is write-only".to_string())?;
                 let NodeKind::MemberAccess(access) = self.ast.node(node).kind.clone() else {

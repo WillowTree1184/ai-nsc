@@ -2046,6 +2046,217 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Resolves an accessor declared outside type bodies and extension blocks
+    /// (§3.8.2): its members become function constants and its name acts as the
+    /// property.
+    pub(crate) fn resolve_free_accessor(&mut self, node: NodeId, declaration: &AccessorDecl) {
+        let Some(ty) = self.resolve_type(declaration.ty) else {
+            return;
+        };
+        let mut backing_global: Option<u32> = None;
+        if let Some(backing) = declaration.backing {
+            let NodeKind::Name(backing_name) = self.node_kind(backing).clone() else {
+                self.error(
+                    self.span_of(backing),
+                    "an accessor backing must be an identifier",
+                );
+                return;
+            };
+            match self.lookup(&backing_name.name).cloned() {
+                Some(Symbol::Global(global)) => {
+                    if self.result.globals[global as usize].ty != ty {
+                        self.error(
+                            self.span_of(backing),
+                            "the accessor type must match its backing storage",
+                        );
+                        return;
+                    }
+                    backing_global = Some(global);
+                }
+                Some(Symbol::Local(_)) => {
+                    self.unsupported(
+                        self.span_of(backing),
+                        "local variables as free accessor backing",
+                    );
+                    return;
+                }
+                _ => {
+                    self.error(
+                        self.span_of(backing),
+                        format!("unknown accessor backing '{}'", backing_name.name),
+                    );
+                    return;
+                }
+            }
+        }
+        let backing_readonly =
+            backing_global.is_some_and(|global| self.result.globals[global as usize].fixed);
+        let mut getter_wanted = false;
+        let mut setter_wanted = false;
+        let mut getter_body: Option<FunctionBody> = None;
+        let mut setter_body: Option<FunctionBody> = None;
+        for member in &declaration.members {
+            let implementation = match (member.expression, member.body) {
+                (Some(expression), None) => match self.node_kind(expression).clone() {
+                    NodeKind::FunctionLiteral(literal) => {
+                        Some(match self.node_kind(literal.body) {
+                            NodeKind::Block(_) => FunctionBody::Block(literal.body),
+                            NodeKind::VerbatimBlock(inner) => FunctionBody::Block(inner),
+                            _ => FunctionBody::Expression(literal.body),
+                        })
+                    }
+                    _ => {
+                        self.error(
+                            member.span,
+                            "a free accessor member must be a function literal",
+                        );
+                        None
+                    }
+                },
+                (None, Some(block)) => Some(FunctionBody::Block(block)),
+                (Some(_), Some(_)) => {
+                    self.error(
+                        member.span,
+                        "an accessor member takes either an expression or a block",
+                    );
+                    None
+                }
+                (None, None) => match backing_global {
+                    Some(global) => Some(if member.is_getter {
+                        FunctionBody::FreeBackingGet(global)
+                    } else {
+                        FunctionBody::FreeBackingSet(global)
+                    }),
+                    None => {
+                        self.error(member.span, "accessor member requires an implementation");
+                        None
+                    }
+                },
+            };
+            if member.is_getter {
+                getter_wanted = true;
+                getter_body = implementation;
+            } else {
+                if backing_readonly {
+                    self.error(member.span, "a read-only backing cannot provide a setter");
+                    return;
+                }
+                setter_wanted = true;
+                setter_body = implementation;
+            }
+        }
+        if let Some(global) = backing_global {
+            if !getter_wanted {
+                getter_wanted = true;
+                getter_body = Some(FunctionBody::FreeBackingGet(global));
+            }
+            if !setter_wanted && !backing_readonly {
+                setter_wanted = true;
+                setter_body = Some(FunctionBody::FreeBackingSet(global));
+            }
+        }
+        if !getter_wanted && !setter_wanted {
+            self.error(
+                self.span_of(node),
+                "an accessor requires at least one member",
+            );
+            return;
+        }
+        let mut getter = None;
+        let mut setter = None;
+        if getter_wanted {
+            getter = self.register_free_accessor_function(
+                &declaration.name,
+                true,
+                Vec::new(),
+                Some(ty),
+                getter_body,
+                self.span_of(node),
+            );
+        }
+        if setter_wanted {
+            setter = self.register_free_accessor_function(
+                &declaration.name,
+                false,
+                vec![ParameterInfo {
+                    name: "value".to_string(),
+                    ty,
+                    by_ref: false,
+                    default: None,
+                    compile_time: false,
+                }],
+                None,
+                setter_body,
+                self.span_of(node),
+            );
+        }
+        let index = self.result.free_accessors.len() as u32;
+        self.result.free_accessors.push(FreeAccessorInfo {
+            name: declaration.name.clone(),
+            scope: self.scope_path.clone(),
+            accessibility: declaration.modifiers.accessibility,
+            ty,
+            getter,
+            setter,
+        });
+        self.declare(
+            declaration.name.clone(),
+            Symbol::FreeAccessor(index),
+            self.span_of(node),
+        );
+    }
+
+    fn register_free_accessor_function(
+        &mut self,
+        accessor: &str,
+        is_getter: bool,
+        parameters: Vec<ParameterInfo>,
+        return_type: Option<TypeId>,
+        body: Option<FunctionBody>,
+        span: Span,
+    ) -> Option<u32> {
+        let scope = self.scope_path.clone();
+        let member = if is_getter { "get" } else { "set" };
+        let name = format!("{accessor}@{member}");
+        let spellings: Vec<String> = parameters
+            .iter()
+            .map(|parameter| self.spelling(parameter.ty))
+            .collect();
+        let mangled = mangle_function(&scope, &name, &spellings);
+        let index = self.result.functions.len() as u32;
+        let decl_scope = self.current_scope();
+        self.result.functions.push(FunctionInfo {
+            name,
+            scope,
+            node: NodeId::default(),
+            body,
+            parameters,
+            method_of: None,
+            static_owner: None,
+            is_virtual: false,
+            is_override: false,
+            is_sealed: false,
+            accessibility: Accessibility::Public,
+            calling_convention: None,
+            scoped: Vec::new(),
+            is_abstract: false,
+            return_type,
+            mangled,
+            exposed_symbol: None,
+            generic_parameters: Vec::new(),
+            generic_arguments: Vec::new(),
+            template: None,
+            decl_scope,
+            generic_env: self.captured_generic_env(),
+            environment: false,
+            captures: Vec::new(),
+            constant_values: HashMap::new(),
+            locals: Vec::new(),
+            span,
+        });
+        Some(index)
+    }
+
     pub(crate) fn resolve_accessor_declaration(&mut self, node: NodeId, owner: Option<TypeId>) {
         let NodeKind::Accessor(declaration) = self.node_kind(node) else {
             return;
@@ -3691,7 +3902,10 @@ impl<'a> Sema<'a> {
                 FunctionBody::Expression(expression) => {
                     self.check_expr(expression, None);
                 }
-                FunctionBody::BackingGet { .. } | FunctionBody::BackingSet { .. } => {}
+                FunctionBody::BackingGet { .. }
+                | FunctionBody::BackingSet { .. }
+                | FunctionBody::FreeBackingGet(_)
+                | FunctionBody::FreeBackingSet(_) => {}
                 FunctionBody::BuiltinAllocate | FunctionBody::BuiltinDeallocate => {}
             }
             self.in_function_body = previous_in_body;
@@ -4494,7 +4708,28 @@ impl<'a> Sema<'a> {
             NodeKind::Local(declaration) => self.check_local_statement(node, &declaration),
             NodeKind::Fixed(declaration) => self.check_fixed_statement(node, &declaration),
             NodeKind::Set(statement) => {
+                // Free accessor write: `Name = value` calls the setter (§3.8.2).
                 let target_type = self.check_expr(statement.target, None);
+                if let Some(Resolution::FreeAccessor { setter, .. }) =
+                    self.result.resolutions[statement.target as usize].clone()
+                {
+                    let Some(_setter) = setter else {
+                        self.error(self.span_of(statement.target), "accessor is read-only");
+                        return;
+                    };
+                    let Some(accessor_type) = target_type else {
+                        return;
+                    };
+                    let value_type = self.check_expr(statement.value, Some(accessor_type));
+                    if let Some(value_type) = value_type {
+                        self.expect_assignable(
+                            self.span_of(statement.value),
+                            value_type,
+                            accessor_type,
+                        );
+                    }
+                    return;
+                }
                 self.ensure_assignable(statement.target);
                 if let Some(Resolution::Accessor { setter, .. }) =
                     self.result.resolutions[statement.target as usize].clone()
@@ -6346,6 +6581,23 @@ impl<'a> Sema<'a> {
             Symbol::Global(global) => {
                 self.result.resolutions[node as usize] = Some(Resolution::Global(global));
                 Some(self.result.globals[global as usize].ty)
+            }
+            Symbol::FreeAccessor(index) => {
+                let accessor = self.result.free_accessors[index as usize].clone();
+                if accessor.accessibility == Accessibility::Private
+                    && accessor.scope != self.scope_path
+                {
+                    self.error(
+                        self.span_of(node),
+                        format!("'{name}' is not accessible here"),
+                    );
+                    return None;
+                }
+                self.result.resolutions[node as usize] = Some(Resolution::FreeAccessor {
+                    getter: accessor.getter,
+                    setter: accessor.setter,
+                });
+                Some(accessor.ty)
             }
             Symbol::Functions(overloads) => {
                 if overloads.len() != 1 {

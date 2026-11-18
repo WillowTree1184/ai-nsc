@@ -3959,3 +3959,42 @@ fixed Main(): integer(4)
     // 6 + 6 + 10
     assert_eq!(run_program(source), 22);
 }
+
+#[test]
+fn free_accessors_expose_module_storage() {
+    let source = "\
+local backing: integer(4) = 3;
+
+accessor Triple: integer(4) => backing;
+
+fixed Main(): integer(4)
+{
+    local before: integer(4) = Triple;
+    Triple = 5;
+    return before * 10 + backing;
+}";
+    // read 3, write 5 into the backing storage
+    assert_eq!(run_program(source), 35);
+}
+
+#[test]
+fn free_accessors_with_explicit_members() {
+    let source = "\
+local counter: integer(4) = 0;
+
+accessor Count: integer(4)
+{
+    get = () integer(4) => counter + 1;
+    set(value) { counter = value * 2; }
+}
+
+fixed Main(): integer(4)
+{
+    local first: integer(4) = Count;
+    Count = 4;
+    local second: integer(4) = Count;
+    return first * 10 + second;
+}";
+    // first = 0+1; setter stores 8; second = 8+1
+    assert_eq!(run_program(source), 19);
+}

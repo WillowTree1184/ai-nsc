@@ -268,3 +268,4 @@ report an error (§4.8).
 | 47 | MED | §15.2 | Built-In Library containers (array/list style iterables) absent | open |
 | 48 | MED | §9.1-§9.4 | Accessibility modifiers not enforced on member access | partial (bb38cab: fields, methods, constructors, accessors and static fields enforce public/private/protected; function-value access rights (§9.1) remain open) |
 | 49 | MED | §9.6 | `readonly` field assignment not enforced | fixed (d3942bf: assignment limited to constructors of the declaring/derived types) |
+| 50 | MED | §3.8.1 | Instance field initializers were not type-checked | fixed (d5947c6: resolve in the declaring type's scope with implicit conversions and diagnostics) |

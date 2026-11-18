@@ -2423,3 +2423,77 @@ fixed Main(): integer(4)
     // 6 + 8 + 6 + 6
     assert_eq!(run_program(source), 26);
 }
+
+#[test]
+fn statically_impossible_is_checks_and_interface_patterns() {
+    let source = "\
+interface INamed
+{
+    extension
+    {
+        public fixed Name(this: &INamed): integer(4);
+    }
+}
+
+class Thing : INamed
+{
+    extension
+    {
+        public fixed Name(this: &Thing): integer(4) { return 7; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local value: integer(4) = 3;
+    local never: boolean = value is Thing;
+    local thing: Thing = Thing();
+    local named: INamed = thing;
+    local score: integer(4) = 0;
+    if (!never) { score += 1; }
+    match named
+    {
+        case is target: INamed { score += 2; }
+        case wildcard { score += 100; }
+    }
+    return score;
+}";
+    assert_eq!(run_program(source), 3);
+}
+
+#[test]
+fn signed_division_overflow_wraps() {
+    let source = "\
+fixed Check(left: integer(4), right: integer(4)): integer(4)
+{
+    if (left == right) { return 5; }
+    return 6;
+}
+
+fixed Main(): integer(4)
+{
+    local minimum: integer(4) = -2147483647 - 1;
+    local wrapped: integer(4) = minimum / -1;
+    return Check(wrapped, minimum);
+}";
+    assert_eq!(run_program(source), 5);
+}
+
+#[test]
+fn compound_assignment_reads_after_the_rhs() {
+    let source = "\
+local cell: integer(4) = 10;
+
+fixed Bump(value: integer(4)): integer(4)
+{
+    cell = value * 2;
+    return 1;
+}
+
+fixed Main(): integer(4)
+{
+    cell += Bump(cell);
+    return cell;
+}";
+    assert_eq!(run_program(source), 21);
+}

@@ -1849,11 +1849,12 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .ok_or_else(|| "assignment target is not addressable".to_string())?;
         let target_type = self.type_of(statement.target);
         let llvm_type = self.llvm_type(target_type)?;
+        // The RHS is evaluated before the current value is read (§5.7).
+        let value = self.gen_expr(statement.value)?;
         let current = self
             .builder
             .build_load(llvm_type, pointer, "compound_current")
             .map_err(|error| format!("cannot load target: {error}"))?;
-        let value = self.gen_expr(statement.value)?;
         // Pointer compound arithmetic (§3.6.2): `p += i` / `p -= i`.
         let result = if matches!(self.sema.types.get(target_type), Type::Pointer { .. })
             && matches!(statement.op, BinaryOp::Add | BinaryOp::Subtract)
@@ -4921,11 +4922,62 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     BinaryOp::Divide | BinaryOp::Remainder => {
                         self.emit_division_by_zero_check(right, node)?;
                         if signed {
-                            if op == BinaryOp::Divide {
+                            // INT_MIN / -1 overflows; the spec's arithmetic wraps
+                            // (§3.2), so select the wrapped result instead of
+                            // leaving the operation's poison value in place.
+                            let minus_one = int_type.const_all_ones();
+                            let is_minus_one = self
+                                .builder
+                                .build_int_compare(
+                                    IntPredicate::EQ,
+                                    right,
+                                    minus_one,
+                                    "is_minus_one",
+                                )
+                                .map_err(|error| format!("cannot compare divisor: {error}"))?;
+                            // Avoid executing the hardware division for the
+                            // overflowing case: branch instead of selecting.
+                            let function = self.current_llvm_function()?;
+                            let special_block =
+                                self.context.append_basic_block(function, "div_overflow");
+                            let normal_block =
+                                self.context.append_basic_block(function, "div_normal");
+                            let merge_block =
+                                self.context.append_basic_block(function, "div_merge");
+                            self.builder
+                                .build_conditional_branch(is_minus_one, special_block, normal_block)
+                                .map_err(|error| format!("cannot branch: {error}"))?;
+                            self.builder.position_at_end(normal_block);
+                            let regular = if op == BinaryOp::Divide {
                                 self.builder.build_int_signed_div(left, right, "div")
                             } else {
                                 self.builder.build_int_signed_rem(left, right, "rem")
                             }
+                            .map_err(|error| format!("cannot compute signed division: {error}"))?;
+                            self.builder
+                                .build_unconditional_branch(merge_block)
+                                .map_err(|error| format!("cannot branch: {error}"))?;
+                            self.builder.position_at_end(special_block);
+                            let wrapped = if op == BinaryOp::Divide {
+                                self.builder
+                                    .build_int_sub(int_type.const_zero(), left, "wrapped_div")
+                                    .map_err(|error| format!("cannot wrap division: {error}"))?
+                            } else {
+                                int_type.const_zero()
+                            };
+                            self.builder
+                                .build_unconditional_branch(merge_block)
+                                .map_err(|error| format!("cannot branch: {error}"))?;
+                            self.builder.position_at_end(merge_block);
+                            let phi = self
+                                .builder
+                                .build_phi(int_type, "signed_div")
+                                .map_err(|error| format!("cannot build phi: {error}"))?;
+                            phi.add_incoming(&[
+                                (&regular, normal_block),
+                                (&wrapped, special_block),
+                            ]);
+                            Ok(phi.as_basic_value().into_int_value())
                         } else if op == BinaryOp::Divide {
                             self.builder.build_int_unsigned_div(left, right, "div")
                         } else {
@@ -5412,6 +5464,10 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     let condition = self.emit_type_check(instance, target_type)?;
                     let _ = target_index;
                     self.boolean_from_i1(condition)
+                }
+                Some(Resolution::Constant { ty, value }) => {
+                    let llvm_type = self.llvm_type(ty)?.into_int_type();
+                    Ok(llvm_type.const_int(value as u64, false).into())
                 }
                 _ => Err("missing is target type".to_string()),
             },

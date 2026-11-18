@@ -3843,7 +3843,10 @@ impl<'a> Sema<'a> {
                         let target_is_class = matches!(
                             self.types_of(target_type),
                             Type::Named(index)
-                                if self.result.type_defs[index as usize].kind == TypeDefKind::Class
+                                if matches!(
+                                    self.result.type_defs[index as usize].kind,
+                                    TypeDefKind::Class | TypeDefKind::Interface
+                                )
                         );
                         if !target_is_class {
                             self.unsupported(
@@ -5600,12 +5603,21 @@ impl<'a> Sema<'a> {
                         let target_kind = self.types_of(target_type);
                         let value_is_class = matches!(&value_kind, Type::Named(index) if matches!(self.result.type_defs[*index as usize].kind, TypeDefKind::Class | TypeDefKind::Interface));
                         let target_is_class = matches!(&target_kind, Type::Named(index) if matches!(self.result.type_defs[*index as usize].kind, TypeDefKind::Class | TypeDefKind::Interface));
-                        if !value_is_class || !target_is_class {
+                        if !target_is_class {
                             self.unsupported(
                                 self.span_of(node),
-                                "is checks are only implemented for class values",
+                                "is checks against this target kind",
                             );
                             return None;
+                        }
+                        if !value_is_class {
+                            // A value that cannot be a class/interface instance can
+                            // never match: the result is statically false (§4.8).
+                            self.result.resolutions[node as usize] = Some(Resolution::Constant {
+                                ty: TypeId::BOOLEAN,
+                                value: 0,
+                            });
+                            return Some(TypeId::BOOLEAN);
                         }
                         self.result.resolutions[node as usize] =
                             Some(Resolution::Type(target_type));

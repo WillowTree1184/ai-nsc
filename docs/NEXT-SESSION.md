@@ -28,8 +28,9 @@
 
 ## Remaining backlog (in rough priority order)
 
-1. Compile-time blocks (`#{...}`): reduce generated code to only the required
-   end products (§11.4 exact wording); currently observationally equivalent.
+1. Compile-time blocks (`#{...}`): integer `#(...)` end products are now folded
+   (see #64); `#{}` blocks are still lowered as runtime equivalents, so full
+   end-product minimisation remains open (§11.4).
 2. NOLAA: full CFG safe-point insertion, alias/strongly-connected-component
    analysis (§12.2); the current implementation is conservative (warnings plus
    block-end auto-dispose, escaping units exempt).

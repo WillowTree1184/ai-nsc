@@ -88,10 +88,10 @@ means the area has tests, not that every conceivable defect is ruled out.
 
 These are deliberate, documented limitations rather than silent miscompiles:
 
-1. **Compile-time blocks** are executed by the semantic analysis and their
-   runtime equivalents are still emitted; results are observationally
-   equivalent for the language's observable effects, but the generated code is
-   not reduced to solely the required end products (§11.4 exact wording).
+1. **Compile-time blocks**: integer `#(...)` end products are folded at code
+   generation (#64), but `#{}` blocks are still lowered as runtime equivalents;
+   generated code is observationally equivalent rather than reduced to solely
+   the required end products (§11.4 exact wording).
 2. **Non-leading runtime array dimensions** are diagnosed (multi-dimensional
    VLAs with a leading runtime dimension are supported).
 4. **Array extension targets** (`extension for array(...)`) are diagnosed.

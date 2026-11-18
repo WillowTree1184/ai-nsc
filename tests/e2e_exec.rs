@@ -3560,7 +3560,7 @@ fixed Main(): integer(4)
     return Cast<integer(4)>(values.Size()) + Cast<integer(4)>(letters.Size());
 }";
     // 3 + 5
-    assert_eq!(run_program(source), 10);
+    assert_eq!(run_program(source), 8);
 }
 
 #[test]

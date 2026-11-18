@@ -26,7 +26,7 @@
   `CARGO_HOME=/tmp/ainsc-cargo LLVM_SYS_181_PREFIX=/usr/lib/llvm-18`
 - CLI: `target/debug/ai-nsc check|emit-ir|emit-obj|build|run <file.ns> ...`.
 
-## Remaining backlog (status as of round 119)
+## Remaining backlog (status as of round 128)
 
 Recent rounds (108-119) fixed specification-conformance defects found by
 auditing the specification instead of working the large backlog items; the
@@ -42,7 +42,8 @@ size. Each round also keeps the docs' audit register in sync.
 | 5 | Foreign-target linking (`build`/`run` with `--target`) | **open, environment-dependent** | Requires a target sysroot/cross toolchain; `emit-obj` works for x86_64/aarch64/riscv64. Size: large/external. |
 | 5b | JIT-based compile-time execution (user-approved) | **done (host)** | MCJIT evaluator wired into phase B: function bodies checked before compile-time execution, live `Resolution::TopLevelConstant`, address-based calls, integer args/results <=64 bits. Host uses JIT (float/loop bodies verified, 9/2 -> 4); cross targets keep the integer interpreter. Remaining: wider signatures (128-bit, floats as args/results) if needed. |
 | 6 | Monomorphization volume optimization (§14.3.2) | **out of scope for correctness** | Constant/literal pooling is delegated to LLVM, which merges identical read-only data; no conformance requirement forces hand-written pooling. |
-| 7 | Conformance audit | **ongoing** | 95 defects reproduced and closed (see `docs/AUDIT.md`); the audit continues each round. |
+| 7 | Conformance audit | **ongoing** | 105 defects recorded (see `docs/AUDIT.md`); the audit continues each round. |
+| 8 | **HIGH: heap-of-structure miscompile (§12)** | **open, top priority** | `heap pair: Pair = Pair(40,2); return pair.A + pair.B;` returns nondeterministic wrong results while the locals-first variant is correct. Suspect heap lifetime/dispose planning or allocation layout. Fix before any 32-bit enablement. |
 
 ## Where things live
 

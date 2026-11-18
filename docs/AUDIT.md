@@ -317,3 +317,4 @@ report an error (§4.8).
 | 96 | MED | §11.4 | Top-level compile-time assignments were not executed | fixed (eca2869: compile-time assignment/compound assignment execution, final values as run-time constants) |
 | 97 | MED | §11.4 | Compile-time blocks could not execute loops/branches | fixed (c95a4be: compile-time if/while execution, break/continue, constant conditions, iteration cap, inferred types) |
 | 98 | MED | §11.4, §11.2 | Compile-time blocks could not call ordinary functions | fixed (51ad63d: post-resolution re-execution, integer function interpreter with recursion/loops, strict constant predicate preserved) |
+| 99 | MED | §11.4 | Compile-time for-over-range loops unsupported | fixed (347f9a7: range for execution at top level and in interpreted functions, scoped binding, break/continue) |

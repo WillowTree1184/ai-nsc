@@ -290,3 +290,4 @@ report an error (§4.8).
 | 69 | MED | §12.2 | NOLAA had no break/continue safe points (loop-body heap units leaked) | fixed (73255c9: block/loop tracking, dispose loop-body units before break/continue) |
 | 70 | MED | §12.2 | `NOLAA.Bind` groups, escape propagation and trackable-argument checking unimplemented | fixed (fdb1c9b: Bind merges analysis groups, group-wide safe points/escapes, strict argument diagnostics, compile-time APIs not escapes) |
 | 71 | LOW | §11.4 | Compile-time-only `#{}` blocks emitted run-time code | fixed (db51aa2: marked compile-time-only blocks, locals pruned, code generation skipped) |
+| 72 | LOW | §12.2 | `NOLAA.AssumeNoDemandNext` was a no-op | fixed (ebac2c9: next-statement demand suppression, one-statement scope) |

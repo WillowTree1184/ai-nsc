@@ -97,8 +97,9 @@ These are deliberate, documented limitations rather than silent miscompiles:
    VLAs with a leading runtime dimension are supported).
 5. **`verbatim`** is parsed/accepted but has no distinct semantics yet.
 6. **NOLAA** is a conservative approximation: warnings, block-end/return/
-   break/continue auto-dispose and `NOLAA.Bind` analysis groups; general CFG
-   safe-point insertion and full alias analysis are not implemented.
+   break/continue auto-dispose, `NOLAA.Bind` analysis groups and
+   `NOLAA.AssumeNoDemandNext`; general CFG safe-point insertion and full alias
+   analysis are not implemented.
 7. **Monomorphization volume optimization** (§14.3.2) is not implemented.
 8. **Target selection**: code generation targets the host ABI; calling
    conventions the host backend cannot represent are diagnosed.

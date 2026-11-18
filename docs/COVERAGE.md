@@ -1,84 +1,109 @@
 # Spec coverage matrix
 
-Status against `docs/grammar/Draft 1.12.md` (draft). Legend:
+Status against `docs/grammar/Draft 1.12.md` (draft). The specification is the
+source of truth and evolves; the matrix records what the compiler implements and
+what it diagnoses instead of miscompiling.
+
+Legend:
 
 - ✅ implemented and covered by automated tests
-- 🟡 implemented partially / with documented limitations
-- ⛔ not implemented yet (diagnosed as "not implemented yet", never silently miscompiled)
+- 🟡 implemented with documented limitations
+- ⛔ not implemented yet (diagnosed as “not implemented yet”, never silently
+  miscompiled)
 
-Verification gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-`cargo test` (186 tests: 40 lib unit including 4 AST-clone tests, 39 CLI, 2 codegen/LLVM,
-94 end-to-end execution, 10 parser, 1 spec-example conformance), plus the CLI
-`ai-nsc check/emit-ir/run` smoke path.
+## Verification
 
-Audit-driven corrections landed in `a5cc9cf` (see `docs/AUDIT.md` for the register):
-enumeration values/casts, ABI spellings of constructed types, `match` logical
-control flow (`break`/`continue`/named labels) and user-defined operator patterns,
-inner-`catch` propagation to outer traps, float→integer wrapping, array↔pointer
-cast aliasing, raw `\x` byte escapes, sealed/abstract class checks, duplicate
-declarations and duplicate `Main`. The rows below that were affected have their
-notes updated accordingly.
+Gates run every round:
 
-Known conformance defects that are already reproduced are tracked separately in
-`docs/AUDIT.md`; a ✅ below means the feature has tests, not that every defect in the
-area is fixed.
+```
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+`cargo test` currently runs **234 tests**: 40 lib unit tests (lexer, literal,
+mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
+end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
+that read `docs/grammar/Draft 1.12.md` directly:
+
+1. every `novasharp` fence in the specification parses (80+ examples);
+2. every whole-program example that passes semantic analysis is compiled end to
+   end by the CLI to an executable without diagnostics (15+ examples; examples
+   with elided bodies or deliberately invalid code are skipped).
+
+Smoke path: `ai-nsc check|emit-ir|emit-obj|build|run` with `--target`,
+`--opt`, `--dump-tokens/--dump-ast`, single or multiple input files.
+
+Conformance defects that were reproduced are tracked in `docs/AUDIT.md`
+(60 entries, all fixed/partial with the commit that closed them). A ✅ below
+means the area has tests, not that every conceivable defect is ruled out.
+
+## Matrix
 
 | Spec area | Status | Notes / evidence |
 |---|---|---|
-| §2 lexical (tokens, comments, `@`, verbatim strings, encoding tags, `..`/`..!`) | ✅ | `src/lexer.rs` unit tests |
-| Literal decoding (integer/float/character/string, encodings) | ✅ | `src/literal.rs` unit tests |
-| §3.2 basic types, integer families, no implicit basic conversions | ✅ | e2e arithmetic/precedence tests |
-| §3.5 value/reference semantics, class values are references | ✅ | e2e object model tests |
-| §3.6.1 arrays (fixed dimensions), indexing, bounds check, array↔pointer casts | ✅ | e2e arrays; bounds raise `OutOfRangeException`; casts reference the same storage |
-| §3.6.2 pointers | 🟡 | pointer types, member access, built-in pointer arithmetic (`p ± i`, `i + p`, `p - q` with pointee-size unit); `Type.SizeOf<T>()`, `p += i` and `&`/`*` reference expressions pending |
-| §3.6.3 function types / calling conventions | 🟡 | signatures parsed and checked; indirect calls through pointers pending |
-| §3.7.1 classes: layout, inheritance, vtable/RTTI, construction, destructors | 🟡 | layout, construction, virtual dispatch, RTTI, `base`, `base.Construct(...)`, sealed/abstract checks; constructor chains validated (§3.7.1); statics pending |
-| §3.7.2 structures: exact layout | ✅ | layout rules + tests |
-| §3.7.3 interfaces: contracts, dispatch, RTTI | ✅ | e2e interface dispatch/RTTI tests |
-| §3.7.4 enumerations | ✅ | member values, implicit-to-underlying conversion, explicit integer↔enumeration casts |
-| §3.7.5 variants | ✅ | state/payload layout, member construction, `is` + match patterns |
-| §3.7.6 unions | ✅ | overlap layout, `aligned(N)`, member construction/punning |
-| §3.7.7 base list | ✅ | one class + interfaces; monomorphized generic targets (`Class : Base<T>`, generic interface implementations) |
-| §3.8.1 fields, field initializers | ✅ | initialization order tests |
-| §3.8.2 accessors | 🟡 | extension/interface accessors, backing get/set, block/expression forms; free/static accessors pending |
-| §3.8.3 extensions | ✅ | methods, accessors, operators on types; module-level `extension for Generic<T>` targets are instantiated with their type |
-| §4.1–4.4 value/paren/cast/access expressions | ✅ | parser + e2e |
-| §4.4.3 index access (array + indexer operator) | ✅ | bounds check; indexer get/set tests |
-| §4.5 calls, overload resolution, default/named args | ✅ | overload resolution with named arguments and defaults, function values, closures (capture by value, escaping, nested) and indirect calls |
-| §4.6 construction, §4.7 member construction | ✅ | in-place construction tests |
-| §4.8 `is` expressions (classes, interfaces, variants, special floats) | ✅ | RTTI e2e tests |
-| §4.9 operators: overloads, derived comparisons, indexer, conversion | ✅ | operator e2e tests |
-| §4.9.6/4.9.7 `&`/`*` reference expressions | ⛔ | diagnosed |
-| §4.9.26 `??` | ⛔ | diagnosed (needs `Result`) |
-| §4.9.27 `?:` conditional | ✅ | conditional expression e2e |
-| §5 statements (blocks, locals, fixed, set/compound, if, while, do, for, match, break/continue, return, export) | ✅ | e2e statement tests; `match` is a logical control flow (`break`/`continue`/named labels) and pattern comparisons use operator overloads |
-| §5.10.3/4 `throw`, `trap`/`catch`/`finally` | 🟡 | source-level + runtime exceptions; `finally` on `return`/`break`/`continue` pending; heap-failure exceptions pending |
-| §6 names/modules/`use`, scopes, shadowing | 🟡 | modules/scopes resolved; `owner`/nested `owner` for shadowed outer names (reads and writes); `use` imports module members per scope (§5.6); multiple input files pending |
-| §7/§13/§14 ABI: name mangling, class layout, launcher, exit code | ✅ | mangling unit tests, LLVM smoke + e2e exit codes |
-| §8 functions: parameters, defaults, overload resolution, `#` const params | 🟡 | defaults/overloads; `#` compile-time parameters and default-argument call lowering pending |
-| §9 modifiers (accessibility, scoped, readonly, implicitable, verbatim, manual, abstract, sealed, virtual, override, aligned, static) | 🟡 | virtual/override/sealed/aligned/static parsing; accessibility and some modifier semantics not enforced |
-| §10 generics / monomorphization | ✅ | `src/sema/generics.rs`: templates for `class`/`structure`/`interface`/`variant`/`union` and `fixed`/`linkable` functions; kind constraints (`class`, `structure`, `interface`, `enumeration`, `variant`, `union`, `basic`) and named-type constraints with diagnostics; monomorphization in type positions, constructions, calls, member constructions and `is` targets; module-level `extension for Generic<T>` targets; instances cached per `(declaration node, argument list)` with their own mangled names. Remaining: generic methods declaring own type parameters, array extension targets, generic enumerations (spec-forbidden) — see below |
-| §11.1–11.5 compile-time execution, `#(...)`, `#` params | 🟡 | `#(...)` accepts integer and non-integer constant expressions (literals, operators, casts, fixed globals, `Type.SizeOf<T>()`) and rejects runtime values (60136f1); general compile-time execution and `#` parameters still diagnosed |
-| §11.6 `#if` / `#else` | ✅ | constant evaluation, selected-branch-only checking/generation |
-| §11.7 `#{...}` compile-time blocks | 🟡 | treated as blocks; locals with constant initializers are usable in later constant expressions (array dimensions) (9ec3eea); full compile-time execution pending |
-| §11.8 compiler API (`Type`, `Compiler`, `Platform`, NOLAA) | ⛔ | diagnosed |
-| §12 memory model: locals, heap/dispose, NOLAA | 🟡 | heap/dispose; NOLAA analysis pending |
-| §15 Built-In Library (Object, exceptions, Optional/Result, containers, iterators, compiler API) | 🟡 | exception class hierarchy only; rest pending |
+| §2 lexical: tokens, comments, `@` forced keywords, verbatim strings, encoding tags, `..`/`..!` | ✅ | lexer unit tests |
+| Literal decoding: integer/float/character/string, encodings, raw `\x` bytes | ✅ | `src/literal.rs` unit tests |
+| §3.1–3.2 type constructors, basic types, no implicit basic conversions | ✅ | e2e arithmetic, casts, comparison tests |
+| §3.3–3.5 value/reference semantics, `&` by-reference parameters, scoped storage | ✅ | by-ref parameter and alias e2e tests |
+| §3.6.1 arrays: fixed layout, indexing bounds, literals/repeat/range, array↔pointer casts, array parameter expansion, **VLA** | ✅ | e2e arrays/bounds/VLA tests; multi-dimensional VLA diagnosed |
+| §3.6.2 pointers: member access, `p ± i`, `p - q`, casts, `&`/`*` expressions | ✅ | e2e pointer tests |
+| §3.6.3 function types, `wildcard`, calling conventions | ✅ | function value/closures tests; C/SystemV/Win64 LLVM conventions, others diagnosed |
+| §3.7.1 classes: layout, inheritance, vtable/RTTI, construction, destructors, statics, abstract/sealed/static class | ✅ | class e2e tests, constructor-chain checks |
+| §3.7.2 structures: exact layout, `aligned(N)` packing | ✅ | layout e2e tests |
+| §3.7.3 interfaces: contracts, dispatch, RTTI, accessors, generics | ✅ | interface dispatch/RTTI tests |
+| §3.7.4 enumerations: members, underlying type, casts | ✅ | enumeration e2e tests |
+| §3.7.5 variants: state layout, payload construction, `is`/match, equality | ✅ | variant e2e tests |
+| §3.7.6 unions: overlap layout, member offsets via `aligned`, member construction | ✅ | union e2e tests |
+| §3.7.7 base lists: one class + interfaces, generic bases | ✅ | generics/bases tests |
+| §3.8.1 fields, initializers (type-checked in declaring scope), readonly, accessibility | ✅ | field/initializer/readonly/accessibility tests |
+| §3.8.2 accessors: extension/interface accessors, backing get/set, expression/block bodies, static accessor alias | ✅ | accessor e2e tests; static accessors with explicit members diagnosed |
+| §3.8.3 extensions: members, extension-scoped functions, generic extension targets | ✅ | extension e2e tests |
+| §4.1–4.4 value/parenthesized/cast/access expressions | ✅ | parser + e2e |
+| §4.4.3 index access (arrays, VLA, indexer operators) | ✅ | bounds check raises `OutOfRangeException` |
+| §4.5 calls: overloads, defaults, named arguments, function values, closures, nested functions, function pointers | ✅ | call/closure e2e tests |
+| §4.6–4.7 construction and member construction | ✅ | construction tests |
+| §4.8 `is` expressions: classes, interfaces, variants, special floats | ✅ | RTTI and `is illegal/infinite` tests |
+| §4.9 operators: overloads, derived comparisons, indexer, conversion, `implicitable`, user `??` | ✅ | operator/implicit conversion tests |
+| §4.9.6/4.9.7 `&`/`*` reference expressions | ✅ | pointer/reference tests |
+| §4.9.26 `??` with `Optional`/`Result` and all continuations | ✅ | coalescing + user `operator ??` tests |
+| §4.9.27 `?:` conditional expression | ✅ | conditional e2e |
+| §5 statements: blocks, locals/fixed, set/compound, if, while/do, for, match, break/continue, return, trap/finally, throw, dispose, export/use | ✅ | statement e2e tests; `finally` executes on fall-through and normal `return` paths (rejected `return` inside `finally`) |
+| §5.6 `use` imports (per scope, later imports first, multi-file) | ✅ | use tests |
+| §5.9 `match`: patterns, guards, logical control flow (break/continue/labels) | ✅ | match e2e tests |
+| §5.9.5 `for`: arrays, VLA, ranges, `&` element alias, `IIterator`/`IIterable` targets | ✅ | for e2e tests |
+| §6 names/scopes: modules, shadowing, `owner` chains, imports | ✅ | scope/owner/use tests |
+| §7 modules | ✅ | module e2e tests |
+| §8 functions: parameters, defaults, by-ref, array parameter sugar, `#` compile-time constants, nested functions | ✅ | parameter/call tests; `#` on functions, methods and operators |
+| §9 modifiers: accessibility, `scoped`, `readonly`, `implicitable`, `manual`, `abstract`/`sealed`/`virtual`/`override`, `aligned`, `static`, `verbatim` | 🟡 | all enforced except full `verbatim` semantics (parsed and accepted as a modifier) |
+| §10 generics / monomorphization | 🟡 | types/functions/constraints/extension-for-generic/caching/mangling; remaining: generic methods declaring their own type parameters (diagnosed) and monomorphization-volume optimization (§14.3.2, not implemented) |
+| §11.1–11.7 compile-time: `#(...)`, `#if`/`#else`, `#{}` blocks (incl. top-level and cross-file order), `#` constant parameters | ✅ | compile-time e2e tests; blocks are lowered as runtime equivalents of compile-time results (semantics-preserving approximation) |
+| §11.8 compiler API: `Type.SizeOf<T>`, `Compiler.LogNote/LogWarning/LogError/Assert`, `Platform.Is`, `NOLAA.Abandon/Bind/AssumeNoDemandNext` | ✅ | compiler API tests |
+| §12 memory model: locals/heap/dispose/destructors, `manual`, custom `IAllocator` + `DefaultAllocator`, NOLAA (double-dispose/early-dispose/never-disposed warnings and conservative auto-insertion) | ✅ | heap/dispose/allocation/NOLAA tests; NOLAA analysis is deliberately conservative (escapes are exempt) |
+| §13 ABI: name mangling (§13.2), layouts, calling conventions, type info/vtables/interface tables | ✅ | mangling unit test + IR smoke tests; cross-target conventions beyond host diagnosed |
+| §14 startup: launcher, static/runtime initializers, exit code = Main return | ✅ | launcher IR/e2e exit-code tests |
+| §15 Built-In Library: `Object`, `CallingConvention`, `PlatformKind`, exception hierarchy with `InnerException`/constructors, `Optional<T>`, `Result<TValue; TAlternative>`, `IIterator<T>`, `IIterable<T>`, `IAllocator`, `DefaultAllocator`, compile-time library | ✅ | builtin library e2e tests; containers are not part of the spec's §15.2 |
 
-### §10 generics: what is still not implemented
+## Known deviations / remaining backlog
 
-- Generic **methods** that declare their own type parameters (`fixed Foo<U>(...)` inside an
-  extension) are not supported; calls report a diagnostic. Accessors and nested members may
-  only borrow the enclosing declaration's parameters.
-- **Array extension targets** (`extension for array(...)`) remain unsupported and are
-  reported as "not implemented yet".
-- **Enumeration declarations cannot be generic** — this is forbidden by the specification
-  (§10.1) and unchanged; the parser does not accept generic parameters on `enumeration`.
-- Compile-time use of generic parameters (inside `#(...)`/`#{...}`, §11.7) is deferred
-  together with §11 compile-time execution.
-- Monomorphization volume optimization (§14.3.2) is not implemented.
+These are deliberate, documented limitations rather than silent miscompiles:
 
-Open draft inconsistencies and tolerated gaps are recorded in
-`docs/spec-notes/_inconsistencies.md`; the conformance test parses all examples from
-`docs/grammar/Draft 1.12.md` (one non-program type fragment skipped). Reproduced
-conformance defects are tracked in `docs/AUDIT.md`.
+1. **Compile-time blocks** are executed by the semantic analysis and their
+   runtime equivalents are still emitted; results are observationally
+   equivalent for the language's observable effects, but the generated code is
+   not reduced to solely the required end products (§11.4 exact wording).
+2. **Multi-dimensional variable-length arrays** are diagnosed.
+3. **Generic methods declaring their own type parameters** are diagnosed.
+4. **Array extension targets** (`extension for array(...)`) are diagnosed.
+5. **`verbatim`** is parsed/accepted but has no distinct semantics yet.
+6. **NOLAA** is a conservative approximation: warnings and block-end
+   auto-dispose; arbitrary CFG safe-point insertion and alias/strongly-connected
+   component analysis are not implemented.
+7. **Monomorphization volume optimization** (§14.3.2) is not implemented.
+8. **Target selection**: code generation targets the host ABI; calling
+   conventions the host backend cannot represent are diagnosed.
+9. **Platform queries** in the compile-time library answer for the host target.
+10. `scoped(operator Symbol)` and `scoped(operator Identifier)` distinguish no
+    symbol; any operator of the declaring type is allowed.
+11. Container/iterator utilities beyond the specification's §15.2 (dynamic
+    arrays, lists, maps) are not provided.

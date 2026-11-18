@@ -1,5 +1,15 @@
 # ai-nsc roadmap
 
+> **Status snapshot (round 82).** All phases below are implemented through
+> monomorphization: lexer, parser, semantic analysis, LLVM code generation,
+> object/exception model, generics, compile-time features, ABI, launcher and the
+> Built-In Library. 234 tests are green; `docs/COVERAGE.md` is the authoritative
+> per-section matrix and `docs/NEXT-SESSION.md` lists the remaining backlog
+> (compile-time end-product minimization, full NOLAA CFG analysis,
+> multi-dimensional VLAs, generic methods with own type parameters, array
+> extension targets, monomorphization-volume optimization, `verbatim` and
+> cross-target ABI). The phase notes below are kept as the historical plan.
+
 Work is split into phases with concrete acceptance criteria. Phases are ordered; later
 phases may start early only where they do not depend on the language spec.
 

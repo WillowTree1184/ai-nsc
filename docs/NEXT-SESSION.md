@@ -2,25 +2,45 @@
 
 ## State
 
-- Branch `master`; latest commit `72587df` "Diagnose uninitialized constants
-  and illegal-value comparisons"; previous `0ec3a18` "Implement 'use' imports
-  (§5.6)", `5fe9f0c` "Implement 'owner' access to shadowed outer-scope names
-  (§6.4)", `8c0b507` "Validate constructor chains (§3.7.1)", `eafa0da`
-  "Implement built-in pointer arithmetic",
-  `a5cc9cf` "Fix high-severity conformance defects found by the spec audit" and
-  `3a34c91` "Implement generics with compile-time monomorphization" (see
-  `git log --oneline`). Working tree may be
-  dirty while a concurrent session lands fixes — check `git status` before
-  committing.
+- Branch `master`; the last feature commit is `98e56b3` "Execute top-level
+  compile-time code in file order (§11.2, §11.4, §11.6)"; this documentation
+  refresh is the commit that follows it (see `git log --oneline`). Check
+  `git status` before committing.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
   — **234 tests green** (40 lib unit including 4 AST-clone tests, 55 CLI,
-  2 codegen/LLVM, 125 end-to-end execution, 10 parser, 2 spec-example conformance).
-- Built-in library status: Object/enumerations/exceptions (with InnerException)/
-  Optional/Result/Platform/NOLAA/IAllocator are available; IIterator, IIterable,
-  DefaultAllocator and containers remain.
+  2 codegen/LLVM, 125 end-to-end execution, 10 parser, 2 spec-example
+  conformance). The spec-conformance tests read the specification itself: every
+  `novasharp` example parses, and every whole-program example that passes
+  semantic analysis is compiled end to end.
+- Built-in library (§15) is complete: `Object`, `CallingConvention`,
+  `PlatformKind`, the exception hierarchy with `InnerException`/constructors,
+  `Optional<T>`, `Result<TValue; TAlternative>`, `IIterator<T>`, `IIterable<T>`,
+  `IAllocator`, the platform `DefaultAllocator`, and the compile-time library
+  (`Type.SizeOf`, `Compiler.Log*`/`Assert`, `Platform.Is`, `NOLAA.*`).
+  Containers are intentionally not provided (the spec's §15.2 does not define
+  them).
+- `docs/COVERAGE.md` maps every spec section to ✅/🟡/⛔ with evidence and lists
+  the deliberate deviations; `docs/AUDIT.md` tracks the 60 reproduced defects
+  (all fixed or marked partial with the fixing commit).
 - Build flags (required on this host):
   `CARGO_HOME=/tmp/ainsc-cargo LLVM_SYS_181_PREFIX=/usr/lib/llvm-18`
-- CLI: `target/debug/ai-nsc check|emit-ir|emit-obj|build|run <file.ns>`.
+- CLI: `target/debug/ai-nsc check|emit-ir|emit-obj|build|run <file.ns> ...`.
+
+## Remaining backlog (in rough priority order)
+
+1. Compile-time blocks (`#{...}`): reduce generated code to only the required
+   end products (§11.4 exact wording); currently observationally equivalent.
+2. NOLAA: full CFG safe-point insertion, alias/strongly-connected-component
+   analysis (§12.2); the current implementation is conservative (warnings plus
+   block-end auto-dispose, escaping units exempt).
+3. Multi-dimensional VLAs (§3.6.1 subset).
+4. Generic methods declaring their own type parameters; array extension targets.
+5. Monomorphization volume optimization (§14.3.2).
+6. `verbatim` semantics; `scoped(operator symbol)`/conversion-specific targets.
+7. Cross-target ABI: code generation currently targets the host; unsupported
+   calling conventions are diagnosed.
+8. Optional polish: more self-contained spec examples in the e2e suite,
+   snapshot tests for diagnostics.
 
 ## Where things live
 

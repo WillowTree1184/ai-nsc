@@ -7,66 +7,60 @@ native code through **LLVM 18**. The compiler is written in Rust and builds LLVM
 
 ## Status
 
-The compiler now runs end to end for the implemented subset: lexer → parser →
-semantic analysis → LLVM IR (inkwell) → `clang` → native executable.
-`ai-nsc run program.ns` executes the program and returns `Main`'s value as the
-process exit code (§14.2).
+The compiler runs end to end: lexer → parser → semantic analysis → LLVM IR
+(inkwell) → `clang` → native executable. `ai-nsc run program.ns` executes the
+program and returns `Main`'s value as the process exit code (§14.2); several
+input files form one program (§11.2).
 
-Implemented today:
+Implemented and tested today:
 
-- **Lexer** for the complete lexical grammar (keywords with `@` escape, all operators,
-  integer/float/char/string/verbatim literals with encoding tags, comments)
-- **Literal decoder**: bases, `_` separators, escapes, ascii/utf8/utf16/utf32/ucs2/ucs4,
-  multi-line string rules
-- **AST and parser** covering the grammar, validated against every program example in the
-  spec (89/90; one is a bare type fragment)
-- **Semantic analysis**: scopes and shadowing, named types, structure layout (spec alignment
-  rules), enumeration values, name resolution (locals, globals, fields, enum members,
-  modules), overload resolution by argument types, literal typing from context, the
-  operator type rules, array/pointer/string literal types, negative diagnostics
-- **LLVM code generation**: functions and recursion, locals and globals, integer/cardinal/
-  float/boolean arithmetic with wrapping and signedness-correct division, comparisons,
-  short-circuit logical operators, branches and loops, `match`, calls, fixed arrays and
-  strings, enumerations, structures (value layout and field access), numeric casts, and the
-  generated `main` launcher
-- **Object model**: extension blocks with methods, `this` parameters and method calls,
-  structure/class construction (`T(...)`, `Construct` overloads, default construction, field
-  initializers), class instance layout (vtable/typeinfo header + fields, single inheritance
-  field flattening), class reference semantics, `heap` and `dispose` (destructor + free)
-- **Polymorphism**: `virtual`/`override` with vtables, `sealed` classes/methods, `base.M()`
-  non-dispatched base calls, and RTTI-backed `is` checks over class hierarchies
-- **Variants and unions**: state/payload layout (smallest usable tag, aligned payload space),
-  union overlap layout with `aligned(N)`, member construction (`Variant.State(value)`,
-  `Union.Member(value)`), payload-less variant states, union type punning, `is` checks for
-  variant states, and `match` `is` patterns with guards and payload binding
-- **Interfaces**: contract declarations, implementation checking on classes (including
-  interfaces inherited through base classes), implicit class→interface conversion,
-  per-class interface dispatch tables with virtual interface calls, and `is` checks
-  against interface types through RTTI
-- **Accessors**: `accessor` properties in extension blocks and interface bodies with
-  `=> backing` default get/set, explicit `get`/`set` expression and block forms, getter/setter
-  methods (mangled `Name@get` / `Name@set`), read-only diagnostics and interface accessor
-  dispatch through interface tables
-- **Operator overloading**: binary `+ - * / % == > <`, unary `-`, indexers with `get`/`set`
-  accessor members, and conversion operators; derived `!=` / `<=` / `>=` desugared from `==`
-  and `<`/`>`; user overloads take precedence over built-ins during check and codegen
-- **Exceptions**: `trap`/`catch`/`finally` with lexical matching, `throw` in trap and catch
-  bodies, type matching by exact type, class base chain and interface tables, catch bindings,
-  ordered/wildcard clauses, propagation to enclosing traps and program termination;
-  runtime exception sources raise the Built-In Library exception classes: division by zero
-  raises `DivideByZeroException`, array index out of bounds raises `OutOfRangeException`, and
-  they can be caught by their subclasses or by `Exception`
-- **Compile-time conditionals**: `#if`/`#else` evaluated at compile time over boolean
-  constants and constant comparisons; only the selected branch is checked and generated
-- **Name mangling** per §13.2, including the spec's worked example as a unit test
-- 100 tests: 36 unit, 9 CLI, 2 LLVM smoke, 42 end-to-end execution, 10 parser, 1 spec
-  conformance; `cargo fmt` + `clippy -D warnings` clean
+- **Front end**: complete lexical grammar (including `@` forced keywords, verbatim
+  strings and encoding tags), literal decoder, recursive-descent parser validated
+  against every code example in the specification, and a negative-diagnostics
+  semantic analysis (scopes, modules, `use`, `owner`, shadowing, accessibility,
+  `readonly`, `scoped`, `aligned`, `implicitable`, `static`).
+- **Types and layout**: basic types, fixed arrays and variable-length arrays,
+  pointers, function types with calling conventions, structures, classes with
+  vtable/RTTI/interface tables, enumerations, variants and unions, exact layout
+  and alignment rules, generic declarations with constraints and monomorphization.
+- **Expressions and statements**: arithmetic/floats with wrapping and signedness
+  rules, `?:`, `??` with `Optional`/`Result`, casts and `implicitable`,
+  references (`&`/`*`), all operators with overloads and derived comparisons,
+  accessors and indexers, loops (including `for` over arrays/VLAs/ranges/
+  `IIterator`/`IIterable`), `match` with patterns/guards/`is` special floats,
+  `trap`/`catch`/`finally`, `throw`, `heap`/`dispose`, compile-time blocks and
+  conditionals, and the compiler API (`Type.SizeOf`, `Compiler.Log*`,
+  `Compiler.Assert`, `Platform.Is`, `NOLAA.*`).
+- **Functions and runtime**: defaults, named arguments, by-reference parameters,
+  array parameter sugar, `#` compile-time constant parameters (functions,
+  methods and operators), nested functions, function literals with capturing
+  closures, function pointers, virtual/interface dispatch, exceptions with class
+  and variant matching, custom `IAllocator`/`DefaultAllocator` heap allocation,
+  NOLAA dispose warnings and conservative auto-dispose, and a launcher that
+  performs runtime initialization before `Main`.
+- **Built-In Library (§15)**: `Object`, `CallingConvention`, `PlatformKind`, the
+  exception hierarchy with `InnerException` and constructors, `Optional<T>`,
+  `Result<TValue; TAlternative>`, `IIterator<T>`, `IIterable<T>`, `IAllocator`
+  and the platform `DefaultAllocator`, plus the compile-time library.
 
-Not implemented yet (rejected with a clear diagnostic): generics/monomorphization,
-function literals and closures, runtime exception sources and the Built-In Library exception
-hierarchy, compile-time execution (`#(...)`, `#{...}`, `#if`), references (`&`/`&T`) beyond
-`this`, the `??` operator and `implicitable` (implicit conversion) invocations, NOLAA, and the
-Built-In Library prelude.
+`cargo test` runs **234 tests** (40 lib unit, 54 CLI, 2 LLVM codegen, 125
+end-to-end programs, 10 parser, 2 spec-conformance tests that read the
+specification itself: every `novasharp` example parses, and every whole-program
+example that passes semantic analysis is compiled end to end by the CLI).
+`cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` are clean.
+`docs/COVERAGE.md` maps every specification section to its status and evidence,
+and `docs/AUDIT.md` records the 60 reproduced defects plus the commit that fixed
+each one.
+
+Known deliberate limitations (all diagnosed rather than silently miscompiled):
+compile-time blocks are lowered as runtime equivalents of their compile-time
+results; multi-dimensional VLAs, generic methods with their own type parameters,
+array extension targets and some `scoped`/`verbatim` nuances are reported as not
+implemented; NOLAA analysis is a conservative subset; monomorphization-volume
+optimization (§14.3.2) is not implemented; code generation targets the host ABI
+and diagnoses calling conventions the host backend cannot represent. The
+specification is a draft; behavior is kept adaptable (spec evidence lives in
+`docs/spec-notes/` and the conformance tests).
 
 ## Requirements
 

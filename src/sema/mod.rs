@@ -318,6 +318,8 @@ pub struct FunctionInfo {
     pub is_sealed: bool,
     /// Base accessibility of the function (§9.1).
     pub accessibility: crate::ast::Accessibility,
+    /// Explicit calling convention, if declared (§3.6.3).
+    pub calling_convention: Option<i32>,
     /// Whether the method is abstract (an interface method without a body).
     pub is_abstract: bool,
     /// Return type; `None` is the empty type.
@@ -1608,6 +1610,7 @@ impl<'a> Sema<'a> {
             is_override: false,
             is_sealed: false,
             accessibility: crate::ast::Accessibility::Public,
+            calling_convention: None,
             is_abstract: false,
             return_type,
             mangled,
@@ -1683,6 +1686,7 @@ impl<'a> Sema<'a> {
             is_override: false,
             is_sealed: false,
             accessibility: crate::ast::Accessibility::Public,
+            calling_convention: None,
             is_abstract: true,
             return_type,
             mangled,

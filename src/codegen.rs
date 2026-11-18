@@ -386,6 +386,11 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             let signature = self.function_type(index)?;
             let mangled = self.sema.functions[index as usize].mangled.clone();
             let function = self.module.add_function(&mangled, signature, None);
+            if let Some(convention) = self.sema.functions[index as usize].calling_convention {
+                if let Some(cc) = llvm_calling_convention(convention) {
+                    function.set_call_conventions(cc);
+                }
+            }
             self.functions.insert(index, function);
         }
         Ok(())
@@ -1138,6 +1143,11 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .builder
             .build_call(main_function, &arguments, "main_call")
             .map_err(|error| format!("cannot call Main: {error}"))?;
+        if let Some(convention) = self.sema.functions[main_index as usize].calling_convention {
+            if let Some(cc) = llvm_calling_convention(convention) {
+                call.set_call_convention(cc);
+            }
+        }
         let exit_value = match return_type {
             Some(ty) => {
                 let value = match call.try_as_basic_value() {
@@ -3736,9 +3746,16 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .map_err(|error| format!("cannot load interface callee: {error}"))?
             .into_pointer_value();
         let signature = self.function_type(method)?;
-        self.builder
+        let call_site = self
+            .builder
             .build_indirect_call(signature, callee, arguments, "interface_call")
-            .map_err(|error| format!("cannot dispatch interface call: {error}"))
+            .map_err(|error| format!("cannot dispatch interface call: {error}"))?;
+        if let Some(convention) = self.sema.functions[method as usize].calling_convention {
+            if let Some(cc) = llvm_calling_convention(convention) {
+                call_site.set_call_convention(cc);
+            }
+        }
+        Ok(call_site)
     }
 
     /// Emits an RTTI search through a class's interface tables.
@@ -5064,6 +5081,11 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                         .build_call(function, &arguments, "call")
                         .map_err(|error| format!("cannot call function: {error}"))?
                 };
+                if let Some(convention) = self.sema.functions[index as usize].calling_convention {
+                    if let Some(cc) = llvm_calling_convention(convention) {
+                        call_site.set_call_convention(cc);
+                    }
+                }
                 match self.sema.functions[index as usize].return_type {
                     Some(_) => match call_site.try_as_basic_value() {
                         ValueKind::Basic(value) => Ok(value),
@@ -5086,7 +5108,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     parameters,
                     wildcard,
                     return_type,
-                    ..
+                    calling_convention,
                 } = self.sema.types.get(callee_type).clone()
                 else {
                     return Err("call target is not callable".to_string());
@@ -5120,6 +5142,11 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .builder
                     .build_indirect_call(function_type, code, &arguments, "indirect")
                     .map_err(|error| format!("cannot call function value: {error}"))?;
+                if let Some(convention) = calling_convention {
+                    if let Some(cc) = llvm_calling_convention(convention) {
+                        call_site.set_call_convention(cc);
+                    }
+                }
                 match return_type {
                     Some(_) => match call_site.try_as_basic_value() {
                         ValueKind::Basic(value) => Ok(value),
@@ -6767,4 +6794,15 @@ fn round_up_u64(value: u64, alignment: u64) -> u64 {
         return value;
     }
     value.div_ceil(alignment) * alignment
+}
+
+/// Maps a `CallingConvention` enumeration value to an LLVM calling convention
+/// (§3.6.3). The default convention returns `None` (LLVM's default).
+fn llvm_calling_convention(value: i32) -> Option<u32> {
+    match value {
+        1 => Some(8),  // C declaration
+        4 => Some(78), // System V AMD64
+        7 => Some(79), // Microsoft x64
+        _ => None,
+    }
 }

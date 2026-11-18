@@ -111,11 +111,14 @@ impl<'a> Sema<'a> {
                     Some(ty) => Some(self.resolve_type(ty)?),
                     None => None,
                 };
-                Some(
-                    self.result
-                        .types
-                        .function(parameters, function.wildcard, None, return_type),
-                )
+                let calling_convention =
+                    self.resolve_calling_convention(function.calling_convention);
+                Some(self.result.types.function(
+                    parameters,
+                    function.wildcard,
+                    calling_convention,
+                    return_type,
+                ))
             }
             NodeKind::NamedType(named) => {
                 // A generic parameter is substituted by the active instantiation
@@ -810,6 +813,7 @@ impl<'a> Sema<'a> {
                 None => return None,
             }
         }
+        let method_convention = self.resolve_calling_convention(function.calling_convention);
 
         let mut parameters = Vec::new();
         for (index, parameter) in function.parameters.iter().enumerate() {
@@ -868,6 +872,7 @@ impl<'a> Sema<'a> {
             is_override: declaration.modifiers.override_,
             is_sealed: declaration.modifiers.sealed,
             accessibility: crate::ast::Accessibility::Public,
+            calling_convention: None,
             is_abstract,
             return_type,
             mangled,
@@ -884,6 +889,7 @@ impl<'a> Sema<'a> {
             span: self.span_of(node),
         });
         self.result.functions[index as usize].accessibility = declaration.modifiers.accessibility;
+        self.result.functions[index as usize].calling_convention = method_convention;
         if declaration.modifiers.override_ {
             self.validate_override(index, owner);
         }
@@ -1028,9 +1034,11 @@ impl<'a> Sema<'a> {
         };
         let parameters = self.resolve_parameters(&function)?;
         let return_type = function.return_type.and_then(|ty| self.resolve_type(ty));
+        let method_convention = self.resolve_calling_convention(function.calling_convention);
         let Type::Named(owner_index) = self.types_of(owner) else {
             return None;
         };
+        let _ = method_convention;
         let owner_name = self.result.type_defs[owner_index as usize]
             .qualified_name
             .clone();
@@ -1055,6 +1063,7 @@ impl<'a> Sema<'a> {
             is_override: false,
             is_sealed: false,
             accessibility: crate::ast::Accessibility::Public,
+            calling_convention: None,
             is_abstract: false,
             return_type,
             mangled,
@@ -1071,6 +1080,7 @@ impl<'a> Sema<'a> {
             span: self.span_of(node),
         });
         self.result.functions[index as usize].accessibility = declaration.modifiers.accessibility;
+        self.result.functions[index as usize].calling_convention = method_convention;
         self.result.type_defs[owner_index as usize]
             .static_methods
             .entry(declaration.name.clone())
@@ -1622,6 +1632,7 @@ impl<'a> Sema<'a> {
             is_override: false,
             is_sealed: false,
             accessibility: crate::ast::Accessibility::Public,
+            calling_convention: None,
             is_abstract: body.is_none(),
             return_type,
             mangled,
@@ -1844,6 +1855,7 @@ impl<'a> Sema<'a> {
             is_override: false,
             is_sealed: false,
             accessibility: crate::ast::Accessibility::Public,
+            calling_convention: None,
             is_abstract: body.is_none(),
             return_type,
             mangled,
@@ -2165,6 +2177,49 @@ impl<'a> Sema<'a> {
         definition.align = size;
     }
 
+    /// Resolves a `; CallingConvention` expression to its numeric value (§3.6.3)
+    /// and rejects conventions the current target cannot represent.
+    fn resolve_calling_convention(&mut self, node: Option<NodeId>) -> Option<i32> {
+        let node = node?;
+        let ty = self.check_expr(node, None)?;
+        let Type::Named(index) = self.types_of(ty) else {
+            self.error(self.span_of(node), "expected a CallingConvention value");
+            return None;
+        };
+        let (name, members) = {
+            let definition = &self.result.type_defs[index as usize];
+            (
+                definition.qualified_name.clone(),
+                definition.enum_members.clone(),
+            )
+        };
+        if name != "CallingConvention" {
+            self.error(self.span_of(node), "expected a CallingConvention value");
+            return None;
+        }
+        let Some(Resolution::EnumMember { index: member, .. }) =
+            self.result.resolutions[node as usize].clone()
+        else {
+            self.error(self.span_of(node), "expected a CallingConvention value");
+            return None;
+        };
+        let Some((_, value)) = members.get(member as usize) else {
+            self.error(self.span_of(node), "expected a CallingConvention value");
+            return None;
+        };
+        let value = *value as i32;
+        // LLVM's x86-64 backend supports the default, C, System V AMD64 and
+        // Microsoft x64 conventions; the remainder are not representable here.
+        if !matches!(value, 0 | 1 | 4 | 7) {
+            self.error(
+                self.span_of(node),
+                "this calling convention is not supported on the current target",
+            );
+            return None;
+        }
+        Some(value)
+    }
+
     pub(crate) fn resolve_function_signature(&mut self, node: NodeId, declaration: &FixedDecl) {
         let Some(ty_node) = declaration.ty else {
             // Not a function definition: handled as a global or local constant.
@@ -2186,6 +2241,7 @@ impl<'a> Sema<'a> {
             return;
         };
         let return_type = function.return_type.and_then(|ty| self.resolve_type(ty));
+        let calling_convention = self.resolve_calling_convention(function.calling_convention);
         self.register_function(FunctionDeclaration {
             node,
             name: declaration.name.clone(),
@@ -2194,6 +2250,7 @@ impl<'a> Sema<'a> {
             return_type,
             method_of: None,
             exposed_symbol: None,
+            calling_convention,
         });
     }
 
@@ -2283,6 +2340,7 @@ impl<'a> Sema<'a> {
             return_type,
             method_of,
             exposed_symbol,
+            calling_convention,
         } = declaration;
         let scope = self.scope_path.clone();
         let spellings: Vec<String> = parameters
@@ -2314,6 +2372,7 @@ impl<'a> Sema<'a> {
             is_override: false,
             is_sealed: false,
             accessibility: crate::ast::Accessibility::Public,
+            calling_convention,
             is_abstract: false,
             return_type,
             mangled,
@@ -2365,6 +2424,7 @@ impl<'a> Sema<'a> {
             return_type,
             method_of: None,
             exposed_symbol: Some(exposed),
+            calling_convention: None,
         });
     }
 
@@ -2765,6 +2825,7 @@ struct FunctionDeclaration {
     return_type: Option<TypeId>,
     method_of: Option<TypeId>,
     exposed_symbol: Option<String>,
+    calling_convention: Option<i32>,
 }
 
 fn round_up(value: u64, alignment: u64) -> u64 {
@@ -4697,11 +4758,12 @@ impl<'a> Sema<'a> {
                             .map(|parameter| parameter.ty)
                             .collect::<Vec<_>>();
                         let return_type = self.result.functions[index as usize].return_type;
-                        Some(
-                            self.result
-                                .types
-                                .function(parameters, false, None, return_type),
-                        )
+                        Some(self.result.types.function(
+                            parameters,
+                            false,
+                            self.result.functions[index as usize].calling_convention,
+                            return_type,
+                        ))
                     }
                     Some(MonomorphizedTarget::Type(_)) => {
                         self.error(
@@ -5036,11 +5098,12 @@ impl<'a> Sema<'a> {
                     .map(|parameter| parameter.ty)
                     .collect::<Vec<_>>();
                 let return_type = self.result.functions[index as usize].return_type;
-                Some(
-                    self.result
-                        .types
-                        .function(parameters, false, None, return_type),
-                )
+                Some(self.result.types.function(
+                    parameters,
+                    false,
+                    self.result.functions[index as usize].calling_convention,
+                    return_type,
+                ))
             }
             Symbol::GenericFunctions(_) => {
                 self.error(
@@ -5128,11 +5191,12 @@ impl<'a> Sema<'a> {
                         .map(|parameter| parameter.ty)
                         .collect::<Vec<_>>();
                     let return_type = self.result.functions[index as usize].return_type;
-                    return Some(
-                        self.result
-                            .types
-                            .function(parameters, false, None, return_type),
-                    );
+                    return Some(self.result.types.function(
+                        parameters,
+                        false,
+                        self.result.functions[index as usize].calling_convention,
+                        return_type,
+                    ));
                 }
                 Some(Symbol::Global(global)) => {
                     self.result.resolutions[node as usize] = Some(Resolution::Global(global));
@@ -6206,10 +6270,11 @@ impl<'a> Sema<'a> {
             });
         }
         let return_type = literal.return_type.and_then(|ty| self.resolve_type(ty));
+        let calling_convention = self.resolve_calling_convention(literal.calling_convention);
         let function_type = self.result.types.function(
             parameters.iter().map(|parameter| parameter.ty).collect(),
             false,
-            None,
+            calling_convention,
             return_type,
         );
         self.in_function_body = previous_in_body;
@@ -6294,6 +6359,7 @@ impl<'a> Sema<'a> {
             is_override: false,
             is_sealed: false,
             accessibility: crate::ast::Accessibility::Public,
+            calling_convention: None,
             is_abstract: false,
             return_type,
             mangled,
@@ -6309,6 +6375,7 @@ impl<'a> Sema<'a> {
             locals: capture_locals,
             span: span_of_function,
         });
+        self.result.functions[index as usize].calling_convention = calling_convention;
         self.result.function_literals.insert(node, index);
         Some(function_type)
     }

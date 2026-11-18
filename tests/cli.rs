@@ -1004,3 +1004,20 @@ fixed Main(): integer(4)
         "{stderr}"
     );
 }
+
+#[test]
+fn unsupported_calling_conventions_are_reported() {
+    let stderr = check_source(
+        "\
+fixed Run(value: integer(4); CallingConvention.FastCall): integer(4)
+{
+    return value;
+}
+
+fixed Main(): integer(4) { return Run(1); }",
+    );
+    assert!(
+        stderr.contains("calling convention is not supported"),
+        "{stderr}"
+    );
+}

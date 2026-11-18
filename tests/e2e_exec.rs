@@ -3133,3 +3133,20 @@ fixed Main(): integer(4)
     // 1+2+3+4 plus the caught out-of-range probe
     assert_eq!(run_program(source), 11);
 }
+
+#[test]
+fn calling_conventions_work_on_functions_and_literals() {
+    let source = "\
+fixed Add(left: integer(4), right: integer(4); CallingConvention.CDeclaration): integer(4)
+{
+    return left + right;
+}
+
+fixed Main(): integer(4)
+{
+    local callback: function(integer(4), integer(4); CallingConvention.CDeclaration) integer(4) = Add;
+    local literal: function(integer(4); CallingConvention.CDeclaration) integer(4) = (value: integer(4); CallingConvention.CDeclaration) integer(4) => value * 2;
+    return callback(2, 3) + literal(4);
+}";
+    assert_eq!(run_program(source), 13);
+}

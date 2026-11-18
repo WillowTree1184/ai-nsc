@@ -76,7 +76,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §7 modules | ✅ | module e2e tests |
 | §8 functions: parameters, defaults, by-ref, array parameter sugar, `#` compile-time constants, nested functions | ✅ | parameter/call tests; `#` on functions, methods and operators |
 | §9 modifiers: accessibility, `scoped`, `readonly`, `implicitable`, `manual`, `abstract`/`sealed`/`virtual`/`override`, `aligned`, `static`, `verbatim` | 🟡 | all enforced, including `verbatim` (optnone functions, runtime-evaluated storages, compile-time evaluation rejected inside verbatim) |
-| §10 generics / monomorphization | 🟡 | types/functions/constraints/extension-for-generic/caching/mangling; remaining: generic methods declaring their own type parameters (diagnosed) and monomorphization-volume optimization (§14.3.2, not implemented) |
+| §10 generics / monomorphization | 🟡 | types/functions/constraints/extension-for-generic/caching/mangling; including methods that declare their own type parameters; remaining: array extension targets (diagnosed) and monomorphization-volume optimization (§14.3.2, not implemented) |
 | §11.1–11.7 compile-time: `#(...)`, `#if`/`#else`, `#{}` blocks (incl. top-level and cross-file order), `#` constant parameters | ✅ | compile-time e2e tests; blocks are lowered as runtime equivalents of compile-time results (semantics-preserving approximation) |
 | §11.8 compiler API: `Type.SizeOf<T>`, `Compiler.LogNote/LogWarning/LogError/Assert`, `Platform.Is`, `NOLAA.Abandon/Bind/AssumeNoDemandNext` | ✅ | compiler API tests |
 | §12 memory model: locals/heap/dispose/destructors, `manual`, custom `IAllocator` + `DefaultAllocator`, NOLAA (double-dispose/early-dispose/never-disposed warnings and conservative auto-insertion) | ✅ | heap/dispose/allocation/NOLAA tests; NOLAA analysis is deliberately conservative (escapes are exempt) |
@@ -94,7 +94,6 @@ These are deliberate, documented limitations rather than silent miscompiles:
    not reduced to solely the required end products (§11.4 exact wording).
 2. **Non-leading runtime array dimensions** are diagnosed (multi-dimensional
    VLAs with a leading runtime dimension are supported).
-3. **Generic methods declaring their own type parameters** are diagnosed.
 4. **Array extension targets** (`extension for array(...)`) are diagnosed.
 5. **`verbatim`** is parsed/accepted but has no distinct semantics yet.
 6. **NOLAA** is a conservative approximation: warnings and block-end

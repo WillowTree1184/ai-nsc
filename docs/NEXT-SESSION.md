@@ -34,7 +34,7 @@
    analysis (§12.2); the current implementation is conservative (warnings plus
    block-end auto-dispose, escaping units exempt).
 3. Multi-dimensional VLAs (§3.6.1 subset).
-4. Generic methods declaring their own type parameters; array extension targets.
+4. Array extension targets (`extension for array(...)`).
 5. Monomorphization volume optimization (§14.3.2).
 6. `verbatim` semantics; `scoped(operator symbol)`/conversion-specific targets.
 7. Cross-target ABI: code generation currently targets the host; unsupported

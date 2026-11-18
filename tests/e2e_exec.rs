@@ -3069,3 +3069,25 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 6);
 }
+
+#[test]
+fn readonly_fields_can_be_initialized_in_constructors() {
+    let source = "\
+class Locked
+{
+    public readonly Value: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Locked, value: integer(4)) { this.Value = value; }
+        public fixed Read(this: &Locked): integer(4) { return this.Value; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local locked: Locked = Locked(6);
+    return locked.Read();
+}";
+    assert_eq!(run_program(source), 6);
+}

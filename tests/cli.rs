@@ -929,3 +929,28 @@ fixed Main(): integer(4) { return 0; }",
     );
     assert!(stderr.contains("'Name' is not accessible"), "{stderr}");
 }
+
+#[test]
+fn readonly_fields_are_only_assigned_in_constructors() {
+    let stderr = check_source(
+        "\
+class Locked
+{
+    public readonly Value: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Locked, value: integer(4)) { this.Value = value; }
+        public fixed TryChange(this: &Locked) { this.Value = 9; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local locked: Locked = Locked(3);
+    locked.Value = 7;
+    return locked.Value;
+}",
+    );
+    assert!(stderr.contains("readonly"), "{stderr}");
+}

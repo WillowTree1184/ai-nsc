@@ -447,6 +447,7 @@ impl<'a> Sema<'a> {
                         ty,
                         offset,
                         accessibility: field.modifiers.accessibility,
+                        readonly: field.modifiers.readonly,
                     });
                     field_initializers.push(match field.init {
                         Some(Initializer::Expression(expression)) => Some(expression),
@@ -3623,9 +3624,89 @@ impl<'a> Sema<'a> {
                 }
                 _ => self.error(self.span_of(node), "expression is not assignable"),
             },
-            NodeKind::Index(_) | NodeKind::MemberAccess(_) | NodeKind::PointerMemberAccess(_) => {}
+            NodeKind::MemberAccess(_) | NodeKind::PointerMemberAccess(_) => {
+                self.check_readonly_assignment(node);
+            }
+            NodeKind::Index(_) => {}
             NodeKind::Unary(unary) if unary.op == UnaryOp::Dereference => {}
             _ => self.error(self.span_of(node), "expression is not assignable"),
+        }
+    }
+
+    /// Enforces `readonly` field assignment rules (§9.6): a readonly field may
+    /// only be assigned inside a constructor of the declaring type or of a
+    /// derived type.
+    fn check_readonly_assignment(&mut self, node: NodeId) {
+        let Some(Resolution::Field { type_id, index }) =
+            self.result.resolutions[node as usize].clone()
+        else {
+            return;
+        };
+        let Type::Named(owner_index) = self.types_of(type_id) else {
+            return;
+        };
+        let (field_name, readonly) = {
+            let definition = &self.result.type_defs[owner_index as usize];
+            let Some(field) = definition.fields.get(index as usize) else {
+                return;
+            };
+            (field.name.clone(), field.readonly)
+        };
+        if !readonly {
+            return;
+        }
+        // Walk the base chain to the type that declares the field.
+        let mut declaring = owner_index;
+        let mut current = self.result.type_defs[owner_index as usize].base;
+        while let Some(base) = current {
+            let Type::Named(base_index) = self.types_of(base) else {
+                break;
+            };
+            let declares = self.result.type_defs[base_index as usize]
+                .fields
+                .iter()
+                .any(|field| field.name == field_name);
+            if declares {
+                declaring = base_index;
+                current = self.result.type_defs[base_index as usize].base;
+            } else {
+                break;
+            }
+        }
+        let allowed = self.current_function.is_some_and(|function_index| {
+            let function = &self.result.functions[function_index as usize];
+            if function.name != "Construct" {
+                return false;
+            }
+            let Some(owner) = function.method_of else {
+                return false;
+            };
+            let Type::Named(mut current) = self.types_of(owner) else {
+                return false;
+            };
+            let mut depth = 0;
+            loop {
+                if current == declaring {
+                    return true;
+                }
+                depth += 1;
+                if depth > 32 {
+                    return false;
+                }
+                let Some(base) = self.result.type_defs[current as usize].base else {
+                    return false;
+                };
+                let Type::Named(base_index) = self.types_of(base) else {
+                    return false;
+                };
+                current = base_index;
+            }
+        });
+        if !allowed {
+            self.error(
+                self.span_of(node),
+                format!("'{field_name}' is readonly and can only be assigned in a constructor"),
+            );
         }
     }
 

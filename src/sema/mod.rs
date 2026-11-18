@@ -168,6 +168,8 @@ pub struct FieldInfo {
     pub offset: u64,
     /// Base accessibility of the field (§9.1); `Unspecified` is private.
     pub accessibility: crate::ast::Accessibility,
+    /// Whether the field is `readonly` (§9.6).
+    pub readonly: bool,
 }
 
 /// One state of a variant (§3.7.5).
@@ -1814,6 +1816,7 @@ impl<'a> Sema<'a> {
                         ty: optional_exception,
                         offset: 16,
                         accessibility: crate::ast::Accessibility::Public,
+                        readonly: false,
                     }];
                     definition.field_initializers = vec![None];
                     definition.instance_size = 32;

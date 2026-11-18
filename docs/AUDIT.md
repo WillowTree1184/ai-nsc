@@ -312,3 +312,4 @@ report an error (§4.8).
 | 91 | MED | §4.9.24, §4.9.25 | Logical operators rejected implicitly boolean-convertible operands | fixed (59fcfea: implicitable conversion recorded and applied, short-circuit preserved) |
 | 92 | MED | §4.9.27 | Conditional expression rejected valid base/derived branch orders | fixed (eff0f8c: symmetric common-type computation, context type precedence, branch coercions) |
 | 93 | MED | §3.6.1 | Nested array spellings interned as distinct types | fixed (035ef15: array interning flattens nested dimensions; literals/declarations unify) |
+| 94 | LOW | §5.3 | Global constants accepted 'uninitialized' as initial value | fixed (a364ce9: constant-initializer context tracked, specific diagnostic for all constants) |

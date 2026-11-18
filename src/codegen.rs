@@ -3854,17 +3854,25 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 }
                 let parameter_offset = usize::from(is_method);
                 let parameters = self.sema.functions[index as usize].parameters.clone();
-                for (position, argument) in call.arguments.iter().enumerate() {
+                let mapped = self.sema.call_arguments.get(&node).cloned();
+                let count = mapped
+                    .as_ref()
+                    .map_or(call.arguments.len(), |mapped| mapped.len());
+                for position in 0..count {
+                    let value_node = match &mapped {
+                        Some(mapped) => mapped[position],
+                        None => call.arguments[position].value,
+                    };
                     let by_ref = parameters
                         .get(parameter_offset + position)
                         .is_some_and(|parameter| parameter.by_ref);
                     if by_ref {
-                        let address = self.gen_lvalue(argument.value)?.ok_or_else(|| {
+                        let address = self.gen_lvalue(value_node)?.ok_or_else(|| {
                             "by-reference argument is not addressable".to_string()
                         })?;
                         arguments.push(address.into());
                     } else {
-                        arguments.push(self.gen_expr(argument.value)?.into());
+                        arguments.push(self.gen_expr(value_node)?.into());
                     }
                 }
                 let call_site = if let Some(receiver_pointer) = receiver {
@@ -4192,9 +4200,19 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 .ok_or_else(|| "missing constructor".to_string())?;
             let mut arguments = Vec::new();
             arguments.push(storage.into());
-            if let NodeKind::Call(call) = self.ast.node(node).kind.clone() {
-                for argument in &call.arguments {
-                    arguments.push(self.gen_expr(argument.value)?.into());
+            let mapped = self.sema.call_arguments.get(&node).cloned();
+            match mapped {
+                Some(mapped) => {
+                    for value_node in mapped {
+                        arguments.push(self.gen_expr(value_node)?.into());
+                    }
+                }
+                None => {
+                    if let NodeKind::Call(call) = self.ast.node(node).kind.clone() {
+                        for argument in &call.arguments {
+                            arguments.push(self.gen_expr(argument.value)?.into());
+                        }
+                    }
                 }
             }
             self.builder

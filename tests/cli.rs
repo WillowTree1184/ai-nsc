@@ -760,3 +760,20 @@ fixed Main(): integer(4)
     );
     assert!(stderr.contains("unknown name 'limit'"), "{stderr}");
 }
+
+#[test]
+fn missing_required_argument_is_reported() {
+    let stderr = check_source(
+        "\
+fixed Sum(a: integer(4), b: integer(4)): integer(4)
+{
+    return a + b;
+}
+
+fixed Main(): integer(4)
+{
+    return Sum(a: 1);
+}",
+    );
+    assert!(stderr.contains("missing argument"), "{stderr}");
+}

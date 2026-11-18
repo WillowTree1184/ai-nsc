@@ -271,6 +271,8 @@ pub struct ParameterInfo {
     pub ty: TypeId,
     /// Whether the parameter is passed by reference (`&`, §8.2).
     pub by_ref: bool,
+    /// Default-value expression used when a call omits the argument (§8.2).
+    pub default: Option<NodeId>,
 }
 
 /// A function definition (`fixed Name : function(...) T { ... }`, §8.1).
@@ -684,6 +686,9 @@ pub struct SemaResult {
     pub coalesce: HashMap<NodeId, CoalesceInfo>,
     /// Function literals, keyed by literal expression node (§2.7.9).
     pub function_literals: HashMap<NodeId, u32>,
+    /// Ordered argument expressions of a call, after applying named arguments and
+    /// default values (§4.5). Keyed by the call node.
+    pub call_arguments: HashMap<NodeId, Vec<NodeId>>,
     /// Number of errors reported.
     pub error_count: u32,
 }

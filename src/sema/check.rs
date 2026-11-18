@@ -796,6 +796,7 @@ impl<'a> Sema<'a> {
                 name,
                 ty: parameter_type,
                 by_ref: parameter.by_ref,
+                default: parameter.default,
             });
         }
         let return_type = function.return_type.and_then(|ty| self.resolve_type(ty));
@@ -1226,6 +1227,7 @@ impl<'a> Sema<'a> {
                             name: "value".to_string(),
                             ty: return_ty,
                             by_ref: false,
+                            default: None,
                         });
                         setter = self.create_operator_method(
                             owner,
@@ -1325,6 +1327,7 @@ impl<'a> Sema<'a> {
                                 name: format!("argument{index}"),
                                 ty: *parameter,
                                 by_ref: false,
+                                default: None,
                             })
                             .collect::<Vec<_>>(),
                         function_return,
@@ -1501,6 +1504,7 @@ impl<'a> Sema<'a> {
                 name,
                 ty,
                 by_ref: false,
+                default: None,
             });
         }
         Some(resolved)
@@ -1523,6 +1527,7 @@ impl<'a> Sema<'a> {
                 name: "this".to_string(),
                 ty: owner,
                 by_ref: true,
+                default: None,
             });
         }
         all_parameters.extend(parameters.iter().cloned());
@@ -1730,12 +1735,14 @@ impl<'a> Sema<'a> {
             name: "this".to_string(),
             ty: owner,
             by_ref: true,
+            default: None,
         }];
         if !is_getter {
             parameters.push(ParameterInfo {
                 name: "value".to_string(),
                 ty,
                 by_ref: false,
+                default: None,
             });
         }
         let return_type = if is_getter { Some(ty) } else { None };
@@ -2109,6 +2116,7 @@ impl<'a> Sema<'a> {
             name,
             ty: pointer,
             by_ref: false,
+            default: None,
         }];
         for (binding_name, binding_type_node) in bindings {
             let binding_type = self.resolve_type(binding_type_node)?;
@@ -2116,6 +2124,7 @@ impl<'a> Sema<'a> {
                 name: binding_name,
                 ty: binding_type,
                 by_ref: false,
+                default: None,
             });
         }
         Some(expanded)
@@ -2148,6 +2157,7 @@ impl<'a> Sema<'a> {
                 name,
                 ty: parameter_type,
                 by_ref: parameter.by_ref,
+                default: parameter.default,
             });
         }
         Some(parameters)
@@ -5398,6 +5408,7 @@ impl<'a> Sema<'a> {
                 name: parameter.name.clone(),
                 ty,
                 by_ref: parameter.by_ref,
+                default: None,
             });
         }
         let return_type = literal.return_type.and_then(|ty| self.resolve_type(ty));
@@ -6241,24 +6252,23 @@ impl<'a> Sema<'a> {
         if candidates.is_empty() {
             return None;
         }
+        let span = self.span_of(node);
         let mut exact = Vec::new();
         for &candidate in &candidates {
             let parameters = self.result.functions[candidate as usize].parameters.clone();
-            if parameters.len() != arguments.len() + 1 {
-                continue;
-            }
             if !self.is_this_compatible(base_type, parameters[0].ty) {
                 continue;
             }
             self.suppress_errors += 1;
-            let mut matches = true;
-            for (argument, parameter) in arguments.iter().zip(parameters.iter().skip(1)) {
-                let ty = self.check_expr(argument.value, Some(parameter.ty));
-                if ty != Some(parameter.ty) {
-                    matches = false;
-                    break;
-                }
-            }
+            let mapped = self.match_call_arguments(&parameters[1..], arguments, span);
+            let matches = mapped.is_some_and(|mapped| {
+                mapped
+                    .iter()
+                    .zip(parameters.iter().skip(1))
+                    .all(|(value, parameter)| {
+                        self.check_expr(*value, Some(parameter.ty)) == Some(parameter.ty)
+                    })
+            });
             self.suppress_errors -= 1;
             if matches {
                 exact.push(candidate);
@@ -6267,25 +6277,29 @@ impl<'a> Sema<'a> {
         let selected = if exact.len() == 1 {
             exact[0]
         } else if exact.is_empty() {
-            self.error(
-                self.span_of(node),
-                "no method overload matches the argument types",
-            );
+            if candidates.len() == 1 {
+                let parameters = self.result.functions[candidates[0] as usize]
+                    .parameters
+                    .clone();
+                self.match_call_arguments(&parameters[1..], arguments, span);
+            }
+            self.error(span, "no method overload matches the argument types");
             return Some(None);
         } else {
-            self.error(
-                self.span_of(node),
-                "ambiguous method call: several overloads match",
-            );
+            self.error(span, "ambiguous method call: several overloads match");
             return Some(None);
         };
         let parameters = self.result.functions[selected as usize].parameters.clone();
-        for (argument, parameter) in arguments.iter().zip(parameters.iter().skip(1)) {
-            let ty = self.check_expr(argument.value, Some(parameter.ty));
+        let Some(mapped) = self.match_call_arguments(&parameters[1..], arguments, span) else {
+            return Some(None);
+        };
+        for (value, parameter) in mapped.iter().zip(parameters.iter().skip(1)) {
+            let ty = self.check_expr(*value, Some(parameter.ty));
             if let Some(ty) = ty {
-                self.expect_assignable(argument.span, ty, parameter.ty);
+                self.expect_assignable(self.span_of(*value), ty, parameter.ty);
             }
         }
+        self.result.call_arguments.insert(node, mapped);
         self.result.resolutions[node as usize] = Some(Resolution::Function(selected));
         Some(self.result.functions[selected as usize].return_type)
     }
@@ -6352,44 +6366,48 @@ impl<'a> Sema<'a> {
             );
             return None;
         }
+        let span = self.span_of(node);
         let mut exact = Vec::new();
         for &candidate in &candidates {
             let parameters = self.result.functions[candidate as usize].parameters.clone();
-            if parameters.len() != arguments.len() + 1 {
-                continue;
-            }
             if !self.is_this_compatible(type_id, parameters[0].ty) {
                 continue;
             }
             self.suppress_errors += 1;
-            let mut matches = true;
-            for (argument, parameter) in arguments.iter().zip(parameters.iter().skip(1)) {
-                let ty = self.check_expr(argument.value, Some(parameter.ty));
-                if ty != Some(parameter.ty) {
-                    matches = false;
-                    break;
-                }
-            }
+            let mapped = self.match_call_arguments(&parameters[1..], arguments, span);
+            let matches = mapped.is_some_and(|mapped| {
+                mapped
+                    .iter()
+                    .zip(parameters.iter().skip(1))
+                    .all(|(value, parameter)| {
+                        self.check_expr(*value, Some(parameter.ty)) == Some(parameter.ty)
+                    })
+            });
             self.suppress_errors -= 1;
             if matches {
                 exact.push(candidate);
             }
         }
         if exact.len() != 1 {
-            self.error(
-                self.span_of(node),
-                "no constructor overload matches the argument types",
-            );
+            if candidates.len() == 1 {
+                let parameters = self.result.functions[candidates[0] as usize]
+                    .parameters
+                    .clone();
+                self.match_call_arguments(&parameters[1..], arguments, span);
+            }
+            self.error(span, "no constructor overload matches the argument types");
             return None;
         }
         let selected = exact[0];
         let parameters = self.result.functions[selected as usize].parameters.clone();
-        for (argument, parameter) in arguments.iter().zip(parameters.iter().skip(1)) {
-            let ty = self.check_expr(argument.value, Some(parameter.ty));
+        let mapped = self.match_call_arguments(&parameters[1..], arguments, span)?;
+        for (value, parameter) in mapped.iter().zip(parameters.iter().skip(1)) {
+            let ty = self.check_expr(*value, Some(parameter.ty));
             if let Some(ty) = ty {
-                self.expect_assignable(argument.span, ty, parameter.ty);
+                self.expect_assignable(self.span_of(*value), ty, parameter.ty);
             }
         }
+        self.result.call_arguments.insert(node, mapped);
         self.result.resolutions[node as usize] = Some(Resolution::Construct {
             type_id,
             method: Some(selected),
@@ -6407,27 +6425,99 @@ impl<'a> Sema<'a> {
         self.try_resolve_name(callee)
     }
 
+    /// Maps call arguments to parameters by position and name and fills omitted
+    /// trailing parameters with their defaults (§4.5, §8.2). `parameters` must
+    /// not include a receiver.
+    fn match_call_arguments(
+        &mut self,
+        parameters: &[ParameterInfo],
+        arguments: &[Argument],
+        fallback_span: Span,
+    ) -> Option<Vec<NodeId>> {
+        let mut mapped: Vec<Option<NodeId>> = vec![None; parameters.len()];
+        let mut next_positional = 0usize;
+        for argument in arguments {
+            match &argument.name {
+                Some(name) => {
+                    let position = parameters
+                        .iter()
+                        .position(|parameter| &parameter.name == name);
+                    let Some(position) = position else {
+                        if self.suppress_errors == 0 {
+                            self.error(argument.span, format!("unknown parameter name '{name}'"));
+                        }
+                        return None;
+                    };
+                    if mapped[position].is_some() {
+                        if self.suppress_errors == 0 {
+                            self.error(
+                                argument.span,
+                                format!("parameter '{name}' is given more than once"),
+                            );
+                        }
+                        return None;
+                    }
+                    mapped[position] = Some(argument.value);
+                }
+                None => {
+                    while next_positional < parameters.len() && mapped[next_positional].is_some() {
+                        next_positional += 1;
+                    }
+                    if next_positional >= parameters.len() {
+                        if self.suppress_errors == 0 {
+                            self.error(argument.span, "too many arguments");
+                        }
+                        return None;
+                    }
+                    mapped[next_positional] = Some(argument.value);
+                    next_positional += 1;
+                }
+            }
+        }
+        let mut ordered = Vec::with_capacity(parameters.len());
+        for (position, slot) in mapped.into_iter().enumerate() {
+            match slot {
+                Some(value) => ordered.push(value),
+                None => match parameters[position].default {
+                    Some(default) => ordered.push(default),
+                    None => {
+                        if self.suppress_errors == 0 {
+                            self.error(
+                                fallback_span,
+                                format!(
+                                    "missing argument for parameter '{}'",
+                                    parameters[position].name
+                                ),
+                            );
+                        }
+                        return None;
+                    }
+                },
+            }
+        }
+        Some(ordered)
+    }
+
     fn resolve_overload(
         &mut self,
         node: NodeId,
         overloads: &[u32],
         arguments: &[Argument],
     ) -> Option<TypeId> {
+        let span = self.span_of(node);
         let mut exact = Vec::new();
         for &candidate in overloads {
             let parameters = self.result.functions[candidate as usize].parameters.clone();
-            if parameters.len() != arguments.len() {
-                continue;
-            }
             self.suppress_errors += 1;
-            let mut matches = true;
-            for (argument, parameter) in arguments.iter().zip(parameters.iter()) {
-                let ty = self.check_expr(argument.value, Some(parameter.ty));
-                if ty != Some(parameter.ty) {
-                    matches = false;
-                    break;
-                }
-            }
+            let mapped = self.match_call_arguments(&parameters, arguments, span);
+            let matches = mapped.is_some_and(|mapped| {
+                mapped
+                    .iter()
+                    .zip(parameters.iter())
+                    .all(|(value, parameter)| {
+                        self.check_expr(*value, Some(parameter.ty)) == Some(parameter.ty)
+                    })
+            });
             self.suppress_errors -= 1;
             if matches {
                 exact.push(candidate);
@@ -6441,21 +6531,19 @@ impl<'a> Sema<'a> {
                 let mut convertible = Vec::new();
                 for &candidate in overloads {
                     let parameters = self.result.functions[candidate as usize].parameters.clone();
-                    if parameters.len() != arguments.len() {
-                        continue;
-                    }
                     self.suppress_errors += 1;
-                    let mut matches = true;
-                    for (argument, parameter) in arguments.iter().zip(parameters.iter()) {
-                        let ty = self.check_expr(argument.value, Some(parameter.ty));
-                        match ty {
-                            Some(ty) if self.is_assignable(ty, parameter.ty) => {}
-                            _ => {
-                                matches = false;
-                                break;
-                            }
-                        }
-                    }
+                    let mapped = self.match_call_arguments(&parameters, arguments, span);
+                    let matches = mapped.is_some_and(|mapped| {
+                        mapped
+                            .iter()
+                            .zip(parameters.iter())
+                            .all(|(value, parameter)| {
+                                match self.check_expr(*value, Some(parameter.ty)) {
+                                    Some(ty) => self.is_assignable(ty, parameter.ty),
+                                    None => false,
+                                }
+                            })
+                    });
                     self.suppress_errors -= 1;
                     if matches {
                         convertible.push(candidate);
@@ -6464,11 +6552,19 @@ impl<'a> Sema<'a> {
                 if convertible.len() == 1 {
                     convertible[0]
                 } else if convertible.is_empty() {
-                    self.error(self.span_of(node), "no overload matches the argument types");
+                    // Re-run the mapping without suppression on the single
+                    // overload so malformed argument lists are reported precisely.
+                    if overloads.len() == 1 {
+                        let parameters = self.result.functions[overloads[0] as usize]
+                            .parameters
+                            .clone();
+                        self.match_call_arguments(&parameters, arguments, span);
+                    }
+                    self.error(span, "no overload matches the argument types");
                     return None;
                 } else {
                     self.error(
-                        self.span_of(node),
+                        span,
                         "ambiguous call: several overloads match the argument types",
                     );
                     return None;
@@ -6476,7 +6572,7 @@ impl<'a> Sema<'a> {
             }
             _ => {
                 self.error(
-                    self.span_of(node),
+                    span,
                     "ambiguous call: several overloads match the argument types",
                 );
                 return None;
@@ -6484,12 +6580,14 @@ impl<'a> Sema<'a> {
         };
 
         let parameters = self.result.functions[selected as usize].parameters.clone();
-        for (argument, parameter) in arguments.iter().zip(parameters.iter()) {
-            let ty = self.check_expr(argument.value, Some(parameter.ty));
+        let mapped = self.match_call_arguments(&parameters, arguments, span)?;
+        for (value, parameter) in mapped.iter().zip(parameters.iter()) {
+            let ty = self.check_expr(*value, Some(parameter.ty));
             if let Some(ty) = ty {
-                self.expect_assignable(argument.span, ty, parameter.ty);
+                self.expect_assignable(self.span_of(*value), ty, parameter.ty);
             }
         }
+        self.result.call_arguments.insert(node, mapped);
         self.result.resolutions[node as usize] = Some(Resolution::Function(selected));
         self.result.functions[selected as usize].return_type
     }

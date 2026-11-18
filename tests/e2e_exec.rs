@@ -2497,3 +2497,43 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 21);
 }
+
+#[test]
+fn named_arguments_and_default_values() {
+    let source = "\
+structure Point
+{
+    public X: integer(4);
+    public Y: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Point, x: integer(4), y: integer(4) = 0)
+        {
+            this.X = x;
+            this.Y = y;
+        }
+
+        public fixed Move(this: &Point, dx: integer(4), dy: integer(4) = 1)
+        {
+            this.X += dx;
+            this.Y += dy;
+        }
+    }
+}
+
+fixed Greet(name: integer(4), count: integer(4) = 2, bonus: integer(4) = 3): integer(4)
+{
+    return name * 10 + count + bonus;
+}
+
+fixed Main(): integer(4)
+{
+    local point: Point = Point(y: 5, x: 4);
+    point.Move(dx: 1);
+    local sum: integer(4) = Greet(7);
+    local sum2: integer(4) = Greet(7, bonus: 9);
+    return point.X + point.Y + sum + sum2;
+}";
+    assert_eq!(run_program(source), 167);
+}

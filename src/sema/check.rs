@@ -445,9 +445,15 @@ impl<'a> Sema<'a> {
                             }
                             None => None,
                         };
+                        let static_scoped = self.resolve_scoped_targets(
+                            &field.modifiers,
+                            Some(type_id),
+                            self.span_of(*member),
+                        );
                         let index = self.result.globals.len() as u32;
                         self.result.globals.push(GlobalInfo {
                             accessibility: field.modifiers.accessibility,
+                            scoped: static_scoped,
                             name: field.name.clone(),
                             scope,
                             ty,
@@ -498,12 +504,18 @@ impl<'a> Sema<'a> {
                             format!("duplicate field '{}'", field.name),
                         );
                     }
+                    let field_scoped = self.resolve_scoped_targets(
+                        &field.modifiers,
+                        Some(type_id),
+                        self.span_of(*member),
+                    );
                     fields.push(FieldInfo {
                         name: field.name.clone(),
                         ty,
                         offset,
                         accessibility: field.modifiers.accessibility,
                         readonly: field.modifiers.readonly,
+                        scoped: field_scoped,
                     });
                     field_initializers.push(match field.init {
                         Some(Initializer::Expression(expression)) => Some(expression),
@@ -933,6 +945,7 @@ impl<'a> Sema<'a> {
             is_sealed: declaration.modifiers.sealed,
             accessibility: crate::ast::Accessibility::Public,
             calling_convention: None,
+            scoped: Vec::new(),
             is_abstract,
             return_type,
             mangled,
@@ -950,6 +963,8 @@ impl<'a> Sema<'a> {
         });
         self.result.functions[index as usize].accessibility = declaration.modifiers.accessibility;
         self.result.functions[index as usize].calling_convention = method_convention;
+        self.result.functions[index as usize].scoped =
+            self.resolve_scoped_targets(&declaration.modifiers, Some(owner), self.span_of(node));
         if declaration.modifiers.override_ {
             self.validate_override(index, owner);
         }
@@ -1002,6 +1017,7 @@ impl<'a> Sema<'a> {
         let index = self.result.globals.len() as u32;
         self.result.globals.push(GlobalInfo {
             accessibility: crate::ast::Accessibility::Public,
+            scoped: Vec::new(),
             name: declaration.name.clone(),
             scope,
             ty,
@@ -1124,6 +1140,7 @@ impl<'a> Sema<'a> {
             is_sealed: false,
             accessibility: crate::ast::Accessibility::Public,
             calling_convention: None,
+            scoped: Vec::new(),
             is_abstract: false,
             return_type,
             mangled,
@@ -1141,6 +1158,8 @@ impl<'a> Sema<'a> {
         });
         self.result.functions[index as usize].accessibility = declaration.modifiers.accessibility;
         self.result.functions[index as usize].calling_convention = method_convention;
+        self.result.functions[index as usize].scoped =
+            self.resolve_scoped_targets(&declaration.modifiers, Some(owner), self.span_of(node));
         self.result.type_defs[owner_index as usize]
             .static_methods
             .entry(declaration.name.clone())
@@ -1693,6 +1712,7 @@ impl<'a> Sema<'a> {
             is_sealed: false,
             accessibility: crate::ast::Accessibility::Public,
             calling_convention: None,
+            scoped: Vec::new(),
             is_abstract: body.is_none(),
             return_type,
             mangled,
@@ -1787,8 +1807,11 @@ impl<'a> Sema<'a> {
                 ),
             }
         }
+        let accessor_scoped =
+            self.resolve_scoped_targets(&declaration.modifiers, Some(owner), self.span_of(node));
         let mut accessor = AccessorInfo {
             accessibility: declaration.modifiers.accessibility,
+            scoped: accessor_scoped,
             name: declaration.name.clone(),
             ty,
             getter: None,
@@ -1916,6 +1939,7 @@ impl<'a> Sema<'a> {
             is_sealed: false,
             accessibility: crate::ast::Accessibility::Public,
             calling_convention: None,
+            scoped: Vec::new(),
             is_abstract: body.is_none(),
             return_type,
             mangled,
@@ -2004,6 +2028,95 @@ impl<'a> Sema<'a> {
                 self.current_owner == Some(declaring)
             }
         }
+    }
+
+    /// Resolves the `scoped(...)` targets of a declaration (§9.5).
+    fn resolve_scoped_targets(
+        &mut self,
+        modifiers: &crate::ast::Modifiers,
+        owner: Option<TypeId>,
+        span: Span,
+    ) -> Vec<ScopedInfo> {
+        let mut result = Vec::new();
+        for target in &modifiers.scoped {
+            match target {
+                crate::ast::ScopedTarget::Operator { .. } => result.push(ScopedInfo {
+                    kind: ScopedKind::Operator,
+                    sealed: false,
+                }),
+                crate::ast::ScopedTarget::Named { sealed, name } => {
+                    match self.lookup(name).cloned() {
+                        Some(Symbol::Type(ty)) => result.push(ScopedInfo {
+                            kind: ScopedKind::Type(ty),
+                            sealed: *sealed,
+                        }),
+                        _ => {
+                            let member = owner
+                                .is_some_and(|owner| !self.collect_methods(owner, name).is_empty());
+                            if member {
+                                self.unsupported(span, "scoped member targets");
+                            } else {
+                                self.error(span, format!("unknown scoped target '{name}'"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        result
+    }
+
+    /// Whether the function being checked is an operator whose parameter list
+    /// contains `ty` (an operator of that type, §9.5).
+    fn current_is_operator_of(&self, ty: TypeId) -> bool {
+        let Some(index) = self.current_function else {
+            return false;
+        };
+        let function = &self.result.functions[index as usize];
+        function.name.starts_with("operator")
+            && function
+                .parameters
+                .iter()
+                .any(|parameter| parameter.ty == ty)
+    }
+
+    /// Whether the innermost checked member is inside the accessible set of the
+    /// declaration's scoped targets (§9.5).
+    fn scope_allows(&self, declaring: TypeId, scoped: &[ScopedInfo]) -> bool {
+        if scoped.is_empty() {
+            return true;
+        }
+        scoped.iter().any(|target| match &target.kind {
+            ScopedKind::Type(ty) => {
+                if self.current_owner == Some(*ty) || self.current_is_operator_of(*ty) {
+                    return true;
+                }
+                if target.sealed {
+                    return false;
+                }
+                let Some(mut current) = self.current_owner else {
+                    return false;
+                };
+                let mut depth = 0;
+                loop {
+                    depth += 1;
+                    if depth > 32 {
+                        return false;
+                    }
+                    if current == *ty {
+                        return true;
+                    }
+                    let Type::Named(index) = self.types_of(current) else {
+                        return false;
+                    };
+                    let Some(base) = self.result.type_defs[index as usize].base else {
+                        return false;
+                    };
+                    current = base;
+                }
+            }
+            ScopedKind::Operator => self.current_is_operator_of(declaring),
+        })
     }
 
     fn find_field(&self, owner: TypeId, name: &str) -> Option<(TypeId, u32)> {
@@ -2435,6 +2548,7 @@ impl<'a> Sema<'a> {
             is_sealed: false,
             accessibility: crate::ast::Accessibility::Public,
             calling_convention,
+            scoped: Vec::new(),
             is_abstract: false,
             return_type,
             mangled,
@@ -2583,6 +2697,7 @@ impl<'a> Sema<'a> {
         let index = self.result.globals.len() as u32;
         self.result.globals.push(GlobalInfo {
             accessibility: crate::ast::Accessibility::Public,
+            scoped: Vec::new(),
             name: declaration.name.clone(),
             scope,
             ty,
@@ -2630,6 +2745,7 @@ impl<'a> Sema<'a> {
             let index = self.result.globals.len() as u32;
             self.result.globals.push(GlobalInfo {
                 accessibility: crate::ast::Accessibility::Public,
+                scoped: Vec::new(),
                 name: item.name.clone(),
                 scope,
                 ty,
@@ -5311,7 +5427,10 @@ impl<'a> Sema<'a> {
                 TypeDefKind::Class | TypeDefKind::Structure => {
                     if let Some(global) = definition.static_fields.get(&access.name).copied() {
                         let accessibility = self.result.globals[global as usize].accessibility;
-                        if !self.member_accessible(accessibility, type_id) {
+                        let global_scoped = self.result.globals[global as usize].scoped.clone();
+                        if !self.member_accessible(accessibility, type_id)
+                            || !self.scope_allows(type_id, &global_scoped)
+                        {
                             self.error(
                                 self.span_of(node),
                                 format!("'{}' is not accessible here", access.name),
@@ -5428,7 +5547,9 @@ impl<'a> Sema<'a> {
                         let definition = &self.result.type_defs[declaring_index as usize];
                         definition.fields[field_index as usize].clone()
                     };
-                    if !self.member_accessible(field.accessibility, declaring) {
+                    if !self.member_accessible(field.accessibility, declaring)
+                        || !self.scope_allows(declaring, &field.scoped)
+                    {
                         self.error(
                             self.span_of(node),
                             format!("'{}' is not accessible here", access.name),
@@ -5457,7 +5578,9 @@ impl<'a> Sema<'a> {
                 // Accessor property (§3.8.2): reads go through the getter.
                 if let Some((declaring, accessor)) = self.find_accessor(owner_type_id, &access.name)
                 {
-                    if !self.member_accessible(accessor.accessibility, declaring) {
+                    if !self.member_accessible(accessor.accessibility, declaring)
+                        || !self.scope_allows(declaring, &accessor.scoped)
+                    {
                         self.error(
                             self.span_of(node),
                             format!("'{}' is not accessible here", access.name),
@@ -6422,6 +6545,7 @@ impl<'a> Sema<'a> {
             is_sealed: false,
             accessibility: crate::ast::Accessibility::Public,
             calling_convention: None,
+            scoped: Vec::new(),
             is_abstract: false,
             return_type,
             mangled,
@@ -7292,6 +7416,7 @@ impl<'a> Sema<'a> {
                 let function = &self.result.functions[*candidate as usize];
                 let declaring = function.method_of.unwrap_or(base_type);
                 self.member_accessible(function.accessibility, declaring)
+                    && self.scope_allows(declaring, &function.scoped)
             })
             .collect();
         if candidates.is_empty() {
@@ -7450,6 +7575,7 @@ impl<'a> Sema<'a> {
                 let function = &self.result.functions[*candidate as usize];
                 let declaring = function.method_of.unwrap_or(type_id);
                 self.member_accessible(function.accessibility, declaring)
+                    && self.scope_allows(declaring, &function.scoped)
             })
             .collect();
         if !all_constructors.is_empty() && candidates.is_empty() {

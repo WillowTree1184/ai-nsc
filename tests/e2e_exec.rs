@@ -3244,3 +3244,50 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 3);
 }
+
+#[test]
+fn scoped_restricts_members_to_named_type_and_operators() {
+    let source = "\
+class Animal
+{
+    scoped(Animal) public Visible: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: Animal, value: integer(4)) { this.Visible = value; }
+        public fixed Read(this: Animal): integer(4) { return this.Visible; }
+    }
+}
+
+class Cat: Animal
+{
+    extension
+    {
+        public fixed Construct(this: Cat, value: integer(4)) { base.Construct(value); }
+        public fixed ReadAgain(this: Cat): integer(4) { return this.Visible; }
+    }
+}
+
+structure Meter
+{
+    public scoped(operator, Meter) Value: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Meter, value: integer(4)) { this.Value = value; }
+        public fixed Read(this: &Meter): integer(4) { return this.Value; }
+        operator +(left: Meter, right: Meter): Meter { return Meter(left.Value + right.Value); }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local cat: Cat = Cat(4);
+    local left: Meter = Meter(2);
+    local right: Meter = Meter(3);
+    local sum: Meter = left + right;
+    return cat.ReadAgain() + sum.Read();
+}";
+    // 4 + (2 + 3)
+    assert_eq!(run_program(source), 9);
+}

@@ -1054,3 +1054,31 @@ fixed Main(): integer(4) { return 0; }",
     );
     assert!(stderr.contains("only allowed on structure"), "{stderr}");
 }
+
+#[test]
+fn scoped_members_are_not_accessible_from_outside_the_targets() {
+    let stderr = check_source(
+        "\
+class Animal
+{
+    scoped(sealed Animal) public Visible: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: Animal, value: integer(4)) { this.Visible = value; }
+    }
+}
+
+class Cat: Animal
+{
+    extension
+    {
+        public fixed Construct(this: Cat, value: integer(4)) { base.Construct(value); }
+        public fixed Peek(this: Cat): integer(4) { return this.Visible; }
+    }
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(stderr.contains("'Visible' is not accessible"), "{stderr}");
+}

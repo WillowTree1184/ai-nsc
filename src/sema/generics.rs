@@ -155,6 +155,7 @@ impl<'a> Sema<'a> {
             is_sealed: false,
             accessibility: crate::ast::Accessibility::Public,
             calling_convention: None,
+            scoped: Vec::new(),
             is_abstract: false,
             return_type: None,
             mangled: String::new(),
@@ -547,6 +548,7 @@ impl<'a> Sema<'a> {
             is_sealed: false,
             accessibility: crate::ast::Accessibility::Public,
             calling_convention: None,
+            scoped: Vec::new(),
             is_abstract: false,
             return_type,
             mangled,
@@ -672,6 +674,7 @@ impl<'a> Sema<'a> {
             is_sealed,
             accessibility: crate::ast::Accessibility::Public,
             calling_convention: None,
+            scoped: Vec::new(),
             is_abstract: false,
             return_type,
             mangled,
@@ -819,6 +822,7 @@ impl<'a> Sema<'a> {
                             .accessors
                             .push(AccessorInfo {
                                 accessibility: crate::ast::Accessibility::Public,
+                                scoped: Vec::new(),
                                 name: "Iterator".to_string(),
                                 ty: iterator,
                                 getter: Some(getter),

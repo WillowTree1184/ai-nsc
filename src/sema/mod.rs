@@ -157,6 +157,24 @@ pub(crate) struct PendingGenericExtension {
     pub(crate) decl_scope: usize,
 }
 
+/// One resolved `scoped(...)` accessibility target (§9.5).
+#[derive(Clone, Debug)]
+pub struct ScopedInfo {
+    /// What the target clips to.
+    pub kind: ScopedKind,
+    /// Whether the target's inherited items are cancelled.
+    pub sealed: bool,
+}
+
+/// Resolved form of a `scoped` target (§9.5).
+#[derive(Clone, Debug)]
+pub enum ScopedKind {
+    /// A named type target.
+    Type(TypeId),
+    /// The declaring type's operators.
+    Operator,
+}
+
 /// One field of a structure or class (§3.8.1).
 #[derive(Clone, Debug)]
 pub struct FieldInfo {
@@ -170,6 +188,8 @@ pub struct FieldInfo {
     pub accessibility: crate::ast::Accessibility,
     /// Whether the field is `readonly` (§9.6).
     pub readonly: bool,
+    /// Accessibility clipping targets (§9.5).
+    pub scoped: Vec<ScopedInfo>,
 }
 
 /// One state of a variant (§3.7.5).
@@ -320,6 +340,8 @@ pub struct FunctionInfo {
     pub accessibility: crate::ast::Accessibility,
     /// Explicit calling convention, if declared (§3.6.3).
     pub calling_convention: Option<i32>,
+    /// Accessibility clipping targets (§9.5).
+    pub scoped: Vec<ScopedInfo>,
     /// Whether the method is abstract (an interface method without a body).
     pub is_abstract: bool,
     /// Return type; `None` is the empty type.
@@ -443,6 +465,8 @@ pub struct OperatorInfo {
 pub struct AccessorInfo {
     /// Accessor name.
     pub name: String,
+    /// Accessibility clipping targets (§9.5).
+    pub scoped: Vec<ScopedInfo>,
     /// Base accessibility of the accessor (§9.1).
     pub accessibility: crate::ast::Accessibility,
     /// Value type.
@@ -562,6 +586,8 @@ pub struct GlobalInfo {
     pub name: String,
     /// Base accessibility of the storage (§9.1).
     pub accessibility: crate::ast::Accessibility,
+    /// Accessibility clipping targets (§9.5).
+    pub scoped: Vec<ScopedInfo>,
     /// Module path.
     pub scope: Vec<String>,
     /// Type of the storage.
@@ -1611,6 +1637,7 @@ impl<'a> Sema<'a> {
             is_sealed: false,
             accessibility: crate::ast::Accessibility::Public,
             calling_convention: None,
+            scoped: Vec::new(),
             is_abstract: false,
             return_type,
             mangled,
@@ -1687,6 +1714,7 @@ impl<'a> Sema<'a> {
             is_sealed: false,
             accessibility: crate::ast::Accessibility::Public,
             calling_convention: None,
+            scoped: Vec::new(),
             is_abstract: true,
             return_type,
             mangled,
@@ -1835,6 +1863,7 @@ impl<'a> Sema<'a> {
                         offset: 16,
                         accessibility: crate::ast::Accessibility::Public,
                         readonly: false,
+                        scoped: Vec::new(),
                     }];
                     definition.field_initializers = vec![None];
                     definition.instance_size = 32;
@@ -1932,6 +1961,7 @@ impl<'a> Sema<'a> {
                 let global_index = self.result.globals.len() as u32;
                 self.result.globals.push(GlobalInfo {
                     accessibility: crate::ast::Accessibility::Public,
+                    scoped: Vec::new(),
                     name: "DefaultAllocator".to_string(),
                     scope: Vec::new(),
                     ty: allocator,

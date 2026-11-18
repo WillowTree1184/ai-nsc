@@ -4122,3 +4122,21 @@ fixed Main(): integer(4)
     // §4.9.14 defines `>>` as a logical (zero-filling) shift.
     assert_eq!(run_program(source), 7);
 }
+
+#[test]
+fn float_to_integer_casts_wrap_and_handle_nan() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local not_a_number: float(8) = illegal;
+    local huge: float(8) = 2147483648.0;
+    local negative: float(8) = -2147483904.0;
+    local score: integer(4) = 0;
+    if (Cast<integer(4)>(not_a_number) == 0) { score += 1; }
+    if (Cast<integer(4)>(huge) == -2147483648) { score += 2; }
+    if (Cast<integer(4)>(negative) == 2147483392) { score += 4; }
+    return score;
+}";
+    // out-of-range conversions wrap (§3.2); NaN is deterministic
+    assert_eq!(run_program(source), 7);
+}

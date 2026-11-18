@@ -7631,6 +7631,28 @@ impl<'a> Sema<'a> {
     ) -> Option<TypeId> {
         match unary.op {
             UnaryOp::Negate => {
+                // The most negative integer literal is only representable when
+                // its negation is applied: `-2147483648` for `integer(4)` (§2.7.1).
+                if let (Some(expected), NodeKind::IntegerLiteral(_)) =
+                    (expected, self.node_kind(unary.operand))
+                {
+                    if let Type::Integer { bytes, signed } = self.type_of(expected) {
+                        if signed {
+                            let bits = u32::from(bytes) * 8;
+                            let minimum_magnitude = if bits >= 128 {
+                                1i128 << 127
+                            } else {
+                                1i128 << (bits - 1)
+                            };
+                            if self.literal_integer(unary.operand) == Some(minimum_magnitude) {
+                                self.result.node_types[unary.operand as usize] = Some(expected);
+                                self.result.resolutions[unary.operand as usize] = None;
+                                self.result.node_types[node as usize] = Some(expected);
+                                return Some(expected);
+                            }
+                        }
+                    }
+                }
                 let ty = self.check_expr(unary.operand, expected)?;
                 if let Some(method) = self.find_operator(ty, ty, OperatorKind::Negate) {
                     let span = self.span_of(node);

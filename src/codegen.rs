@@ -6064,6 +6064,12 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                         .build_float_ext(from, f64_type, "cast_f64")
                         .map_err(|error| format!("cannot convert: {error}"))?
                 };
+                // NaN is not convertible by IEEE 754; pick a deterministic
+                // wrapped result instead of leaving a poison value (§3.2).
+                let is_nan = self
+                    .builder
+                    .build_float_compare(FloatPredicate::UNO, wide, wide, "cast_nan")
+                    .map_err(|error| format!("cannot convert: {error}"))?;
                 let bits = u32::from(*bytes) * 8;
                 let modulus = f64_type.const_float((2.0f64).powi(bits as i32));
                 let reduced = self
@@ -6113,9 +6119,15 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     self.builder
                         .build_float_to_unsigned_int(wrapped, target_int, "cast")
                 };
-                Ok(result
+                let converted = result.map_err(|error| format!("cannot convert: {error}"))?;
+                // NaN is not convertible by IEEE 754; pick a deterministic
+                // wrapped result instead of leaving a poison value (§3.2).
+                let converted = self
+                    .builder
+                    .build_select(is_nan, target_int.const_zero(), converted, "cast_nan_value")
                     .map_err(|error| format!("cannot convert: {error}"))?
-                    .into())
+                    .into_int_value();
+                Ok(converted.into())
             }
             (Type::Pointer { .. }, Type::Pointer { .. }) => Ok(value),
             (Type::Array { .. }, Type::Pointer { .. }) => {

@@ -880,6 +880,9 @@ pub struct SemaResult {
     /// Nested function declarations inside bodies (§5.3), mapped to the
     /// function literal expression that creates their value.
     pub nested_functions: HashMap<NodeId, NodeId>,
+    /// Heap locals NOLAA disposes before a `return` jumps out of their scope
+    /// (§12.2), keyed by the return statement.
+    pub jump_dispose: HashMap<NodeId, Vec<LocalId>>,
     /// Integer values of compile-time expressions that can be emitted as
     /// constants (§11.4: keep only the required end products).
     pub compile_time_values: HashMap<NodeId, i128>,

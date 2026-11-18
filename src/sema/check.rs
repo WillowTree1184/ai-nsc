@@ -3513,7 +3513,17 @@ impl<'a> Sema<'a> {
             let pending: Vec<(Span, String)> = self
                 .heap_units
                 .iter()
-                .filter(|unit| !unit.manual && !unit.disposed && !unit.abandoned && !unit.escaped)
+                .filter(|unit| {
+                    !unit.manual
+                        && !unit.disposed
+                        && !unit.abandoned
+                        && !unit.escaped
+                        && !self
+                            .result
+                            .jump_dispose
+                            .values()
+                            .any(|locals| locals.contains(&unit.local))
+                })
                 .map(|unit| {
                     (
                         unit.span,
@@ -3925,6 +3935,25 @@ impl<'a> Sema<'a> {
         self.pop_scope();
     }
 
+    /// Schedules NOLAA auto-dispose before a `return` leaves the function
+    /// scope (§12.2). A return is always a safe point for units that are still
+    /// alive; already handled units (manual, abandoned, escaped or disposed at
+    /// an enclosing block end) are skipped.
+    fn plan_return_dispose(&mut self, node: NodeId) {
+        let mut locals = Vec::new();
+        for unit in &self.heap_units {
+            if unit.manual || unit.abandoned || unit.escaped || unit.disposed {
+                continue;
+            }
+            if !locals.contains(&unit.local) {
+                locals.push(unit.local);
+            }
+        }
+        if !locals.is_empty() {
+            self.result.jump_dispose.insert(node, locals);
+        }
+    }
+
     /// Schedules NOLAA auto-dispose for eligible heap units declared in `block`
     /// (§12.2): non-manual, not explicitly disposed, not abandoned and not
     /// escaping.
@@ -4139,6 +4168,7 @@ impl<'a> Sema<'a> {
                 }
             }
             NodeKind::Return(statement) => {
+                self.plan_return_dispose(node);
                 if let Some(value) = statement.value {
                     self.note_heap_escape(value);
                 }

@@ -814,7 +814,7 @@ fn multiple_input_files_form_one_program() {
 }
 
 #[test]
-fn never_disposed_heap_allocation_warns_without_failing() {
+fn nolaa_disposes_heap_units_on_return_without_warning() {
     use std::sync::atomic::{AtomicU32, Ordering};
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     let directory = std::env::temp_dir().join(format!(
@@ -836,9 +836,10 @@ fn never_disposed_heap_allocation_warns_without_failing() {
     let _ = std::fs::remove_dir_all(&directory);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(output.status.success(), "stderr: {stderr}");
+    // NOLAA now inserts the dispose at the return safe point (§12.2).
     assert!(
-        stderr.contains("never disposed"),
-        "expected a never-disposed warning: {stderr}"
+        !stderr.contains("never disposed"),
+        "return is a safe point, so no warning is expected: {stderr}"
     );
 }
 

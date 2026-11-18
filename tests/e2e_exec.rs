@@ -3604,3 +3604,44 @@ fixed Main(): integer(4)
     // 3 * 2
     assert_eq!(run_program(source), 6);
 }
+
+#[test]
+fn nolaa_disposes_heap_units_before_return() {
+    let source = "\
+local destroyed: integer(4) = 0;
+
+structure Token
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Destruct(this: &Token) { destroyed = destroyed + 1; }
+    }
+}
+
+fixed Early(): integer(4)
+{
+    heap token: Token = Token();
+    if (true)
+    {
+        return 0;
+    }
+    return 1;
+}
+
+fixed Late(): integer(4)
+{
+    heap token: Token = Token();
+    return 2;
+}
+
+fixed Main(): integer(4)
+{
+    local first: integer(4) = Early();
+    local second: integer(4) = Late();
+    return first + second + destroyed * 100;
+}";
+    // Both returns dispose the heap unit: 2 destructor calls.
+    assert_eq!(run_program(source), 202);
+}

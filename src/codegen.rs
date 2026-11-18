@@ -1287,7 +1287,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .map_err(|error| format!("cannot branch: {error}"))?;
                 Ok(())
             }
-            NodeKind::Return(statement) => self.gen_return_statement(&statement),
+            NodeKind::Return(statement) => self.gen_return_statement(node, &statement),
             NodeKind::ExpressionStmt(expression) => {
                 self.gen_expr(expression)?;
                 Ok(())
@@ -3353,7 +3353,17 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         }
     }
 
-    fn gen_return_statement(&mut self, statement: &crate::ast::ReturnStmt) -> Result<(), String> {
+    fn gen_return_statement(
+        &mut self,
+        node: NodeId,
+        statement: &crate::ast::ReturnStmt,
+    ) -> Result<(), String> {
+        // NOLAA: dispose still-alive heap units before the jump (§12.2).
+        if let Some(locals) = self.sema.jump_dispose.get(&node).cloned() {
+            for local in locals {
+                self.gen_dispose_local(local)?;
+            }
+        }
         match statement.value {
             Some(value) => {
                 let value = self.gen_coerced_expr(value)?;

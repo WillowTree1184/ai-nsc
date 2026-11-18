@@ -157,6 +157,30 @@ fn operator_accessibility_modifier_is_rejected() {
 // Generics diagnostics (§10)
 // ----------------------------------------------------------------------
 
+fn check_source_ok(source: &str) -> String {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-ok-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("main.ns");
+    std::fs::write(&path, source).expect("write program");
+    let output = ai_nsc()
+        .args(["check", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    assert!(
+        output.status.success(),
+        "expected success: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stderr).to_string()
+}
+
 fn check_source(source: &str) -> String {
     use std::sync::atomic::{AtomicU32, Ordering};
     static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -2044,4 +2068,59 @@ fn source_files_must_have_the_ns_extension() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success());
     assert!(stderr.contains("'.ns' extension"), "{stderr}");
+}
+
+#[test]
+fn wildcard_functions_validate_only_the_fixed_prefix() {
+    let too_many = check_source(
+        "\
+fixed Need(value: integer(4)): integer(4)
+{
+    return value;
+}
+
+fixed Main(): integer(4)
+{
+    return Need(1, 2);
+}",
+    );
+    assert!(too_many.contains("too many arguments"), "{too_many}");
+    let missing = check_source(
+        "\
+fixed Need(first: integer(4), wildcard): integer(4)
+{
+    return first;
+}
+
+fixed Main(): integer(4)
+{
+    return Need();
+}",
+    );
+    assert!(missing.contains("missing argument"), "{missing}");
+    let wrong_prefix = check_source(
+        "\
+fixed Need(first: integer(4), wildcard): integer(4)
+{
+    return first;
+}
+
+fixed Main(): integer(4)
+{
+    return Need(\"not an integer\");
+}",
+    );
+    assert!(!wrong_prefix.is_empty(), "{wrong_prefix}");
+    let accepted = check_source_ok(
+        "\
+linkable(\"printf\") PrintFormat(wildcard);
+
+fixed Main(): integer(4)
+{
+    PrintFormat(\"HelloWorld\\n\");
+    return 0;
+}",
+    );
+    assert!(!accepted.contains("too many arguments"), "{accepted}");
+    assert!(!accepted.contains("no overload"), "{accepted}");
 }

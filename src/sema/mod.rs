@@ -338,6 +338,8 @@ pub struct FunctionInfo {
     pub body: Option<FunctionBody>,
     /// Parameters, including `this` first for methods.
     pub parameters: Vec<ParameterInfo>,
+    /// Whether the parameter list ends with a `wildcard` (§3.6.3).
+    pub wildcard: bool,
     /// The type this function is a method of, if it came from an extension.
     pub method_of: Option<TypeId>,
     /// The class owning a static method: its static fields are in scope in the
@@ -965,6 +967,8 @@ pub struct SemaResult {
     pub array_extension_instances: HashMap<(NodeId, TypeId), Vec<u32>>,
     /// Final values of top-level compile-time variables (§11.4).
     pub compile_time_variables: HashMap<String, (i128, TypeId)>,
+    /// Arguments matched by a function's trailing `wildcard` (§3.6.3).
+    pub wildcard_arguments: HashMap<NodeId, Vec<NodeId>>,
     /// Number of errors reported.
     pub error_count: u32,
 }
@@ -1894,6 +1898,8 @@ impl<'a> Sema<'a> {
             node: NodeId::default(),
             body: Some(body),
             parameters: all_parameters,
+
+            wildcard: false,
             method_of: Some(owner),
             static_owner: None,
             is_virtual: false,
@@ -1971,6 +1977,8 @@ impl<'a> Sema<'a> {
             node: NodeId::default(),
             body: None,
             parameters: all_parameters,
+
+            wildcard: false,
             method_of: Some(interface),
             static_owner: None,
             is_virtual: false,

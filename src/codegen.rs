@@ -534,12 +534,16 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         for parameter in &parameter_types {
             parameter_metadata.push(self.llvm_parameter_type(parameter)?.into());
         }
+        let wildcard = self.sema.functions[function_index as usize].wildcard;
         Ok(match return_type {
             Some(ty) => {
                 let llvm_return = self.llvm_type(ty)?;
-                llvm_return.fn_type(&parameter_metadata, false)
+                llvm_return.fn_type(&parameter_metadata, wildcard)
             }
-            None => self.context.void_type().fn_type(&parameter_metadata, false),
+            None => self
+                .context
+                .void_type()
+                .fn_type(&parameter_metadata, wildcard),
         })
     }
 
@@ -3749,6 +3753,94 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         }
     }
 
+    /// Lowers an argument matched by a function's trailing `wildcard` (§3.6.3).
+    ///
+    /// The specification forbids validating these arguments, so only the ABI
+    /// promotions needed by the platform default convention are applied:
+    /// small integers and booleans are promoted to `i32`, `float(4)` to `f64`,
+    /// and arrays/VLAs decay to a pointer to their elements.
+    #[allow(unsafe_code)]
+    fn gen_variadic_argument(&mut self, node: NodeId) -> Result<BasicValueEnum<'ctx>, String> {
+        let value = self.gen_coerced_expr(node)?;
+        let ty = self.type_of(node);
+        match self.sema.types.get(ty).clone() {
+            Type::Integer { bytes, signed } if bytes < 4 => {
+                let cast = self
+                    .builder
+                    .build_int_cast_sign_flag(
+                        value.into_int_value(),
+                        self.context.i32_type(),
+                        signed,
+                        "vararg_int",
+                    )
+                    .map_err(|error| format!("cannot promote variadic argument: {error}"))?;
+                Ok(cast.into())
+            }
+            Type::Boolean => {
+                let cast = self
+                    .builder
+                    .build_int_cast_sign_flag(
+                        value.into_int_value(),
+                        self.context.i32_type(),
+                        false,
+                        "vararg_bool",
+                    )
+                    .map_err(|error| format!("cannot promote variadic argument: {error}"))?;
+                Ok(cast.into())
+            }
+            Type::Float { bytes: 4 } => {
+                let cast = self
+                    .builder
+                    .build_float_ext(
+                        value.into_float_value(),
+                        self.context.f64_type(),
+                        "vararg_float",
+                    )
+                    .map_err(|error| format!("cannot promote variadic argument: {error}"))?;
+                Ok(cast.into())
+            }
+            Type::Array { .. } => {
+                let llvm_type = self.llvm_type(ty)?;
+                let slot = self
+                    .builder
+                    .build_alloca(llvm_type, "vararg_array")
+                    .map_err(|error| format!("cannot spill variadic array: {error}"))?;
+                self.builder
+                    .build_store(slot, value)
+                    .map_err(|error| format!("cannot store variadic array: {error}"))?;
+                let zero = self.context.i32_type().const_zero();
+                let pointer = unsafe {
+                    self.builder
+                        .build_gep(llvm_type, slot, &[zero, zero], "vararg_data")
+                }
+                .map_err(|error| format!("cannot decay variadic array: {error}"))?;
+                Ok(pointer.into())
+            }
+            Type::Vla { .. } => {
+                let llvm_type = self.llvm_type(ty)?;
+                let slot = self
+                    .builder
+                    .build_alloca(llvm_type, "vararg_vla")
+                    .map_err(|error| format!("cannot spill variadic VLA: {error}"))?;
+                self.builder
+                    .build_store(slot, value)
+                    .map_err(|error| format!("cannot store variadic VLA: {error}"))?;
+                let struct_type = llvm_type.into_struct_type();
+                let data = self
+                    .builder
+                    .build_struct_gep(struct_type, slot, 0, "vararg_data")
+                    .map_err(|error| format!("cannot load variadic VLA data: {error}"))?;
+                let pointer_type = self.context.ptr_type(AddressSpace::default());
+                let data = self
+                    .builder
+                    .build_load(pointer_type, data, "vararg_buffer")
+                    .map_err(|error| format!("cannot load variadic VLA data: {error}"))?;
+                Ok(data)
+            }
+            _ => Ok(value),
+        }
+    }
+
     fn gen_return_statement(
         &mut self,
         node: NodeId,
@@ -5616,6 +5708,13 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                         arguments.push(address.into());
                     } else {
                         arguments.push(self.gen_coerced_expr(value_node)?.into());
+                    }
+                }
+                // Trailing arguments matched by the function's `wildcard` are
+                // passed unchecked, using the platform default ABI (§3.6.3).
+                if let Some(extras) = self.sema.wildcard_arguments.get(&node).cloned() {
+                    for extra in extras {
+                        arguments.push(self.gen_variadic_argument(extra)?.into());
                     }
                 }
                 let call_site = if let Some(receiver_pointer) = receiver {

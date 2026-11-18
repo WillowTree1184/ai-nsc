@@ -925,6 +925,8 @@ impl<'a> Sema<'a> {
             node,
             body: None,
             parameters: Vec::new(),
+
+            wildcard: false,
             method_of: Some(owner),
             static_owner: None,
             is_virtual: false,
@@ -1031,6 +1033,7 @@ impl<'a> Sema<'a> {
                     name: declaration.name.clone(),
                     body: body_block,
                     parameters,
+                    wildcard: function.wildcard,
                     return_type,
                     method_of: None,
                     exposed_symbol: None,
@@ -1117,6 +1120,7 @@ impl<'a> Sema<'a> {
             node,
             body,
             parameters,
+            wildcard: function.wildcard,
             method_of: Some(owner),
             static_owner: None,
             is_virtual: declaration.modifiers.virtual_ || declaration.modifiers.override_,
@@ -1400,6 +1404,7 @@ impl<'a> Sema<'a> {
             node: NodeId::default(),
             body,
             parameters,
+            wildcard: false,
             method_of: None,
             static_owner: Some(owner),
             is_virtual: false,
@@ -1473,6 +1478,7 @@ impl<'a> Sema<'a> {
             node,
             body: Some(FunctionBody::Block(body)),
             parameters,
+            wildcard: false,
             method_of: None,
             static_owner: Some(owner),
             is_virtual: false,
@@ -2179,6 +2185,8 @@ impl<'a> Sema<'a> {
             node: NodeId::default(),
             body,
             parameters: all_parameters,
+
+            wildcard: false,
             method_of: with_this.then_some(owner),
             static_owner: None,
             is_virtual: false,
@@ -2542,6 +2550,7 @@ impl<'a> Sema<'a> {
             node: NodeId::default(),
             body,
             parameters,
+            wildcard: false,
             method_of: None,
             static_owner: None,
             is_virtual: false,
@@ -2807,6 +2816,7 @@ impl<'a> Sema<'a> {
             node: NodeId::default(),
             body,
             parameters,
+            wildcard: false,
             method_of: Some(owner),
             static_owner: None,
             is_virtual: false,
@@ -3487,6 +3497,7 @@ impl<'a> Sema<'a> {
             name: declaration.name.clone(),
             body,
             parameters,
+            wildcard: function.wildcard,
             return_type,
             method_of: None,
             exposed_symbol: None,
@@ -3577,6 +3588,7 @@ impl<'a> Sema<'a> {
             name,
             body,
             parameters,
+            wildcard,
             return_type,
             method_of,
             exposed_symbol,
@@ -3606,6 +3618,7 @@ impl<'a> Sema<'a> {
                 Some(FunctionBody::Block(body))
             },
             parameters,
+            wildcard,
             method_of,
             static_owner: None,
             is_virtual: false,
@@ -3671,6 +3684,7 @@ impl<'a> Sema<'a> {
                 node,
                 declaration,
                 parameters,
+                function.wildcard,
                 return_type,
                 exposed,
                 calling_convention,
@@ -3682,6 +3696,7 @@ impl<'a> Sema<'a> {
             name: declaration.name.clone(),
             body,
             parameters,
+            wildcard: function.wildcard,
             return_type,
             method_of: None,
             exposed_symbol: Some(exposed),
@@ -3692,11 +3707,13 @@ impl<'a> Sema<'a> {
     /// Registers a `linkable` declaration whose symbol is provided by an
     /// external library (§5.5): the symbol is emitted as an external function
     /// declaration and calls bind to it at link time.
+    #[allow(clippy::too_many_arguments)]
     fn register_external_linkable(
         &mut self,
         node: NodeId,
         declaration: &LinkableDecl,
         parameters: Vec<ParameterInfo>,
+        wildcard: bool,
         return_type: Option<TypeId>,
         exposed: String,
         calling_convention: Option<i32>,
@@ -3710,6 +3727,7 @@ impl<'a> Sema<'a> {
             node,
             body: None,
             parameters,
+            wildcard,
             method_of: None,
             static_owner: None,
             is_virtual: false,
@@ -4736,6 +4754,7 @@ struct FunctionDeclaration {
     name: String,
     body: NodeId,
     parameters: Vec<ParameterInfo>,
+    wildcard: bool,
     return_type: Option<TypeId>,
     method_of: Option<TypeId>,
     exposed_symbol: Option<String>,
@@ -9249,6 +9268,7 @@ impl<'a> Sema<'a> {
             node,
             body: Some(body),
             parameters,
+            wildcard: false,
             method_of: None,
             static_owner: None,
             is_virtual: false,
@@ -10899,6 +10919,93 @@ impl<'a> Sema<'a> {
         Some(ordered)
     }
 
+    /// Maps call arguments to a candidate function, handling a trailing
+    /// `wildcard` (§3.6.3): the fixed prefix is validated, remaining positional
+    /// arguments are returned unchecked.
+    fn match_candidate_arguments(
+        &mut self,
+        candidate: u32,
+        arguments: &[Argument],
+        span: Span,
+    ) -> Option<(Vec<NodeId>, Vec<NodeId>)> {
+        let parameters = self.result.functions[candidate as usize].parameters.clone();
+        if self.result.functions[candidate as usize].wildcard {
+            self.match_call_arguments_wildcard(&parameters, arguments, span)
+        } else {
+            self.match_call_arguments(&parameters, arguments, span)
+                .map(|mapped| (mapped, Vec::new()))
+        }
+    }
+
+    fn match_call_arguments_wildcard(
+        &mut self,
+        parameters: &[ParameterInfo],
+        arguments: &[Argument],
+        fallback_span: Span,
+    ) -> Option<(Vec<NodeId>, Vec<NodeId>)> {
+        let mut mapped: Vec<Option<NodeId>> = vec![None; parameters.len()];
+        let mut extras = Vec::new();
+        let mut next_positional = 0usize;
+        for argument in arguments {
+            match &argument.name {
+                Some(name) => {
+                    let position = parameters
+                        .iter()
+                        .position(|parameter| &parameter.name == name);
+                    let Some(position) = position else {
+                        if self.suppress_errors == 0 {
+                            self.error(argument.span, format!("unknown parameter name '{name}'"));
+                        }
+                        return None;
+                    };
+                    if mapped[position].is_some() {
+                        if self.suppress_errors == 0 {
+                            self.error(
+                                argument.span,
+                                format!("parameter '{name}' is given more than once"),
+                            );
+                        }
+                        return None;
+                    }
+                    mapped[position] = Some(argument.value);
+                }
+                None => {
+                    while next_positional < parameters.len() && mapped[next_positional].is_some() {
+                        next_positional += 1;
+                    }
+                    if next_positional < parameters.len() {
+                        mapped[next_positional] = Some(argument.value);
+                        next_positional += 1;
+                    } else {
+                        extras.push(argument.value);
+                    }
+                }
+            }
+        }
+        let mut ordered = Vec::with_capacity(parameters.len());
+        for (position, slot) in mapped.into_iter().enumerate() {
+            match slot {
+                Some(value) => ordered.push(value),
+                None => match parameters[position].default {
+                    Some(default) => ordered.push(default),
+                    None => {
+                        if self.suppress_errors == 0 {
+                            self.error(
+                                fallback_span,
+                                format!(
+                                    "missing argument for parameter '{}'",
+                                    parameters[position].name
+                                ),
+                            );
+                        }
+                        return None;
+                    }
+                },
+            }
+        }
+        Some((ordered, extras))
+    }
+
     fn resolve_overload(
         &mut self,
         node: NodeId,
@@ -10960,8 +11067,8 @@ impl<'a> Sema<'a> {
         for &candidate in &candidates {
             let parameters = self.result.functions[candidate as usize].parameters.clone();
             self.suppress_errors += 1;
-            let mapped = self.match_call_arguments(&parameters, arguments, span);
-            let matches = mapped.is_some_and(|mapped| {
+            let mapped = self.match_candidate_arguments(candidate, arguments, span);
+            let matches = mapped.is_some_and(|(mapped, _)| {
                 mapped
                     .iter()
                     .zip(parameters.iter())
@@ -10983,8 +11090,8 @@ impl<'a> Sema<'a> {
                 for &candidate in &candidates {
                     let parameters = self.result.functions[candidate as usize].parameters.clone();
                     self.suppress_errors += 1;
-                    let mapped = self.match_call_arguments(&parameters, arguments, span);
-                    let matches = mapped.is_some_and(|mapped| {
+                    let mapped = self.match_candidate_arguments(candidate, arguments, span);
+                    let matches = mapped.is_some_and(|(mapped, _)| {
                         mapped
                             .iter()
                             .zip(parameters.iter())
@@ -11006,10 +11113,7 @@ impl<'a> Sema<'a> {
                     // Re-run the mapping without suppression on the single
                     // overload so malformed argument lists are reported precisely.
                     if candidates.len() == 1 {
-                        let parameters = self.result.functions[candidates[0] as usize]
-                            .parameters
-                            .clone();
-                        self.match_call_arguments(&parameters, arguments, span);
+                        self.match_candidate_arguments(candidates[0], arguments, span);
                     }
                     self.error(span, "no overload matches the argument types");
                     return None;
@@ -11031,7 +11135,7 @@ impl<'a> Sema<'a> {
         };
 
         let parameters = self.result.functions[selected as usize].parameters.clone();
-        let mapped = self.match_call_arguments(&parameters, arguments, span)?;
+        let (mapped, extras) = self.match_candidate_arguments(selected, arguments, span)?;
         for (value, parameter) in mapped.iter().zip(parameters.iter()) {
             let ty = self.check_expr(*value, Some(parameter.ty));
             if let Some(ty) = ty {
@@ -11039,6 +11143,14 @@ impl<'a> Sema<'a> {
             }
         }
         self.result.call_arguments.insert(node, mapped);
+        if self.result.functions[selected as usize].wildcard && !extras.is_empty() {
+            // Wildcard arguments are type-checked for validity but never
+            // validated against the function's signature (§3.6.3).
+            for extra in &extras {
+                self.check_expr(*extra, None);
+            }
+            self.result.wildcard_arguments.insert(node, extras);
+        }
         self.result.resolutions[node as usize] = Some(Resolution::Function(selected));
         self.result.functions[selected as usize].return_type
     }

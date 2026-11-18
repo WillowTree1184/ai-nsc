@@ -148,6 +148,8 @@ impl<'a> Sema<'a> {
             node,
             body: None,
             parameters: Vec::new(),
+
+            wildcard: false,
             method_of: None,
             static_owner: None,
             is_virtual: false,
@@ -565,6 +567,8 @@ impl<'a> Sema<'a> {
             node: cloned,
             body: Some(FunctionBody::Block(body)),
             parameters: resolved_parameters,
+
+            wildcard: false,
             method_of,
             static_owner: None,
             is_virtual,
@@ -691,6 +695,8 @@ impl<'a> Sema<'a> {
             node: cloned,
             body: Some(FunctionBody::Block(body)),
             parameters: resolved_parameters,
+
+            wildcard: false,
             method_of,
             static_owner,
             is_virtual,

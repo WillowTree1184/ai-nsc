@@ -4603,3 +4603,35 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 3);
 }
+
+#[test]
+fn wildcard_parameters_accept_unchecked_trailing_arguments() {
+    // §3.6.3: only the fixed parameter prefix is validated; arguments matched by
+    // `wildcard` are passed unchecked using the platform ABI.
+    let source = "\
+fixed Ignore(first: integer(4), wildcard): integer(4)
+{
+    return first;
+}
+
+fixed Main(): integer(4)
+{
+    return Ignore(40, \"ignored\", true, 12345);
+}";
+    assert_eq!(run_program(source), 40);
+}
+
+#[test]
+fn wildcard_linkable_function_accepts_a_string_argument() {
+    // The C side is the programmer's responsibility; a string literal needs a
+    // manual `\\0` (§2.7.5), so the call itself must only require compilation.
+    let source = "\
+linkable(\"printf\") PrintFormat(wildcard);
+
+fixed Main(): integer(4)
+{
+    PrintFormat(\"HelloWorld\\n\\0\");
+    return 0;
+}";
+    assert_eq!(run_program(source), 0);
+}

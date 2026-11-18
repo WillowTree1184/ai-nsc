@@ -335,3 +335,4 @@ report an error (§4.8).
 | 114 | MED | §11.2/§11.8 | Runtime code could call the compiler API directly | fixed (only `#{}`/`#(...)`/`#if` are compile-time contexts; Type/Compiler/Platform direct runtime calls diagnosed; NOLAA markers stay permitted) |
 | 115 | MED | §11.8.1 | `Type.SizeOf` always returned cardinal(8) | fixed (value width follows the target pointer width: cardinal(4) on i686, verified by an i686 CLI test) |
 | 116 | LOW | §2.1 | The compiler accepted source files with any extension | fixed (inputs must have the `.ns` extension; CLI test) |
+| 117 | HIGH | §3.6.3 | `wildcard` parameters were rejected as "too many arguments" / "no overload" | fixed (FunctionInfo carries `wildcard`; the fixed parameter prefix is validated, trailing arguments are only type-checked for validity and passed unchecked with ABI promotions; variadic LLVM declarations/calls; user-defined and linkable printf cases tested) |

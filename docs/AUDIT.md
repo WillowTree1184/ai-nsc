@@ -306,3 +306,4 @@ report an error (§4.8).
 | 85 | MED | §3.8.2, §9.15 | Static accessors with explicit members unsupported | fixed (d4e8e85: parameterless static getter/setter functions, default backing bodies, static member access/codegen) |
 | 86 | LOW | §3.8.2 | Explicit members on local-backed free accessors diagnosed | fixed (5c4d942: member bodies bound to by-reference backing parameter, value parameter naming) |
 | 87 | MED | §11.7 | Compile-time code could read regular runtime locals silently | fixed (47799f9: boundary diagnostic for non-compile-time locals; block locals/constants/# parameters allowed) |
+| 88 | MED | §3.7.1, §7 | Modules inside type bodies unsupported | fixed (4bb904a: scoped identifier organization, nested modules, qualified access through the type name) |

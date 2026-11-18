@@ -73,7 +73,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §5.9 `match`: patterns, guards, logical control flow (break/continue/labels) | ✅ | match e2e tests |
 | §5.9.5 `for`: arrays, VLA, ranges, `&` element alias, `IIterator`/`IIterable` targets | ✅ | for e2e tests |
 | §6 names/scopes: modules, shadowing, `owner` chains, imports | ✅ | scope/owner/use tests |
-| §7 modules | ✅ | module e2e tests |
+| §7 modules (including nested modules and modules inside type bodies) | ✅ | module e2e tests |
 | §8 functions: parameters, defaults, by-ref, array parameter sugar, `#` compile-time constants, nested functions | ✅ | parameter/call tests; `#` on functions, methods and operators |
 | §9 modifiers: accessibility, `scoped`, `readonly`, `implicitable`, `manual`, `abstract`/`sealed`/`virtual`/`override`, `aligned`, `static`, `verbatim` | 🟡 | all enforced, including `verbatim` (optnone functions, runtime-evaluated storages, compile-time evaluation rejected inside verbatim) |
 | §10 generics / monomorphization | 🟡 | types/functions/constraints/extension-for-generic/caching/mangling; including methods that declare their own type parameters and array extension targets (methods); remaining: array extension indexers and monomorphization-volume optimization (§14.3.2, not implemented) |

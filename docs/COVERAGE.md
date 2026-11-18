@@ -101,8 +101,9 @@ These are deliberate, documented limitations rather than silent miscompiles:
    `NOLAA.AssumeNoDemandNext`; general CFG safe-point insertion and full alias
    analysis are not implemented.
 7. **Monomorphization volume optimization** (§14.3.2) is not implemented.
-8. **Target selection**: code generation targets the host ABI; calling
-   conventions the host backend cannot represent are diagnosed.
+8. **Target selection**: `--target` configures x86/aarch64 code generation and
+   object emission with the target data layout; foreign-target linking (needs a
+   sysroot) and other architectures are diagnosed.
 9. **Platform queries** in the compile-time library answer for the host target.
 11. Container/iterator utilities beyond the specification's §15.2 (dynamic
     arrays, lists, maps) are not provided.

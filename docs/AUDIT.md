@@ -291,3 +291,4 @@ report an error (§4.8).
 | 70 | MED | §12.2 | `NOLAA.Bind` groups, escape propagation and trackable-argument checking unimplemented | fixed (fdb1c9b: Bind merges analysis groups, group-wide safe points/escapes, strict argument diagnostics, compile-time APIs not escapes) |
 | 71 | LOW | §11.4 | Compile-time-only `#{}` blocks emitted run-time code | fixed (db51aa2: marked compile-time-only blocks, locals pruned, code generation skipped) |
 | 72 | LOW | §12.2 | `NOLAA.AssumeNoDemandNext` was a no-op | fixed (ebac2c9: next-statement demand suppression, one-statement scope) |
+| 73 | MED | §13, §14 | `--target` only reached clang; LLVM module had no triple/data layout | fixed (d1d6d9b: x86/aarch64 target machine + triple/layout, cross object emission, cross-linking diagnosed) |

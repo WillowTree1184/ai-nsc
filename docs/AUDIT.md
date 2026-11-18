@@ -288,3 +288,4 @@ report an error (§4.8).
 | 67 | LOW | §3.8.3 | Array extension operators unsupported | fixed (db74b74: per-owner operator registration, dispatch for non-named owners, lazy instantiation for operands) |
 | 68 | MED | §12.2 | NOLAA had no return safe point (trailing-return heap units leaked) | fixed (2f41b11: dispose still-alive units before return, warning suppression updated) |
 | 69 | MED | §12.2 | NOLAA had no break/continue safe points (loop-body heap units leaked) | fixed (73255c9: block/loop tracking, dispose loop-body units before break/continue) |
+| 70 | MED | §12.2 | `NOLAA.Bind` groups, escape propagation and trackable-argument checking unimplemented | fixed (fdb1c9b: Bind merges analysis groups, group-wide safe points/escapes, strict argument diagnostics, compile-time APIs not escapes) |

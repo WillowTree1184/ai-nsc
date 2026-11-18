@@ -31,9 +31,9 @@
 1. Compile-time blocks (`#{...}`): integer `#(...)` end products are now folded
    (see #64); `#{}` blocks are still lowered as runtime equivalents, so full
    end-product minimisation remains open (§11.4).
-2. NOLAA: alias/strongly-connected-component analysis and general CFG safe-point
-   insertion (§12.2); block-end, return, break and continue safe points are
-   implemented (warnings, escaping units exempt).
+2. NOLAA: general CFG safe-point insertion and full alias/strongest-connected
+   component analysis (§12.2); `NOLAA.Bind` groups, block-end/return/break/
+   continue safe points and escape propagation are implemented.
 3. Multi-dimensional VLAs (§3.6.1 subset).
 4. Array extension targets (`extension for array(...)`).
 5. Monomorphization volume optimization (§14.3.2).

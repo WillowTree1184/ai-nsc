@@ -2966,6 +2966,63 @@ impl<'a> Sema<'a> {
     }
 
     pub(crate) fn check_global_initializers(&mut self) {
+        // Instance field initializers are expressions too: check their types and
+        // the function-value access rule (§3.8.1, §9.1).
+        let field_owners: Vec<u32> = (0..self.result.type_defs.len())
+            .filter(|index| {
+                let definition = &self.result.type_defs[*index];
+                definition.generic_parameters.is_empty()
+                    && definition.template.is_none()
+                    && !definition.field_initializers.is_empty()
+            })
+            .map(|index| index as u32)
+            .collect();
+        for owner in field_owners {
+            let fields = self.result.type_defs[owner as usize].fields.clone();
+            let initializers = self.result.type_defs[owner as usize]
+                .field_initializers
+                .clone();
+            // Field initializers are resolved in the declaring type's scope: its
+            // methods and static members are visible (§3.8.1, §9.1).
+            self.push_scope();
+            let owner_type = self.result.types.intern(Type::Named(owner));
+            let saved_owner = self.current_owner;
+            self.current_owner = Some(owner_type);
+            let methods: Vec<(String, Vec<u32>)> = self.result.type_defs[owner as usize]
+                .methods
+                .iter()
+                .map(|(name, overloads)| (name.clone(), overloads.clone()))
+                .collect();
+            for (name, overloads) in methods {
+                self.declare(name, Symbol::Functions(overloads), Span::default());
+            }
+            let statics: Vec<(String, u32)> = self.result.type_defs[owner as usize]
+                .static_fields
+                .iter()
+                .map(|(name, global)| (name.clone(), *global))
+                .collect();
+            for (name, global) in statics {
+                self.declare(name, Symbol::Global(global), Span::default());
+            }
+            for (field, initializer) in fields.iter().zip(initializers.iter()) {
+                let Some(initializer) = initializer else {
+                    continue;
+                };
+                self.initializer_depth += 1;
+                let inferred = self.check_expr(*initializer, Some(field.ty));
+                self.initializer_depth -= 1;
+                if let Some(inferred) = inferred {
+                    self.expect_assignable(self.span_of(*initializer), inferred, field.ty);
+                }
+                self.check_function_value_access(
+                    field.accessibility,
+                    *initializer,
+                    self.span_of(*initializer),
+                );
+            }
+            self.current_owner = saved_owner;
+            self.pop_scope();
+        }
         for index in 0..self.result.globals.len() {
             let (init, ty, span) = {
                 let global = &self.result.globals[index];
@@ -2990,7 +3047,36 @@ impl<'a> Sema<'a> {
                         );
                     }
                 }
+                let accessibility = self.result.globals[index].accessibility;
+                self.check_function_value_access(accessibility, initializer, span);
             }
+        }
+    }
+
+    /// Checks the function-value access rule (§9.1): a function value must not be
+    /// stored in a location with a wider accessible range.
+    fn check_function_value_access(
+        &mut self,
+        carrier: crate::ast::Accessibility,
+        value: NodeId,
+        span: Span,
+    ) {
+        let value_access = match self.result.resolutions[value as usize].clone() {
+            Some(Resolution::Function(index)) => {
+                self.result.functions[index as usize].accessibility
+            }
+            _ => return,
+        };
+        let rank = |accessibility: crate::ast::Accessibility| match accessibility {
+            crate::ast::Accessibility::Public => 2,
+            crate::ast::Accessibility::Protected => 1,
+            crate::ast::Accessibility::Private | crate::ast::Accessibility::Unspecified => 0,
+        };
+        if rank(carrier) > rank(value_access) {
+            self.error(
+                span,
+                "a function value with a narrower access right cannot be stored in a wider location",
+            );
         }
     }
 
@@ -3258,6 +3344,29 @@ impl<'a> Sema<'a> {
                             self.span_of(statement.value),
                             value_type,
                             target_type,
+                        );
+                    }
+                    let carrier = match self.result.resolutions[statement.target as usize].clone() {
+                        Some(Resolution::Field { type_id, index }) => {
+                            if let Type::Named(owner) = self.types_of(type_id) {
+                                self.result.type_defs[owner as usize]
+                                    .fields
+                                    .get(index as usize)
+                                    .map(|field| field.accessibility)
+                            } else {
+                                None
+                            }
+                        }
+                        Some(Resolution::Global(global)) => {
+                            Some(self.result.globals[global as usize].accessibility)
+                        }
+                        _ => None,
+                    };
+                    if let Some(carrier) = carrier {
+                        self.check_function_value_access(
+                            carrier,
+                            statement.value,
+                            self.span_of(statement.value),
                         );
                     }
                 }

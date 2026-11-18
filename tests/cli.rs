@@ -954,3 +954,36 @@ fixed Main(): integer(4)
     );
     assert!(stderr.contains("readonly"), "{stderr}");
 }
+
+#[test]
+fn function_value_access_right_cannot_be_widened() {
+    let stderr = check_source(
+        "\
+class Container
+{
+    public Exposed: function(Container) integer(4) = Hidden;
+
+    extension
+    {
+        private fixed Hidden(this: &Container): integer(4) { return 0; }
+    }
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(stderr.contains("narrower access right"), "{stderr}");
+}
+
+#[test]
+fn field_initializers_are_type_checked() {
+    let stderr = check_source(
+        "\
+class Broken
+{
+    public Value: integer(4) = true;
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(!stderr.is_empty(), "expected a diagnostic");
+}

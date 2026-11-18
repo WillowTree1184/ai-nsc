@@ -2423,6 +2423,68 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Executes a compile-time assignment (`X = value` / `X += value`) in a
+    /// top-level `#{}` block (§11.4): the compile-time variable's stored value is
+    /// updated so later compile-time code and run-time constants see it.
+    fn execute_top_level_assignment(
+        &mut self,
+        target: &NodeId,
+        value: &NodeId,
+        compound: Option<crate::ast::BinaryOp>,
+    ) {
+        let NodeKind::Name(name) = self.node_kind(*target).clone() else {
+            self.unsupported(
+                self.span_of(*target),
+                "compile-time assignments to non-identifier targets",
+            );
+            return;
+        };
+        let Some((current, ty)) = self.top_level_constants.get(&name.name).copied() else {
+            self.error(
+                self.span_of(*target),
+                format!("'{}' is not a compile-time variable (§11.4)", name.name),
+            );
+            return;
+        };
+        self.suppress_errors += 1;
+        let evaluated = self.eval_const_int(*value);
+        self.suppress_errors -= 1;
+        let Some(evaluated) = evaluated else {
+            self.unsupported(
+                self.span_of(*value),
+                "non-constant values in compile-time assignments",
+            );
+            return;
+        };
+        let updated = match compound {
+            None => evaluated,
+            Some(operator) => {
+                use crate::ast::BinaryOp;
+                match operator {
+                    BinaryOp::Add => current.wrapping_add(evaluated),
+                    BinaryOp::Subtract => current.wrapping_sub(evaluated),
+                    BinaryOp::Multiply => current.wrapping_mul(evaluated),
+                    BinaryOp::Divide if evaluated != 0 => current.wrapping_div(evaluated),
+                    BinaryOp::Remainder if evaluated != 0 => current.wrapping_rem(evaluated),
+                    BinaryOp::ShiftLeft => current.wrapping_shl(evaluated as u32),
+                    BinaryOp::ShiftRight => ((current as u128) >> (evaluated as u32 & 127)) as i128,
+                    BinaryOp::BitwiseAnd => current & evaluated,
+                    BinaryOp::BitwiseOr => current | evaluated,
+                    BinaryOp::BitwiseXor => current ^ evaluated,
+                    _ => {
+                        self.unsupported(
+                            self.span_of(*value),
+                            "this compound assignment in a compile-time block",
+                        );
+                        return;
+                    }
+                }
+            }
+        };
+        self.top_level_constants
+            .insert(name.name.clone(), (updated, ty));
+    }
+
     /// Returns the statements of a block node.
     fn block_statements(&self, node: NodeId) -> Vec<NodeId> {
         match self.node_kind(node) {
@@ -2497,6 +2559,20 @@ impl<'a> Sema<'a> {
                         .push(std::collections::HashMap::new());
                     self.check_expr(expression, None);
                     self.compile_time_constants.pop();
+                }
+                NodeKind::Set(set_statement) => {
+                    self.execute_top_level_assignment(
+                        &set_statement.target,
+                        &set_statement.value,
+                        None,
+                    );
+                }
+                NodeKind::CompoundSet(compound) => {
+                    self.execute_top_level_assignment(
+                        &compound.target,
+                        &compound.value,
+                        Some(compound.op),
+                    );
                 }
                 _ => {
                     self.unsupported(

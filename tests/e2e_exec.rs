@@ -4247,3 +4247,41 @@ fixed Main(): integer(4)
     // 2 + 3 + 100 through the user-defined operator
     assert_eq!(run_program(source), 105);
 }
+
+#[test]
+fn top_level_compile_time_variables_can_be_assigned() {
+    let source = "\
+#{
+    local X: integer(4) = 1;
+    X = 2;
+}
+
+local value: integer(4) = X;
+
+fixed Main(): integer(4)
+{
+    return value;
+}";
+    // §11.4 example: the final compile-time value becomes a run-time constant.
+    assert_eq!(run_program(source), 2);
+}
+
+#[test]
+fn top_level_compile_time_compound_assignments_execute() {
+    let source = "\
+#{
+    local X: integer(4) = 10;
+    X = 2;
+    X += 5;
+    X *= 3;
+}
+
+local value: integer(4) = X;
+
+fixed Main(): integer(4)
+{
+    return value;
+}";
+    // (2 + 5) * 3
+    assert_eq!(run_program(source), 21);
+}

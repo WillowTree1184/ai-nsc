@@ -319,3 +319,4 @@ report an error (§4.8).
 | 98 | MED | §11.4, §11.2 | Compile-time blocks could not call ordinary functions | fixed (51ad63d: post-resolution re-execution, integer function interpreter with recursion/loops, strict constant predicate preserved) |
 | 99 | MED | §11.4 | Compile-time for-over-range loops unsupported | fixed (347f9a7: range for execution at top level and in interpreted functions, scoped binding, break/continue) |
 | 100 | MED | §11.3 | '#(...)' rejected calls to ordinary compile-time functions | fixed (bb08e7d: compile-time-evaluable predicate, function interpretation, float-to-integer constant folding) |
+| 101 | LOW | §13 | Layout sizing hardcoded 8-byte pointers (blocked 32-bit targets) | partial (a4d857b: TargetLayout plumbing for pointers/integer64/float64 alignment; default host unchanged, 32-bit triples still diagnosed) |

@@ -26,25 +26,22 @@
   `CARGO_HOME=/tmp/ainsc-cargo LLVM_SYS_181_PREFIX=/usr/lib/llvm-18`
 - CLI: `target/debug/ai-nsc check|emit-ir|emit-obj|build|run <file.ns> ...`.
 
-## Remaining backlog (in rough priority order)
+## Remaining backlog (status as of round 119)
 
-1. Compile-time blocks (`#{...}`): integer `#(...)` end products are folded (#64),
-   compile-time-only `#{}` blocks are no longer emitted (#71), and side effects
-   are warned about (#75); blocks with run-time statements are still lowered as
-   run-time equivalents, so full compile-time execution remains open (§11.4).
-2. NOLAA: general CFG safe-point insertion (§12.2); `Bind` groups,
-   `AssumeNoDemandNext`, block-end/return/break/continue safe points, alias/store
-   demand tracking and Early-Dispose warnings are implemented, while full
-   alias analysis remains conservative.
-3. Multi-dimensional VLAs (§3.6.1 subset).
-4. Array extension targets (`extension for array(...)`).
-5. Monomorphization volume optimization (§14.3.2).
-6. `verbatim` semantics; `scoped(operator symbol)`/conversion-specific targets.
-7. Cross-target ABI: x86_64, aarch64 and riscv64 `--target` code generation and
-   object emission work with target data layout; 32-bit architectures and
-   foreign-target linking (needs a target sysroot) are diagnosed.
-8. Optional polish: more self-contained spec examples in the e2e suite,
-   snapshot tests for diagnostics.
+Recent rounds (108-119) fixed specification-conformance defects found by
+auditing the specification instead of working the large backlog items; the
+backlog below is therefore unchanged in kind but now annotated with status and
+size. Each round also keeps the docs' audit register in sync.
+
+| # | Item | Status | Notes |
+|---|------|--------|-------|
+| 1 | `#{}` full compile-time execution | **in progress** | Constant declarations, assignments and `#if` at top level execute at compile time; blocks with run-time statements are lowered as run-time equivalents with the spec-mandated side-effect warning and the §11.7 boundary diagnostic. Remaining: a true compile-time interpreter for loops/calls. Size: large. |
+| 2 | NOLAA precision (general CFG safe points, full alias analysis) | **acceptable conservative** | All safety requirements are met: block-end/return/break/continue safe points, alias/store demands as escapes, Bind groups, AssumeNoDemandNext, linkable-call abandonment. Remaining work is earlier-dispose precision (optimization, not correctness). Size: large/optional. |
+| 3 | Array-extension indexer operators | **likely not applicable** | Array index access is a language built-in (§3.6.1/§4.4.3); extension indexers on array targets are diagnosed instead of silently ignored. Needs a spec clarification before changing. Size: small. |
+| 4 | 32-bit targets (i686/armv7/riscv32) | **open** | Layouts and code generation are 64-bit-only and 32-bit triples are diagnosed. Would need pointer-width-aware layout in sema and header offsets in codegen. Size: large. |
+| 5 | Foreign-target linking (`build`/`run` with `--target`) | **open, environment-dependent** | Requires a target sysroot/cross toolchain; `emit-obj` works for x86_64/aarch64/riscv64. Size: large/external. |
+| 6 | Monomorphization volume optimization (§14.3.2) | **out of scope for correctness** | Constant/literal pooling is delegated to LLVM, which merges identical read-only data; no conformance requirement forces hand-written pooling. |
+| 7 | Conformance audit | **ongoing** | 95 defects reproduced and closed (see `docs/AUDIT.md`); the audit continues each round. |
 
 ## Where things live
 

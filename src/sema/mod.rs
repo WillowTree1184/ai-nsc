@@ -449,6 +449,22 @@ pub(crate) const BUILTIN_EXCEPTION_NAMES: [&str; 6] = [
     "DeallocateFailedException",
 ];
 
+/// Iterator-based `for` iteration (§5.6).
+#[derive(Clone, Copy, Debug)]
+pub struct ForIteratorInfo {
+    /// Expression producing the iterable/iterator value.
+    pub target: NodeId,
+    /// Interface used to dispatch `Next` (an `IIterator<T>` instance).
+    pub iterator_interface: TypeId,
+    /// Whether the target must first be converted through the `Iterator` accessor
+    /// (`IIterable<T>`).
+    pub use_accessor: bool,
+    /// Interface of the iterable target, when `use_accessor` is set.
+    pub iterable_interface: Option<TypeId>,
+    /// Payload type of `Next()`.
+    pub element: TypeId,
+}
+
 /// How a local's storage is allocated (§12.1).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Storage {
@@ -778,6 +794,9 @@ pub struct SemaResult {
     pub heap_allocators: HashMap<NodeId, NodeId>,
     /// Explicit heap allocator used for each heap local, for deallocation.
     pub heap_allocator_locals: HashMap<LocalId, NodeId>,
+    /// Iteration over `IIterator`/`IIterable` targets, keyed by the `for` node
+    /// (§5.6).
+    pub for_iterators: HashMap<NodeId, ForIteratorInfo>,
     /// Number of errors reported.
     pub error_count: u32,
 }

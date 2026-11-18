@@ -2899,3 +2899,57 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 6);
 }
+
+#[test]
+fn for_loops_traverse_iterators_and_iterables() {
+    let source = "\
+class CounterIterator : IIterator<integer(4)>
+{
+    public Current: integer(4);
+
+    extension
+    {
+        public fixed Next(this: &CounterIterator): Optional<integer(4)>
+        {
+            if (this.Current >= 5) { return Optional<integer(4)>.Null; }
+            this.Current += 1;
+            return Optional<integer(4)>.Value(this.Current);
+        }
+
+        public fixed Reset(this: &CounterIterator) { this.Current = 0; }
+    }
+}
+
+class Counter : IIterable<integer(4)>
+{
+    private IteratorValue: IIterator<integer(4)>;
+
+    extension
+    {
+        public fixed Construct(this: &Counter, iterator: IIterator<integer(4)>)
+        {
+            this.IteratorValue = iterator;
+        }
+
+        public accessor Iterator: IIterator<integer(4)> => IteratorValue { get; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local object: CounterIterator = CounterIterator();
+    local counter: Counter = Counter(object);
+    local score: integer(4) = 0;
+    for value: integer(4) in counter
+    {
+        score += value;
+        if (value == 3) { break; }
+    }
+    for value: integer(4) in object
+    {
+        score += value;
+    }
+    return score;
+}";
+    assert_eq!(run_program(source), 15);
+}

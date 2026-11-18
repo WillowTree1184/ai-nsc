@@ -28,7 +28,8 @@ use crate::ast::{
 use crate::literal;
 use crate::sema::types::{Type, TypeId};
 use crate::sema::{
-    CaptureSource, MatchPatternInfo, ParameterInfo, Resolution, SemaResult, Storage, TypeDefKind,
+    CaptureSource, ForIteratorInfo, MatchPatternInfo, ParameterInfo, Resolution, SemaResult,
+    Storage, TypeDefKind,
 };
 
 /// Name of the module used by the workspace smoke test.
@@ -2517,7 +2518,164 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         Ok(())
     }
 
+    /// Lowers `for` over an `IIterator`/`IIterable` target (§5.6): repeatedly
+    /// call `Next()`, bind the `Value` payload, and leave on `Null`.
+    fn gen_for_iterator(
+        &mut self,
+        node: NodeId,
+        statement: &ForStmt,
+        info: ForIteratorInfo,
+    ) -> Result<(), String> {
+        let function = self.current_llvm_function()?;
+        let binding_local = *self
+            .sema
+            .loop_bindings
+            .get(&node)
+            .ok_or_else(|| "missing for binding".to_string())?;
+        let binding_slot = *self
+            .local_slots
+            .get(&binding_local)
+            .ok_or_else(|| "missing for binding slot".to_string())?;
+        let binding_type = self.type_of(node);
+        let Type::Named(iterator_index) = self.sema.types.get(info.iterator_interface).clone()
+        else {
+            return Err("iterator interface is not a named type".to_string());
+        };
+        let next_method = *self.sema.type_defs[iterator_index as usize]
+            .methods
+            .get("Next")
+            .and_then(|methods| methods.first())
+            .ok_or_else(|| "IIterator.Next is missing".to_string())?;
+        let target_value = self.gen_expr(info.target)?;
+        let pointer_type = self.context.ptr_type(AddressSpace::default());
+        let iterator = if info.use_accessor {
+            let iterable_interface = info
+                .iterable_interface
+                .ok_or_else(|| "missing iterable interface".to_string())?;
+            let Type::Named(iterable_index) = self.sema.types.get(iterable_interface).clone()
+            else {
+                return Err("iterable interface is not a named type".to_string());
+            };
+            let getter = self.sema.type_defs[iterable_index as usize]
+                .accessors
+                .iter()
+                .find(|accessor| accessor.name == "Iterator")
+                .and_then(|accessor| accessor.getter)
+                .ok_or_else(|| "IIterable.Iterator getter is missing".to_string())?;
+            let receiver = target_value.into_pointer_value();
+            let call =
+                self.gen_interface_call(receiver, iterable_index, getter, &[receiver.into()])?;
+            match call.try_as_basic_value() {
+                ValueKind::Basic(value) => value.into_pointer_value(),
+                ValueKind::Instruction(_) => {
+                    return Err("Iterator accessor produced no value".to_string())
+                }
+            }
+        } else {
+            target_value.into_pointer_value()
+        };
+        let optional_type = self.sema.functions[next_method as usize]
+            .return_type
+            .ok_or_else(|| "IIterator.Next must return Optional".to_string())?;
+        let optional_llvm = self.instance_llvm_type(optional_type)?;
+        let Type::Named(optional_index) = self.sema.types.get(optional_type).clone() else {
+            return Err("IIterator.Next must return a variant".to_string());
+        };
+        let payload_offset = self.sema.type_defs[optional_index as usize].payload_offset;
+        let value_state = self.sema.type_defs[optional_index as usize]
+            .variant_states
+            .iter()
+            .position(|state| state.name == "Value")
+            .unwrap_or(0) as u64;
+        let condition_block = self
+            .context
+            .append_basic_block(function, "for_iterator_next");
+        let body_block = self
+            .context
+            .append_basic_block(function, "for_iterator_body");
+        let end_block = self
+            .context
+            .append_basic_block(function, "for_iterator_end");
+        self.builder
+            .build_unconditional_branch(condition_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(condition_block);
+        let call =
+            self.gen_interface_call(iterator, iterator_index, next_method, &[iterator.into()])?;
+        let value = match call.try_as_basic_value() {
+            ValueKind::Basic(value) => value,
+            ValueKind::Instruction(_) => return Err("IIterator.Next produced no value".to_string()),
+        };
+        let slot = self
+            .builder
+            .build_alloca(optional_llvm, "iterator_value")
+            .map_err(|error| format!("cannot allocate iterator value: {error}"))?;
+        self.builder
+            .build_store(slot, value)
+            .map_err(|error| format!("cannot store iterator value: {error}"))?;
+        let tag = self
+            .builder
+            .build_load(self.context.i8_type(), slot, "iterator_tag")
+            .map_err(|error| format!("cannot load iterator tag: {error}"))?
+            .into_int_value();
+        let is_value = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                tag,
+                self.context.i8_type().const_int(value_state, false),
+                "iterator_has_value",
+            )
+            .map_err(|error| format!("cannot compare iterator tag: {error}"))?;
+        self.builder
+            .build_conditional_branch(is_value, body_block, end_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(body_block);
+        let element_type = self.llvm_type(info.element)?;
+        let element = self
+            .builder
+            .build_load(
+                element_type,
+                self.address_with_size(
+                    slot,
+                    1,
+                    self.context.i64_type().const_int(payload_offset, false),
+                )?,
+                "iterator_payload",
+            )
+            .map_err(|error| format!("cannot load iterator payload: {error}"))?;
+        let element = if info.element == binding_type {
+            element
+        } else {
+            self.convert(element, info.element, binding_type)?
+        };
+        self.builder
+            .build_store(binding_slot, element)
+            .map_err(|error| format!("cannot store loop variable: {error}"))?;
+        self.loops.push(LoopInfo {
+            label: statement.label.clone(),
+            break_block: end_block,
+            continue_block: condition_block,
+        });
+        self.gen_statement(statement.body)?;
+        self.loops.pop();
+        if self
+            .builder
+            .get_insert_block()
+            .is_some_and(|block| block.get_terminator().is_none())
+        {
+            self.builder
+                .build_unconditional_branch(condition_block)
+                .map_err(|error| format!("cannot branch: {error}"))?;
+        }
+        self.builder.position_at_end(end_block);
+        Ok(())
+    }
+
     fn gen_for_statement(&mut self, node: NodeId, statement: &ForStmt) -> Result<(), String> {
+        if let Some(info) = self.sema.for_iterators.get(&node).copied() {
+            return self.gen_for_iterator(node, statement, info);
+        }
         let function = self.current_llvm_function()?;
         let binding_type = self.type_of(node);
         let binding_local = *self

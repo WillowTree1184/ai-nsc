@@ -3741,6 +3741,95 @@ impl<'a> Sema<'a> {
         );
     }
 
+    /// Finds the built-in iterator interface behind an iteration target (§5.6).
+    ///
+    /// Returns `(IIterator<T> instance, needs_accessor, IIterable<T> instance,
+    /// element type)`.
+    fn find_builtin_iterator(
+        &mut self,
+        ty: TypeId,
+    ) -> Option<(TypeId, bool, Option<TypeId>, TypeId)> {
+        let Type::Named(index) = self.types_of(ty) else {
+            return None;
+        };
+        let kind = self.result.type_defs[index as usize].kind;
+        if kind == TypeDefKind::Interface {
+            let template_name = self.result.type_defs[index as usize]
+                .template
+                .and_then(|template| Some(self.result.type_defs[template as usize].name.clone()));
+            let arguments = self.result.type_defs[index as usize]
+                .generic_arguments
+                .clone();
+            let element = arguments.first().copied();
+            match (template_name.as_deref(), element) {
+                (Some("IIterator"), Some(element)) => {
+                    return Some((ty, false, None, element));
+                }
+                (Some("IIterable"), Some(element)) => {
+                    let iterator_template =
+                        self.lookup("IIterator")
+                            .cloned()
+                            .and_then(|symbol| match symbol {
+                                Symbol::Type(iterator) => match self.result.types.get(iterator) {
+                                    Type::Named(template) => {
+                                        Some(self.result.type_defs[*template as usize].node)
+                                    }
+                                    _ => None,
+                                },
+                                _ => None,
+                            });
+                    let iterator = iterator_template.and_then(|node| {
+                        self.instantiate_type(node, vec![element], Span::default())
+                    })?;
+                    return Some((iterator, true, Some(ty), element));
+                }
+                _ => {}
+            }
+            return None;
+        }
+        if kind != TypeDefKind::Class {
+            return None;
+        }
+        let interfaces = self.result.type_defs[index as usize].interfaces.clone();
+        for interface in interfaces {
+            let Type::Named(interface_index) = self.types_of(interface) else {
+                continue;
+            };
+            let template_name = self.result.type_defs[interface_index as usize]
+                .template
+                .and_then(|template| Some(self.result.type_defs[template as usize].name.clone()));
+            let arguments = self.result.type_defs[interface_index as usize]
+                .generic_arguments
+                .clone();
+            let element = arguments.first().copied();
+            match (template_name.as_deref(), element) {
+                (Some("IIterator"), Some(element)) => {
+                    return Some((interface, false, None, element));
+                }
+                (Some("IIterable"), Some(element)) => {
+                    let iterator_template =
+                        self.lookup("IIterator")
+                            .cloned()
+                            .and_then(|symbol| match symbol {
+                                Symbol::Type(iterator) => match self.result.types.get(iterator) {
+                                    Type::Named(template) => {
+                                        Some(self.result.type_defs[*template as usize].node)
+                                    }
+                                    _ => None,
+                                },
+                                _ => None,
+                            });
+                    let iterator = iterator_template.and_then(|node| {
+                        self.instantiate_type(node, vec![element], Span::default())
+                    })?;
+                    return Some((iterator, true, Some(interface), element));
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     fn check_for_statement(&mut self, node: NodeId, statement: &ForStmt) {
         let binding_type = self.resolve_type(statement.ty).unwrap_or(TypeId::ERROR);
         if statement.by_ref && matches!(statement.target, ForTarget::Range(_)) {
@@ -3750,6 +3839,7 @@ impl<'a> Sema<'a> {
             );
             return;
         }
+
         match &statement.target {
             ForTarget::Range(range) => {
                 if !(self.is_integer(binding_type) || self.is_numeric(binding_type)) {
@@ -3786,7 +3876,37 @@ impl<'a> Sema<'a> {
                             self.expect_assignable(self.span_of(node), item_type, binding_type);
                         }
                         _ => {
-                            self.unsupported(self.span_of(node), "iteration over non-array values");
+                            if let Some((
+                                iterator_interface,
+                                use_accessor,
+                                iterable_interface,
+                                element,
+                            )) = self.find_builtin_iterator(target_type)
+                            {
+                                if statement.by_ref {
+                                    self.error(
+                                        self.span_of(node),
+                                        "a by-reference 'for' binding requires an array target",
+                                    );
+                                    return;
+                                }
+                                self.expect_assignable(self.span_of(node), element, binding_type);
+                                self.result.for_iterators.insert(
+                                    node,
+                                    ForIteratorInfo {
+                                        target: *target,
+                                        iterator_interface,
+                                        use_accessor,
+                                        iterable_interface,
+                                        element,
+                                    },
+                                );
+                            } else {
+                                self.unsupported(
+                                    self.span_of(node),
+                                    "iteration over non-array values",
+                                );
+                            }
                         }
                     }
                 }

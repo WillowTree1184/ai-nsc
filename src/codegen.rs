@@ -2551,7 +2551,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 NodeKind::Fixed(declaration) => (
                     vec![match declaration.init {
                         Some(Initializer::Expression(expression)) => Some(expression),
-                        _ => None,
+                        _ => self.sema.nested_functions.get(&node).copied(),
                     }],
                     vec![declaration.ty],
                 ),
@@ -5931,12 +5931,21 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     } => target,
                     _ => return Err("cannot dereference this value".to_string()),
                 };
+                if matches!(self.sema.types.get(target), Type::Function { .. }) {
+                    // A pointer to a function value is the function value itself.
+                    return Ok(operand);
+                }
                 let llvm_type = self.llvm_type(target)?;
                 self.builder
                     .build_load(llvm_type, operand.into_pointer_value(), "deref")
                     .map_err(|error| format!("cannot dereference: {error}"))
             }
             UnaryOp::Reference => {
+                let operand_type = self.type_of(unary.operand);
+                if matches!(self.sema.types.get(operand_type), Type::Function { .. }) {
+                    // Function values are already pointers (closure objects).
+                    return self.gen_expr(unary.operand);
+                }
                 let address = self
                     .gen_lvalue(unary.operand)?
                     .ok_or_else(|| "reference operand is not addressable".to_string())?;

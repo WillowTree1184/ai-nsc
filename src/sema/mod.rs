@@ -855,6 +855,9 @@ pub struct SemaResult {
     pub heap_default_allocator_locals: std::collections::HashSet<u32>,
     /// Heap locals that NOLAA disposes at the end of a block (§12.2).
     pub auto_dispose: HashMap<NodeId, Vec<LocalId>>,
+    /// Nested function declarations inside bodies (§5.3), mapped to the
+    /// function literal expression that creates their value.
+    pub nested_functions: HashMap<NodeId, NodeId>,
     /// Number of errors reported.
     pub error_count: u32,
 }

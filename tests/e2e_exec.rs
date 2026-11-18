@@ -3319,3 +3319,29 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 13);
 }
+
+#[test]
+fn nested_functions_and_function_pointers() {
+    let source = "\
+fixed MakeAdder(offset: integer(4)): function(integer(4)) integer(4)
+{
+    fixed Add(value: integer(4)): integer(4)
+    {
+        return value + offset;
+    }
+    return Add;
+}
+
+fixed Main(): integer(4)
+{
+    fixed Local(value: integer(4)): integer(4)
+    {
+        return value + 1;
+    }
+    local addTen: function(integer(4)) integer(4) = MakeAdder(10);
+    local functionPointer: pointer function(integer(4)) integer(4) = &Local;
+    return addTen(2) + (*functionPointer)(3);
+}";
+    // (2 + 10) + (3 + 1)
+    assert_eq!(run_program(source), 16);
+}

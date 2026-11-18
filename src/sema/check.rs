@@ -4092,12 +4092,18 @@ impl<'a> Sema<'a> {
                 }
             }
         }
-        let declared_type = declaration.ty.and_then(|ty| self.resolve_type(ty));
-        if let Some(ty) = declared_type {
-            if matches!(self.type_of(ty), Type::Function { .. }) {
-                self.unsupported(self.span_of(node), "nested function definitions (closures)");
+        // A `fixed` declaration whose type is a function type and whose body is a
+        // block is a nested function definition (§5.3, §2.7.9): it declares a
+        // function literal bound to a constant name.
+        if let (Some(ty_node), Some(Initializer::Block(body))) = (declaration.ty, declaration.init)
+        {
+            if let NodeKind::FunctionType(function) = self.node_kind(ty_node).clone() {
+                self.declare_nested_function(node, declaration, &function, body);
                 return;
             }
+        }
+        let declared_type = declaration.ty.and_then(|ty| self.resolve_type(ty));
+        if let Some(ty) = declared_type {
             if declaration.init.is_none() {
                 self.error(self.span_of(node), "a constant must be initialized (§5.3)");
             }
@@ -4171,6 +4177,57 @@ impl<'a> Sema<'a> {
             NodeKind::Unary(unary) if unary.op == UnaryOp::Dereference => {}
             _ => self.error(self.span_of(node), "expression is not assignable"),
         }
+    }
+
+    /// Declares a nested function defined inside a function body (§5.3, §2.7.9):
+    /// the declaration becomes a function literal bound to a constant local.
+    fn declare_nested_function(
+        &mut self,
+        node: NodeId,
+        declaration: &FixedDecl,
+        function: &FunctionType,
+        body: NodeId,
+    ) {
+        let span = self.span_of(node);
+        let mut parameters = Vec::new();
+        for parameter in &function.parameters {
+            let Some(name) = parameter.name.clone() else {
+                self.error(
+                    parameter.span,
+                    "a nested function parameter requires a name",
+                );
+                return;
+            };
+            parameters.push(crate::ast::LiteralParameter {
+                compile_time: parameter.compile_time,
+                name,
+                by_ref: parameter.by_ref,
+                ty: parameter.ty,
+                span: parameter.span,
+            });
+        }
+        let literal = FunctionLiteral {
+            parameters,
+            calling_convention: function.calling_convention,
+            return_type: function.return_type,
+            body,
+        };
+        let literal_node = self
+            .ast
+            .push(span, NodeKind::FunctionLiteral(literal.clone()));
+        let Some(function_type) = self.check_function_literal(literal_node, &literal, None) else {
+            return;
+        };
+        let local = self.add_local(
+            declaration.name.clone(),
+            function_type,
+            true,
+            None,
+            Storage::Value,
+            span,
+        );
+        self.result.local_declarations.insert(node, vec![local]);
+        self.result.nested_functions.insert(node, literal_node);
     }
 
     /// Enforces `readonly` field assignment rules (§9.6): a readonly field may
@@ -6029,6 +6086,11 @@ impl<'a> Sema<'a> {
             }
             UnaryOp::Reference => {
                 let ty = self.check_expr(unary.operand, None)?;
+                // Taking the address of a function value yields a pointer to the
+                // function value (§2.7.9, §4.5).
+                if matches!(self.types_of(ty), Type::Function { .. }) {
+                    return Some(self.result.types.pointer(Some(ty)));
+                }
                 let addressable = matches!(
                     self.node_kind(unary.operand),
                     NodeKind::Name(_)

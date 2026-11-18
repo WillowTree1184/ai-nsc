@@ -762,6 +762,11 @@ pub struct SemaResult {
     /// Implicit conversion operators invoked at a value node (`implicitable`,
     /// §9.7). Keyed by the converted value expression.
     pub implicit_conversions: HashMap<NodeId, u32>,
+    /// Explicit heap allocator expressions, keyed by the heap statement node
+    /// (§5.4).
+    pub heap_allocators: HashMap<NodeId, NodeId>,
+    /// Explicit heap allocator used for each heap local, for deallocation.
+    pub heap_allocator_locals: HashMap<LocalId, NodeId>,
     /// Number of errors reported.
     pub error_count: u32,
 }
@@ -1366,6 +1371,127 @@ impl<'a> Sema<'a> {
         type_id
     }
 
+    /// Pushes a synthetic interface declaration (Built-In Library, §15.2).
+    fn push_builtin_interface(&mut self, name: &str) -> TypeId {
+        let index = self.result.type_defs.len() as TypeDefId;
+        let node = NodeId::MAX - 400 - index;
+        self.result.type_defs.push(TypeDef {
+            name: name.to_string(),
+            qualified_name: name.to_string(),
+            kind: TypeDefKind::Interface,
+            node,
+            generic_parameters: Vec::new(),
+            generic_arguments: Vec::new(),
+            template: None,
+            decl_scope: 0,
+            static_fields: std::collections::HashMap::new(),
+            static_methods: std::collections::HashMap::new(),
+            builtin_variant: None,
+            fields: Vec::new(),
+            field_initializers: Vec::new(),
+            methods: std::collections::HashMap::new(),
+            method_list: Vec::new(),
+            accessors: Vec::new(),
+            operators: Vec::new(),
+            interfaces: Vec::new(),
+            interface_dispatch: Vec::new(),
+            sealed: false,
+            is_abstract: true,
+            is_static: false,
+            vtable: Vec::new(),
+            vtable_ready: true,
+            base: None,
+            variant_states: Vec::new(),
+            union_members: Vec::new(),
+            tag_type: None,
+            payload_offset: 0,
+            payload_size: 0,
+            instance_size: 0,
+            instance_align: 1,
+            enum_members: Vec::new(),
+            underlying: None,
+            size: 8,
+            align: 8,
+        });
+        let type_id = self.result.types.intern(Type::Named(index));
+        self.declare(name.to_string(), Symbol::Type(type_id), Span::default());
+        type_id
+    }
+
+    /// Adds an abstract method to a synthetic interface (Built-In Library).
+    fn push_builtin_interface_method(
+        &mut self,
+        interface: TypeId,
+        name: &str,
+        parameters: &[(&str, TypeId)],
+        return_type: Option<TypeId>,
+    ) -> u32 {
+        let Type::Named(interface_index) = self.result.types.get(interface) else {
+            return 0;
+        };
+        let interface_index = *interface_index;
+        let qualified = self.result.type_defs[interface_index as usize]
+            .qualified_name
+            .clone();
+        let scope: Vec<String> = qualified.split('.').map(str::to_string).collect();
+        let mut all_parameters = vec![ParameterInfo {
+            name: "this".to_string(),
+            ty: interface,
+            by_ref: true,
+            default: None,
+            compile_time: false,
+        }];
+        for (name, ty) in parameters {
+            all_parameters.push(ParameterInfo {
+                name: (*name).to_string(),
+                ty: *ty,
+                by_ref: false,
+                default: None,
+                compile_time: false,
+            });
+        }
+        let spellings: Vec<String> = all_parameters
+            .iter()
+            .map(|parameter| self.spelling(parameter.ty))
+            .collect();
+        let mangled = mangle_function(&scope, name, &spellings);
+        let index = self.result.functions.len() as u32;
+        self.result.functions.push(FunctionInfo {
+            name: name.to_string(),
+            scope,
+            node: NodeId::default(),
+            body: None,
+            parameters: all_parameters,
+            method_of: Some(interface),
+            static_owner: None,
+            is_virtual: false,
+            is_override: false,
+            is_sealed: false,
+            is_abstract: true,
+            return_type,
+            mangled,
+            exposed_symbol: None,
+            generic_parameters: Vec::new(),
+            generic_arguments: Vec::new(),
+            template: None,
+            decl_scope: 0,
+            generic_env: HashMap::new(),
+            environment: false,
+            captures: Vec::new(),
+            constant_values: HashMap::new(),
+            locals: Vec::new(),
+            span: Span::default(),
+        });
+        let definition = &mut self.result.type_defs[interface_index as usize];
+        definition
+            .methods
+            .entry(name.to_string())
+            .or_default()
+            .push(index);
+        definition.method_list.push(index);
+        index
+    }
+
     /// Declares the Built-In Library exception class hierarchy (§15.2):
     /// `Exception` and the runtime exception subclasses.
     fn declare_builtin_exceptions(&mut self) {
@@ -1490,6 +1616,56 @@ impl<'a> Sema<'a> {
                     definition.field_initializers = vec![None];
                     definition.instance_size = 32;
                     definition.instance_align = 8;
+                }
+            }
+            // IAllocator: the heap allocation protocol (§15.2).
+            let allocator = self.push_builtin_interface("IAllocator");
+            let pointer = self.result.types.pointer(None);
+            let result_template = self
+                .lookup("Result")
+                .cloned()
+                .and_then(|symbol| match symbol {
+                    Symbol::Type(ty) => match self.result.types.get(ty) {
+                        Type::Named(index) => Some(self.result.type_defs[*index as usize].node),
+                        _ => None,
+                    },
+                    _ => None,
+                });
+            let named_exception = |me: &mut Self, name: &str| -> Option<TypeId> {
+                match me.lookup(name).cloned() {
+                    Some(Symbol::Type(ty)) => Some(ty),
+                    _ => None,
+                }
+            };
+            let allocate_failed = named_exception(self, "AllocateFailedException");
+            let deallocate_failed = named_exception(self, "DeallocateFailedException");
+            if let Some(template_node) = result_template {
+                let cardinal8 = self.result.types.integer(false, 8);
+                if let Some(allocate_failed) = allocate_failed {
+                    let allocate_result = self.instantiate_type(
+                        template_node,
+                        vec![pointer, allocate_failed],
+                        Span::default(),
+                    );
+                    self.push_builtin_interface_method(
+                        allocator,
+                        "Allocate",
+                        &[("size", cardinal8), ("alignment", cardinal8)],
+                        allocate_result,
+                    );
+                }
+                if let Some(deallocate_failed) = deallocate_failed {
+                    let deallocate_result = self.instantiate_type(
+                        template_node,
+                        vec![TypeId::VOID, deallocate_failed],
+                        Span::default(),
+                    );
+                    self.push_builtin_interface_method(
+                        allocator,
+                        "Deallocate",
+                        &[("block", pointer)],
+                        deallocate_result,
+                    );
                 }
             }
         }

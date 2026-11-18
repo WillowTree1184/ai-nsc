@@ -574,16 +574,17 @@ fixed Main(): integer(4) { return Describe(Status.Idle); }",
 }
 
 #[test]
-fn custom_heap_allocators_are_diagnosed() {
+fn heap_allocator_must_be_an_allocator() {
     let stderr = check_source(
         "\
 fixed Main(): integer(4)
 {
-    heap(DefaultAllocator) value: integer(4) = 1;
+    local allocator: integer(4) = 1;
+    heap(allocator) value: integer(4) = 1;
     return value;
 }",
     );
-    assert!(stderr.contains("custom heap allocators"), "{stderr}");
+    assert!(stderr.contains("must be an IAllocator"), "{stderr}");
 }
 
 #[test]

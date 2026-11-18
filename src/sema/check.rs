@@ -3632,12 +3632,29 @@ impl<'a> Sema<'a> {
     }
 
     fn check_heap_statement(&mut self, node: NodeId, declaration: &HeapDecl) {
-        if declaration.size.is_some() {
-            self.unsupported(
-                self.span_of(node),
-                "custom heap allocators (the 'heap(allocator)' form)",
-            );
-            return;
+        // An explicit allocator expression must evaluate to an IAllocator (§5.4).
+        let mut allocator = None;
+        if let Some(allocator_node) = declaration.size {
+            let expected = self.lookup("IAllocator").cloned();
+            let Some(Symbol::Type(expected)) = expected else {
+                self.error(
+                    self.span_of(allocator_node),
+                    "no IAllocator type is available for heap allocations",
+                );
+                return;
+            };
+            let Some(allocator_type) = self.check_expr(allocator_node, Some(expected)) else {
+                return;
+            };
+            if !self.is_assignable(allocator_type, expected) {
+                self.error(
+                    self.span_of(allocator_node),
+                    "a heap allocator must be an IAllocator",
+                );
+                return;
+            }
+            allocator = Some(allocator_node);
+            self.result.heap_allocators.insert(node, allocator_node);
         }
         // The type may be omitted when an initializer provides it (§5.4).
         let declared = declaration.ty.map(|type_node| self.resolve_type(type_node));
@@ -3681,6 +3698,9 @@ impl<'a> Sema<'a> {
             abandoned: false,
             escaped: false,
         });
+        if let Some(allocator) = allocator {
+            self.result.heap_allocator_locals.insert(local, allocator);
+        }
         self.result.local_declarations.insert(node, vec![local]);
     }
 

@@ -254,3 +254,4 @@ report an error (§4.8).
 | 33 | MED | §15.3 | Compiler compile-time API (`LogNote`/`LogWarning`/`LogError`/`Assert`) missing | fixed (5d1a968: literal messages and constant assertions inside compile-time blocks; computed messages pending) |
 | 34 | MED | §9.15 | Static members (fields/constants/methods) unsupported | fixed (29cc794 static fields/constants/methods, f7b25ed static accessors backed by static fields and the 'static class' modifier; static accessors with explicit member bodies remain unimplemented) |
 | 35 | HIGH | §4.9.26, §15.2 | `??` operator and built-in `Optional`/`Result` missing | fixed (394bdd4 built-in Optional/Result and continuations; 7b2a944 user-defined 'operator ??' decision operators) |
+| 36 | HIGH | §2.7.9, §4.5 | Function values, function literals and indirect calls missing | partial (648dbc3: named-function values, non-capturing literals, indirect calls; capturing closures remain unimplemented and are diagnosed as unknown names) |

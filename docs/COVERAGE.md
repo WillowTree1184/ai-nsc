@@ -44,7 +44,7 @@ area is fixed.
 | §3.8.3 extensions | ✅ | methods, accessors, operators on types; module-level `extension for Generic<T>` targets are instantiated with their type |
 | §4.1–4.4 value/paren/cast/access expressions | ✅ | parser + e2e |
 | §4.4.3 index access (array + indexer operator) | ✅ | bounds check; indexer get/set tests |
-| §4.5 calls, overload resolution, default/named args | 🟡 | positional/default overload resolution; named args/function values pending |
+| §4.5 calls, overload resolution, default/named args | 🟡 | positional/default overload resolution, function values and indirect calls; named arguments and capturing closures pending |
 | §4.6 construction, §4.7 member construction | ✅ | in-place construction tests |
 | §4.8 `is` expressions (classes, interfaces, variants, special floats) | ✅ | RTTI e2e tests |
 | §4.9 operators: overloads, derived comparisons, indexer, conversion | ✅ | operator e2e tests |

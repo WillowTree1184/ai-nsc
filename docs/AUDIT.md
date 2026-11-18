@@ -283,3 +283,4 @@ report an error (§4.8).
 | 62 | MED | §10.1, §10.2 | Generic methods declaring their own type parameters unsupported | fixed (cf36878: method templates instantiated by `receiver.Method<T>(...)`, receiver compatibility, mangling/caching; missing type arguments diagnosed) |
 | 63 | LOW | §9.5 | `scoped(operator Symbol)`/conversion targets not distinguished | fixed (5799c6c: symbol/conversion matching, parser support) |
 | 64 | LOW | §11.4 | Compile-time expressions were lowered at run time | fixed (3b66c4d: recorded integer values emitted as folded constants; non-integer expressions fall back) |
+| 65 | MED | §3.8.3 | Array extension targets unsupported | fixed (94c2f6d: array(length) T templates instantiated per array type with bound length constant; accessors/operators diagnosed) |

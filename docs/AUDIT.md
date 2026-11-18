@@ -262,3 +262,4 @@ report an error (§4.8).
 | 41 | HIGH | §11.5 | Compile-time ('#') constant parameters reported as unimplemented | fixed (4e8e97d free functions; a7b03bb methods; operator '#' parameters still reported as not implemented) |
 | 42 | MED | §11.2 | Multiple input files rejected by the driver | fixed (3e2bcb1: files parsed into one AST in order, all actions accept several inputs, per-file diagnostics) |
 | 43 | MED | §12.2 | Never-Disposed warning missing | partial (e18b2cf never-disposed warning; d83c23e early-dispose warning on use after dispose; NOLAA's automatic dispose insertion remains open) |
+| 44 | HIGH | §5.4, §15.2 | Custom heap allocators (`heap(allocator)`) and the IAllocator interface missing | partial (11d5fb8: IAllocator interface with Allocate/Deallocate, allocator expression checking, allocate/deallocate through the interface with AllocateFailedException; IIterator/IIterable and an end-to-end allocator test remain) |

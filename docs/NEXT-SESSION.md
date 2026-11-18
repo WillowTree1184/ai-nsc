@@ -15,6 +15,9 @@
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
   — **203 tests green** (40 lib unit including 4 AST-clone tests, 43 CLI,
   2 codegen/LLVM, 107 end-to-end execution, 10 parser, 1 spec-example conformance).
+- Built-in library status: Object/enumerations/exceptions (with InnerException)/
+  Optional/Result/Platform/NOLAA/IAllocator are available; IIterator, IIterable,
+  DefaultAllocator and containers remain.
 - Build flags (required on this host):
   `CARGO_HOME=/tmp/ainsc-cargo LLVM_SYS_181_PREFIX=/usr/lib/llvm-18`
 - CLI: `target/debug/ai-nsc check|emit-ir|emit-obj|build|run <file.ns>`.

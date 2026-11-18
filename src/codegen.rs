@@ -211,33 +211,57 @@ pub fn jit_evaluate_integer_function(
     let engine = module
         .create_jit_execution_engine(inkwell::OptimizationLevel::None)
         .map_err(|error| format!("cannot create the JIT execution engine: {error}"))?;
-    let function_value = engine
-        .get_function_value(&info.mangled)
-        .map_err(|error| format!("cannot find the JIT function '{}': {error}", info.name))?;
-    let mut values = Vec::with_capacity(arguments.len());
-    for ((argument, (bytes, signed)), parameter) in arguments
-        .iter()
-        .zip(parameter_widths.iter())
-        .zip(info.parameters.iter())
-    {
-        let int_type = match bytes {
-            1 => context.i8_type(),
-            2 => context.i16_type(),
-            4 => context.i32_type(),
-            _ => context.i64_type(),
-        };
-        let bits = u32::from(*bytes) * 8;
-        let mask = if bits >= 64 {
-            u64::MAX
-        } else {
-            (1u64 << bits) - 1
-        };
-        values.push(int_type.create_generic_value((*argument as u64) & mask, *signed));
-        let _ = parameter;
+    if arguments.len() > 6 {
+        return Ok(None);
     }
-    let references: Vec<&inkwell::values::GenericValue<'_>> = values.iter().collect();
-    let result = unsafe { engine.run_function(function_value, &references) };
-    let result = result.as_int(result_signed);
+    let address = engine
+        .get_function_address(&info.mangled)
+        .map_err(|error| format!("cannot find the JIT function '{}': {error}", info.name))?;
+    // MCJIT's run_function does not support all argument lists, so call the
+    // generated code through its address. Integer arguments of at most 64 bits
+    // are passed as u64 (the low bits are what the callee reads); the result is
+    // truncated to the declared width below.
+    let arguments: Vec<u64> = arguments.iter().map(|argument| *argument as u64).collect();
+    let result = unsafe {
+        match arguments.len() {
+            0 => std::mem::transmute::<usize, extern "C" fn() -> u64>(address)(),
+            1 => std::mem::transmute::<usize, extern "C" fn(u64) -> u64>(address)(arguments[0]),
+            2 => std::mem::transmute::<usize, extern "C" fn(u64, u64) -> u64>(address)(
+                arguments[0],
+                arguments[1],
+            ),
+            3 => std::mem::transmute::<usize, extern "C" fn(u64, u64, u64) -> u64>(address)(
+                arguments[0],
+                arguments[1],
+                arguments[2],
+            ),
+            4 => std::mem::transmute::<usize, extern "C" fn(u64, u64, u64, u64) -> u64>(address)(
+                arguments[0],
+                arguments[1],
+                arguments[2],
+                arguments[3],
+            ),
+            5 => {
+                std::mem::transmute::<usize, extern "C" fn(u64, u64, u64, u64, u64) -> u64>(address)(
+                    arguments[0],
+                    arguments[1],
+                    arguments[2],
+                    arguments[3],
+                    arguments[4],
+                )
+            }
+            _ => std::mem::transmute::<usize, extern "C" fn(u64, u64, u64, u64, u64, u64) -> u64>(
+                address,
+            )(
+                arguments[0],
+                arguments[1],
+                arguments[2],
+                arguments[3],
+                arguments[4],
+                arguments[5],
+            ),
+        }
+    };
     let mask = if result_bytes >= 8 {
         u128::MAX
     } else {
@@ -4693,6 +4717,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 let llvm_type = self.llvm_type(ty)?.into_int_type();
                 Ok(llvm_type.const_int(value as u64, false).into())
             }
+            Some(Resolution::TopLevelConstant { name }) => self.gen_top_level_constant(node, &name),
             Some(Resolution::SizeOf { ty }) => {
                 let size = self.sema.size_align(ty).0;
                 let llvm_type = self.llvm_type(self.type_of(node))?.into_int_type();
@@ -4701,6 +4726,19 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             Some(Resolution::Function(index)) => Ok(self.function_value_closure(index)?.into()),
             Some(Resolution::Type(_)) | None => Err("name cannot be used as a value".to_string()),
         }
+    }
+
+    /// Emits the final value of a top-level compile-time variable (§11.4).
+    fn gen_top_level_constant(
+        &mut self,
+        node: NodeId,
+        name: &str,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let Some((value, _)) = self.sema.compile_time_variables.get(name).copied() else {
+            return Err(format!("compile-time variable '{name}' has no final value"));
+        };
+        let llvm_type = self.llvm_type(self.type_of(node))?.into_int_type();
+        Ok(llvm_type.const_int(value as u64, false).into())
     }
 
     fn enum_underlying(&self, ty: TypeId) -> Result<TypeId, String> {
@@ -5550,6 +5588,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             Some(Resolution::Constant { ty, value }) => {
                 let llvm_type = self.llvm_type(ty)?.into_int_type();
                 Ok(llvm_type.const_int(value as u64, false).into())
+            }
+            Some(Resolution::TopLevelConstant { .. }) => {
+                Err("compile-time variable is not callable".to_string())
             }
             _ => {
                 // Indirect call through a function value (§3.6.3, §4.5).
@@ -7144,6 +7185,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 Some(Resolution::Constant { ty, value }) => {
                     let llvm_type = self.llvm_type(ty)?.into_int_type();
                     Ok(llvm_type.const_int(value as u64, false).into())
+                }
+                Some(Resolution::TopLevelConstant { name }) => {
+                    self.gen_top_level_constant(is_expression.value, &name)
                 }
                 _ => Err("missing is target type".to_string()),
             },

@@ -3881,38 +3881,45 @@ impl<'a> Sema<'a> {
                     _ => None,
                 }
             }
-            NodeKind::Name(name) => match self
-                .top_level_constants
-                .get(&name.name)
-                .map(|(value, _)| *value)
+            NodeKind::Name(name) => {
+                match (if self.unknown_compile_time_names.contains(&name.name) {
+                    None
+                } else {
+                    self.top_level_constants
+                        .get(&name.name)
+                        .map(|(value, _)| *value)
+                })
                 .or_else(|| {
                     self.constant_env
                         .iter()
                         .rev()
                         .find_map(|environment| environment.get(&name.name).copied())
                 }) {
-                Some(value) => Some(value != 0),
-                None => match self.lookup(&name.name).cloned() {
-                    Some(Symbol::Global(global)) => {
-                        let (fixed, init) = {
-                            let info = &self.result.globals[global as usize];
-                            (info.fixed, info.init)
-                        };
-                        if !fixed {
-                            return None;
+                    Some(value) => Some(value != 0),
+                    None => match self.lookup(&name.name).cloned() {
+                        Some(Symbol::Global(global)) => {
+                            let (fixed, init) = {
+                                let info = &self.result.globals[global as usize];
+                                (info.fixed, info.init)
+                            };
+                            if !fixed {
+                                return None;
+                            }
+                            let init = init?;
+                            match self.node_kind(init).clone() {
+                                NodeKind::BooleanLiteral(_)
+                                | NodeKind::Unary(_)
+                                | NodeKind::Binary(_) => {
+                                    self.eval_compile_time_bool(init, depth + 1)
+                                }
+                                _ => None,
+                            }
                         }
-                        let init = init?;
-                        match self.node_kind(init).clone() {
-                            NodeKind::BooleanLiteral(_)
-                            | NodeKind::Unary(_)
-                            | NodeKind::Binary(_) => self.eval_compile_time_bool(init, depth + 1),
-                            _ => None,
-                        }
-                    }
-                    Some(Symbol::Local(_)) => None,
-                    _ => None,
-                },
-            },
+                        Some(Symbol::Local(_)) => None,
+                        _ => None,
+                    },
+                }
+            }
             _ => None,
         }
     }
@@ -3943,6 +3950,26 @@ impl<'a> Sema<'a> {
         let mut arguments = Vec::with_capacity(call.arguments.len());
         for argument in &call.arguments {
             arguments.push(self.eval_const_int(argument.value)?);
+        }
+        // Prefer host JIT execution once function bodies have been checked: it
+        // supports the full language, not just the integer interpreter.
+        if self.jit_allowed && self.compile_time_phase_b {
+            let ast: &crate::ast::Ast = self.ast;
+            if let Ok(Some(value)) =
+                crate::codegen::jit_evaluate_integer_function(ast, &self.result, index, &arguments)
+            {
+                return Some(value);
+            }
+        }
+        // Prefer host JIT execution once function bodies have been checked: it
+        // supports the full language, not just the integer interpreter.
+        if self.jit_allowed && self.compile_time_phase_b {
+            let ast: &crate::ast::Ast = self.ast;
+            if let Ok(Some(value)) =
+                crate::codegen::jit_evaluate_integer_function(ast, &self.result, index, &arguments)
+            {
+                return Some(value);
+            }
         }
         self.execute_compile_time_function(index, &arguments)
     }
@@ -4527,9 +4554,12 @@ impl<'a> Sema<'a> {
             }
             NodeKind::Name(name) => {
                 // Top-level compile-time variables are compile-time bindings
-                // (§11.2).
-                if let Some((value, _)) = self.top_level_constants.get(&name.name) {
-                    return Some(*value);
+                // (§11.2); values may still be unknown while function bodies are
+                // checked before the second compile-time pass.
+                if !self.unknown_compile_time_names.contains(&name.name) {
+                    if let Some((value, _)) = self.top_level_constants.get(&name.name) {
+                        return Some(*value);
+                    }
                 }
                 // Compile-time constant parameters are compile-time bindings
                 // (§11.5).
@@ -7430,8 +7460,10 @@ impl<'a> Sema<'a> {
         let Some(symbol) = self.lookup(&name.name).cloned() else {
             // Top-level compile-time variables keep their final value at runtime
             // (§11.4).
-            if let Some((value, ty)) = self.top_level_constants.get(&name.name).copied() {
-                self.result.resolutions[node as usize] = Some(Resolution::Constant { ty, value });
+            if let Some((_, ty)) = self.top_level_constants.get(&name.name).copied() {
+                self.result.resolutions[node as usize] = Some(Resolution::TopLevelConstant {
+                    name: name.name.clone(),
+                });
                 return Some(ty);
             }
             // Compile-time bindings (e.g. array extension dimension bindings,
@@ -7987,7 +8019,9 @@ impl<'a> Sema<'a> {
     /// operators over constants, fixed globals and the compiler API.
     fn is_compile_time_constant(&self, node: NodeId) -> bool {
         if let NodeKind::Name(name) = self.node_kind(node) {
-            if self.top_level_constants.contains_key(&name.name) {
+            if self.top_level_constants.contains_key(&name.name)
+                && !self.unknown_compile_time_names.contains(&name.name)
+            {
                 return true;
             }
             if self

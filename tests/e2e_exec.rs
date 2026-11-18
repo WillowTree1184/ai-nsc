@@ -4456,3 +4456,27 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 7);
 }
+
+#[test]
+fn compile_time_functions_use_the_jit_for_full_language_bodies() {
+    // Float arithmetic is outside the integer interpreter, so this only works
+    // when the host JIT executes the compile-time call.
+    let source = "\
+fixed Halved(value: integer(4)): integer(4)
+{
+    local scaled: float(8) = Cast<float(8)>(value) / 2.0;
+    return Cast<integer(4)>(scaled);
+}
+
+#{
+    local result: integer(4) = Halved(9);
+}
+
+local value: integer(4) = result;
+
+fixed Main(): integer(4)
+{
+    return value;
+}";
+    assert_eq!(run_program(source), 4);
+}

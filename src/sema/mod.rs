@@ -748,6 +748,12 @@ pub enum Resolution {
         /// Integer value (booleans are 0/1).
         value: i128,
     },
+    /// A top-level compile-time variable (§11.4). The final value is looked up
+    /// at code-generation time so that re-execution (interpreter/JIT) is visible.
+    TopLevelConstant {
+        /// Variable name.
+        name: String,
+    },
     /// `Type.SizeOf<T>()` from the compiler API (§11.8): a compile-time size.
     SizeOf {
         /// The type whose memory size is produced.
@@ -957,6 +963,8 @@ pub struct SemaResult {
     pub array_extension_templates: Vec<ArrayExtensionTemplate>,
     /// Instantiated array extension methods per target array type.
     pub array_extension_instances: HashMap<(NodeId, TypeId), Vec<u32>>,
+    /// Final values of top-level compile-time variables (§11.4).
+    pub compile_time_variables: HashMap<String, (i128, TypeId)>,
     /// Number of errors reported.
     pub error_count: u32,
 }
@@ -1155,6 +1163,17 @@ pub fn analyze_with_layout(
     engine: &mut DiagnosticEngine,
     layout: crate::sema::types::TargetLayout,
 ) -> SemaResult {
+    analyze_with_options(ast, sources, engine, layout, true)
+}
+
+/// Runs semantic analysis for an explicit target layout and host-JIT choice.
+pub fn analyze_with_options(
+    ast: &mut Ast,
+    sources: &SourceManager,
+    engine: &mut DiagnosticEngine,
+    layout: crate::sema::types::TargetLayout,
+    jit_allowed: bool,
+) -> SemaResult {
     let node_count = ast.nodes.len();
     let mut sema = Sema {
         ast,
@@ -1199,6 +1218,8 @@ pub fn analyze_with_layout(
         in_constant_initializer: false,
         compile_call_depth: 0,
         top_level_blocks: Vec::new(),
+        unknown_compile_time_names: std::collections::HashSet::new(),
+        jit_allowed,
         compile_time_phase_b: false,
         array_binding_lengths: Vec::new(),
         heap_groups: Vec::new(),
@@ -1293,6 +1314,10 @@ pub(crate) struct Sema<'a> {
     pub(crate) compile_call_depth: usize,
     /// Top-level `#{}` blocks in execution order (§11.2).
     pub(crate) top_level_blocks: Vec<NodeId>,
+    /// Compile-time variable names whose final values are not known yet.
+    pub(crate) unknown_compile_time_names: std::collections::HashSet<String>,
+    /// Whether host JIT execution may be used for compile-time code (§11.4).
+    pub(crate) jit_allowed: bool,
     /// Whether top-level compile-time blocks are being re-executed after all
     /// declarations are resolved (§11.2).
     pub(crate) compile_time_phase_b: bool,
@@ -1554,19 +1579,24 @@ impl<'a> Sema<'a> {
         // Resolve `scoped` member-name targets now that all members exist (§9.5).
         self.resolve_pending_scoped();
 
-        // Pass 2 re-executes top-level compile-time blocks now that every
-        // declaration (including functions) is resolvable (§11.2).
-        self.rerun_top_level_compile_time();
-
         // Interface inheritance needs every interface's members resolved
         // (§3.7.3): flatten inherited method lists, expand class interface lists
         // and verify implementations.
         self.finalize_interface_inheritance();
 
-        // Pass 3: check bodies and initializers.
+        // Compile-time function calls need checked bodies before they can be
+        // JIT-executed, so bodies are checked before the second compile-time
+        // execution pass (§11.2, §11.4).
         self.finalize_variant_union_layouts();
         self.build_vtables();
+        self.register_compile_time_names();
         self.check_function_bodies();
+
+        // Pass 2 re-executes top-level compile-time blocks now that every
+        // declaration (including functions) is resolvable (§11.2).
+        self.rerun_top_level_compile_time();
+
+        // Pass 3: check initializers.
         self.check_global_initializers();
         // Initializers may contain function literals; check their bodies too.
         self.check_function_bodies();
@@ -2554,6 +2584,7 @@ impl<'a> Sema<'a> {
         };
         self.top_level_constants
             .insert(name.name.clone(), (updated, ty));
+        self.unknown_compile_time_names.remove(&name.name);
     }
 
     /// Returns the statements of a block node.
@@ -2586,6 +2617,82 @@ impl<'a> Sema<'a> {
             self.execute_top_level_compile_time(node, block);
         }
         self.compile_time_phase_b = false;
+        self.result.compile_time_variables = self.top_level_constants.clone();
+        self.unknown_compile_time_names.clear();
+    }
+
+    /// Records the names and declared types of top-level compile-time variables
+    /// before function bodies are checked, so bodies can refer to them while
+    /// final values are still being computed (§11.4).
+    fn register_compile_time_names(&mut self) {
+        let blocks = self.top_level_blocks.clone();
+        for node in blocks {
+            let block = match self.node_kind(node) {
+                NodeKind::CompileTimeBlock(block) => block,
+                _ => continue,
+            };
+            let statements = self.block_statements(block);
+            self.register_compile_time_names_in_statements(&statements);
+        }
+        self.result.compile_time_variables = self.top_level_constants.clone();
+    }
+
+    fn register_compile_time_names_in_statements(&mut self, statements: &[NodeId]) {
+        for statement in statements {
+            match self.node_kind(*statement).clone() {
+                NodeKind::Local(declaration) => {
+                    for item in &declaration.items {
+                        let Some(ty_node) = item.ty else { continue };
+                        let Some(ty) = self.resolve_type(ty_node) else {
+                            continue;
+                        };
+                        if !self.top_level_constants.contains_key(&item.name) {
+                            self.top_level_constants.insert(item.name.clone(), (0, ty));
+                            self.unknown_compile_time_names.insert(item.name.clone());
+                        }
+                    }
+                }
+                NodeKind::Fixed(declaration) => {
+                    if let Some(Initializer::Expression(_)) = declaration.init {
+                        if let Some(ty) = declaration.ty.and_then(|ty| self.resolve_type(ty)) {
+                            if !self.top_level_constants.contains_key(&declaration.name) {
+                                self.top_level_constants
+                                    .insert(declaration.name.clone(), (0, ty));
+                                self.unknown_compile_time_names
+                                    .insert(declaration.name.clone());
+                            }
+                        }
+                    }
+                }
+                NodeKind::Block(inner) => {
+                    let inner = inner.clone();
+                    self.register_compile_time_names_in_statements(&inner);
+                }
+                NodeKind::CompileTimeBlock(inner) => {
+                    let statements = self.block_statements(inner);
+                    self.register_compile_time_names_in_statements(&statements);
+                }
+                NodeKind::If(if_statement) => {
+                    for branch in &if_statement.branches {
+                        let statements = self.block_statements(branch.body);
+                        self.register_compile_time_names_in_statements(&statements);
+                    }
+                    if let Some(else_block) = if_statement.else_block {
+                        let statements = self.block_statements(else_block);
+                        self.register_compile_time_names_in_statements(&statements);
+                    }
+                }
+                NodeKind::While(loop_statement) => {
+                    let statements = self.block_statements(loop_statement.body);
+                    self.register_compile_time_names_in_statements(&statements);
+                }
+                NodeKind::For(loop_statement) => {
+                    let statements = self.block_statements(loop_statement.body);
+                    self.register_compile_time_names_in_statements(&statements);
+                }
+                _ => {}
+            }
+        }
     }
 
     fn execute_top_level_compile_time(&mut self, node: NodeId, block: NodeId) {
@@ -2660,6 +2767,7 @@ impl<'a> Sema<'a> {
                                     declared.unwrap_or_else(|| self.inferred_integer_type(value));
                                 self.top_level_constants
                                     .insert(item.name.clone(), (value, ty));
+                                self.unknown_compile_time_names.remove(&item.name);
                             }
                             None => {
                                 if self.compile_time_phase_b {

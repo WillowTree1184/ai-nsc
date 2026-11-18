@@ -298,7 +298,23 @@ fn compile(options: &Options) -> i32 {
 
     // ---- semantic analysis --------------------------------------------
     let mut parsed = ast;
-    let sema_result = sema::analyze(&mut parsed, &sources, &mut diagnostics);
+    let target_layout = match options
+        .target
+        .as_deref()
+        .and_then(|triple| triple.split('-').next())
+    {
+        Some("i686" | "i386") => sema::types::TargetLayout::I686,
+        Some("arm" | "armv7") => sema::types::TargetLayout::ARM32,
+        _ => sema::types::TargetLayout::HOST64,
+    };
+    let jit_allowed = options.target.is_none();
+    let sema_result = sema::analyze_with_options(
+        &mut parsed,
+        &sources,
+        &mut diagnostics,
+        target_layout,
+        jit_allowed,
+    );
     if sema_result.error_count > 0 {
         return 1;
     }

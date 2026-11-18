@@ -12,7 +12,7 @@
 //! The lexer, parser and semantic analysis live in this crate too; they are
 //! added once the NovaSharp grammar specification is available.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 pub mod ast;
 mod ast_clone;

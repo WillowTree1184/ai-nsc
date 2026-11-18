@@ -310,6 +310,7 @@ fn compile(options: &Options) -> i32 {
     let codegen_options = codegen::CodegenOptions {
         optimization_level: options.optimization_level,
         target: options.target.clone(),
+        emit_launcher: true,
     };
     let ir = match codegen::generate(&parsed, &sema_result, &codegen_options) {
         Ok(ir) => ir,

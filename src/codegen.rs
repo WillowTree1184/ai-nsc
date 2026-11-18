@@ -58,6 +58,9 @@ pub struct CodegenOptions {
     pub optimization_level: u8,
     /// Target triple to compile for; `None` keeps LLVM's host default.
     pub target: Option<String>,
+    /// Whether to emit the program entry launcher (host executables need it;
+    /// compile-time JIT modules do not).
+    pub emit_launcher: bool,
 }
 
 /// Configures the module's target triple and data layout for a target triple
@@ -107,13 +110,25 @@ fn configure_module_target(module: &Module<'_>, triple_text: &str) -> Result<(),
 /// LLVM's verifier.
 pub fn generate(ast: &Ast, sema: &SemaResult, options: &CodegenOptions) -> Result<String, String> {
     let context = Context::create();
+    let module = generate_module(&context, ast, sema, options)?;
+    Ok(module.print_to_string().to_string())
+}
+
+/// Builds an LLVM module for a program, allowing callers (such as the JIT-based
+/// compile-time executor) to reuse the generated module directly.
+pub fn generate_module<'ctx>(
+    context: &'ctx Context,
+    ast: &Ast,
+    sema: &SemaResult,
+    options: &CodegenOptions,
+) -> Result<Module<'ctx>, String> {
     let module = context.create_module("novasharp");
     if let Some(triple) = &options.target {
         configure_module_target(&module, triple)?;
     }
     let builder = context.create_builder();
     let mut generator = Generator {
-        context: &context,
+        context,
         module,
         builder,
         ast,
@@ -146,7 +161,99 @@ pub fn generate(ast: &Ast, sema: &SemaResult, options: &CodegenOptions) -> Resul
     if let Err(message) = generator.module.verify() {
         return Err(format!("generated invalid LLVM IR: {message}"));
     }
-    Ok(generator.module.print_to_string().to_string())
+    Ok(generator.module)
+}
+
+/// JIT-evaluates an integer-valued function at compile time (§11.4).
+///
+/// LLVM 18 no longer ships an IR interpreter, so compile-time execution uses the
+/// host MCJIT backend. Only functions whose parameters and result are integers of
+/// at most 64 bits are eligible; other cases return `Ok(None)` so callers can
+/// fall back to the interpreter. The function's body must already be checked by
+/// semantic analysis, and the program must not be cross-compiled.
+#[allow(unsafe_code)]
+pub fn jit_evaluate_integer_function(
+    ast: &Ast,
+    sema: &SemaResult,
+    function: u32,
+    arguments: &[i128],
+) -> Result<Option<i128>, String> {
+    use inkwell::targets::{InitializationConfig, Target};
+    let info = &sema.functions[function as usize];
+    let Some(return_type) = info.return_type else {
+        return Ok(None);
+    };
+    let (result_bytes, result_signed) = match sema.types.get(return_type) {
+        Type::Integer { bytes, signed } if *bytes <= 8 => (*bytes, *signed),
+        _ => return Ok(None),
+    };
+    if info.body.is_none() || info.parameters.len() != arguments.len() {
+        return Ok(None);
+    }
+    let mut parameter_widths = Vec::with_capacity(info.parameters.len());
+    for parameter in &info.parameters {
+        match sema.types.get(parameter.ty) {
+            Type::Integer { bytes, signed } if *bytes <= 8 => {
+                parameter_widths.push((*bytes, *signed));
+            }
+            _ => return Ok(None),
+        }
+    }
+    Target::initialize_native(&InitializationConfig::default())
+        .map_err(|error| format!("cannot initialise the host JIT target: {error}"))?;
+    let context = Context::create();
+    let options = CodegenOptions {
+        optimization_level: 0,
+        target: None,
+        emit_launcher: false,
+    };
+    let module = generate_module(&context, ast, sema, &options)?;
+    let engine = module
+        .create_jit_execution_engine(inkwell::OptimizationLevel::None)
+        .map_err(|error| format!("cannot create the JIT execution engine: {error}"))?;
+    let function_value = engine
+        .get_function_value(&info.mangled)
+        .map_err(|error| format!("cannot find the JIT function '{}': {error}", info.name))?;
+    let mut values = Vec::with_capacity(arguments.len());
+    for ((argument, (bytes, signed)), parameter) in arguments
+        .iter()
+        .zip(parameter_widths.iter())
+        .zip(info.parameters.iter())
+    {
+        let int_type = match bytes {
+            1 => context.i8_type(),
+            2 => context.i16_type(),
+            4 => context.i32_type(),
+            _ => context.i64_type(),
+        };
+        let bits = u32::from(*bytes) * 8;
+        let mask = if bits >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << bits) - 1
+        };
+        values.push(int_type.create_generic_value((*argument as u64) & mask, *signed));
+        let _ = parameter;
+    }
+    let references: Vec<&inkwell::values::GenericValue<'_>> = values.iter().collect();
+    let result = unsafe { engine.run_function(function_value, &references) };
+    let result = result.as_int(result_signed);
+    let mask = if result_bytes >= 8 {
+        u128::MAX
+    } else {
+        (1u128 << (u32::from(result_bytes) * 8)) - 1
+    };
+    let truncated = u128::from(result) & mask;
+    Ok(Some(if result_signed {
+        let sign_bit = 1u128 << (u32::from(result_bytes) * 8 - 1);
+        if truncated & sign_bit != 0 {
+            (truncated | !mask) as i128
+        } else {
+            truncated as i128
+        }
+    } else {
+        truncated as i128
+    }))
 }
 
 struct StructTypeInfo<'ctx> {
@@ -214,7 +321,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         self.build_class_metadata()?;
         self.declare_globals()?;
         self.generate_functions()?;
-        self.generate_launcher()?;
+        if self.options.emit_launcher {
+            self.generate_launcher()?;
+        }
         let _ = self.options;
         Ok(())
     }

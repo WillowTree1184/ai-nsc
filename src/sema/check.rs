@@ -779,10 +779,6 @@ impl<'a> Sema<'a> {
                 parameters.extend(expanded);
                 continue;
             }
-            if parameter.compile_time {
-                self.unsupported(parameter.span, "compile-time ('#') parameters");
-                return None;
-            }
             let Some(parameter_type_node) = parameter.ty else {
                 self.error(parameter.span, "method parameter requires a type");
                 return None;
@@ -816,6 +812,12 @@ impl<'a> Sema<'a> {
         let index = self.result.functions.len() as u32;
         let generic_env = self.captured_generic_env();
         let decl_scope = self.current_scope();
+        // Methods with '#' parameters are templates (§11.5).
+        let body = if parameters.iter().any(|parameter| parameter.compile_time) {
+            None
+        } else {
+            body
+        };
         self.result.functions.push(FunctionInfo {
             name: declaration.name.clone(),
             scope,
@@ -6485,6 +6487,48 @@ impl<'a> Sema<'a> {
             return None;
         }
         let span = self.span_of(node);
+        // Methods with '#' parameters are templates: specialize them per
+        // constant argument tuple (§11.5).
+        let mut template_candidates = Vec::with_capacity(candidates.len());
+        for &candidate in &candidates {
+            let function = &self.result.functions[candidate as usize];
+            if function.is_template() && function.generic_parameters.is_empty() {
+                let parameters = function.parameters.clone();
+                self.suppress_errors += 1;
+                let mapped = self.match_call_arguments(&parameters[1..], arguments, span);
+                let mut constants = Vec::new();
+                let mut ok = mapped.is_some();
+                if let Some(mapped) = &mapped {
+                    for (parameter, value) in parameters.iter().skip(1).zip(mapped.iter()) {
+                        if !parameter.compile_time {
+                            continue;
+                        }
+                        if !self.is_compile_time_constant(*value) {
+                            ok = false;
+                            break;
+                        }
+                        match self.eval_const_int(*value) {
+                            Some(constant) => constants.push(constant),
+                            None => {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+                self.suppress_errors -= 1;
+                if ok {
+                    if let Some(instance) =
+                        self.instantiate_constant_function(candidate, &constants, span)
+                    {
+                        template_candidates.push(instance);
+                    }
+                }
+            } else {
+                template_candidates.push(candidate);
+            }
+        }
+        let candidates = template_candidates;
         let mut exact = Vec::new();
         for &candidate in &candidates {
             let parameters = self.result.functions[candidate as usize].parameters.clone();

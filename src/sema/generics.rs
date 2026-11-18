@@ -561,7 +561,20 @@ impl<'a> Sema<'a> {
         constants: &[i128],
         span: Span,
     ) -> Option<u32> {
-        let (node, scope, decl_scope, name, exposed_symbol, generic_env, template_node) = {
+        let (
+            node,
+            scope,
+            decl_scope,
+            name,
+            exposed_symbol,
+            generic_env,
+            template_node,
+            method_of,
+            static_owner,
+            is_virtual,
+            is_override,
+            is_sealed,
+        ) = {
             let template = &self.result.functions[template_index as usize];
             (
                 template.node,
@@ -571,6 +584,11 @@ impl<'a> Sema<'a> {
                 template.exposed_symbol.clone(),
                 template.generic_env.clone(),
                 template.node,
+                template.method_of,
+                template.static_owner,
+                template.is_virtual,
+                template.is_override,
+                template.is_sealed,
             )
         };
         let key = (template_node, constants.to_vec());
@@ -633,11 +651,11 @@ impl<'a> Sema<'a> {
             node: cloned,
             body: Some(FunctionBody::Block(body)),
             parameters: resolved_parameters,
-            method_of: None,
-            static_owner: None,
-            is_virtual: false,
-            is_override: false,
-            is_sealed: false,
+            method_of,
+            static_owner,
+            is_virtual,
+            is_override,
+            is_sealed,
             is_abstract: false,
             return_type,
             mangled,

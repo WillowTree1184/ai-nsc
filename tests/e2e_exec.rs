@@ -2700,3 +2700,31 @@ fixed Main(): integer(4)
     // 2 + 6 + 6 + 8
     assert_eq!(run_program(source), 22);
 }
+
+#[test]
+fn compile_time_parameters_work_on_methods() {
+    let source = "\
+structure Bag
+{
+    public Total: integer(4);
+
+    extension
+    {
+        public fixed Add(this: &Bag, #amount: integer(4)): integer(4)
+        {
+            this.Total += amount;
+            return this.Total;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local bag: Bag;
+    bag.Total = 0;
+    local first: integer(4) = bag.Add(4);
+    local second: integer(4) = bag.Add(10);
+    return bag.Total + first + second;
+}";
+    assert_eq!(run_program(source), 32);
+}

@@ -3404,3 +3404,24 @@ fixed Main(): integer(4)
     // (0+1+2+3+4) + (0+1+2+3)
     assert_eq!(run_program(source), 16);
 }
+
+#[test]
+fn top_level_compile_time_blocks_and_if() {
+    let source = "\
+#{ local limit: integer(4) = 3; }
+
+#if limit > 2
+{
+    fixed Bonus: integer(4) = 5;
+}
+else
+{
+    fixed Bonus: integer(4) = 50;
+}
+
+fixed Main(): integer(4)
+{
+    return Bonus + limit;
+}";
+    assert_eq!(run_program(source), 8);
+}

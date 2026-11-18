@@ -1062,6 +1062,7 @@ pub fn analyze(
         current_block: NodeId::default(),
         in_function_body: false,
         expected_array_element: None,
+        top_level_constants: HashMap::new(),
     };
     sema.run();
     sema.result.error_count = sema.engine.error_count();
@@ -1126,6 +1127,9 @@ pub(crate) struct Sema<'a> {
     /// Element type expected for array literals without an explicit expected
     /// array type (e.g. `for` targets, §5.9.5).
     pub(crate) expected_array_element: Option<TypeId>,
+    /// Compile-time variables produced by top-level `#{}` blocks, in execution
+    /// order (§11.2, §11.4).
+    pub(crate) top_level_constants: HashMap<String, (i128, TypeId)>,
 }
 
 impl<'a> Sema<'a> {
@@ -2229,7 +2233,115 @@ impl<'a> Sema<'a> {
                 NodeKind::Union(declaration) => {
                     self.declare_named_type(node, declaration.name.clone(), TypeDefKind::Union)
                 }
+                NodeKind::CompileTimeIf(statement) => {
+                    let condition = statement.condition;
+                    let taken = self
+                        .eval_compile_time_bool(condition, 0)
+                        .unwrap_or_else(|| {
+                            self.error(
+                                self.span_of(condition),
+                                "the '#if' condition must be a compile-time constant",
+                            );
+                            false
+                        });
+                    self.result.compile_time_conditions.insert(node, taken);
+                    if taken {
+                        let members = self.block_statements(statement.then_block);
+                        self.declare_types(&members);
+                    } else if let Some(else_block) = statement.else_block {
+                        let members = self.block_statements(else_block);
+                        self.declare_types(&members);
+                    }
+                }
+                NodeKind::CompileTimeBlock(block) => {
+                    self.execute_top_level_compile_time(node, block);
+                }
                 _ => {}
+            }
+        }
+    }
+
+    /// Returns the statements of a block node.
+    fn block_statements(&self, node: NodeId) -> Vec<NodeId> {
+        match self.node_kind(node) {
+            NodeKind::Block(statements) => statements.clone(),
+            NodeKind::VerbatimBlock(inner) => self.block_statements(inner),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Executes a top-level compile-time block during declaration collection
+    /// (§11.2, §11.4): constant locals become top-level compile-time variables
+    /// available to later blocks, `#if`s and constant expressions.
+    fn execute_top_level_compile_time(&mut self, node: NodeId, block: NodeId) {
+        let statements = self.block_statements(block);
+        for statement in statements {
+            match self.node_kind(statement).clone() {
+                NodeKind::CompileTimeIf(if_statement) => {
+                    let condition = if_statement.condition;
+                    let taken = self
+                        .eval_compile_time_bool(condition, 0)
+                        .unwrap_or_else(|| {
+                            self.error(
+                                self.span_of(condition),
+                                "the '#if' condition must be a compile-time constant",
+                            );
+                            false
+                        });
+                    self.result.compile_time_conditions.insert(statement, taken);
+                }
+                NodeKind::CompileTimeBlock(inner) => {
+                    self.execute_top_level_compile_time(inner, inner);
+                }
+                NodeKind::Local(declaration) => {
+                    for item in &declaration.items {
+                        let Some(init) = item.init else {
+                            continue;
+                        };
+                        self.suppress_errors += 1;
+                        let value = self.eval_const_int(init);
+                        self.suppress_errors -= 1;
+                        let declared = item.ty.and_then(|ty| self.resolve_type(ty));
+                        match value {
+                            Some(value) => {
+                                let ty = declared.unwrap_or(TypeId::ERROR);
+                                self.top_level_constants
+                                    .insert(item.name.clone(), (value, ty));
+                            }
+                            None => self.unsupported(
+                                self.span_of(node),
+                                "non-constant values in top-level compile-time blocks",
+                            ),
+                        }
+                    }
+                }
+                NodeKind::Fixed(declaration) => {
+                    if let Some(Initializer::Expression(expression)) = declaration.init {
+                        self.suppress_errors += 1;
+                        let value = self.eval_const_int(expression);
+                        self.suppress_errors -= 1;
+                        if let Some(value) = value {
+                            let ty = declaration
+                                .ty
+                                .and_then(|ty| self.resolve_type(ty))
+                                .unwrap_or(TypeId::ERROR);
+                            self.top_level_constants
+                                .insert(declaration.name.clone(), (value, ty));
+                        }
+                    }
+                }
+                NodeKind::ExpressionStmt(expression) => {
+                    self.compile_time_constants
+                        .push(std::collections::HashMap::new());
+                    self.check_expr(expression, None);
+                    self.compile_time_constants.pop();
+                }
+                _ => {
+                    self.unsupported(
+                        self.span_of(statement),
+                        "this statement in a top-level compile-time block",
+                    );
+                }
             }
         }
     }
@@ -2352,6 +2464,26 @@ impl<'a> Sema<'a> {
                 NodeKind::Local(_) => self.resolve_global_local(node),
                 NodeKind::Extension(_) => self.resolve_extension_declaration(node, None),
                 NodeKind::Use(statement) => self.resolve_use_statement(&statement),
+                NodeKind::CompileTimeIf(statement) => {
+                    let taken = self
+                        .result
+                        .compile_time_conditions
+                        .get(&node)
+                        .copied()
+                        .unwrap_or(false);
+                    let statements = if taken {
+                        self.block_statements(statement.then_block)
+                    } else {
+                        statement
+                            .else_block
+                            .map(|else_block| self.block_statements(else_block))
+                            .unwrap_or_default()
+                    };
+                    self.resolve_declarations(&statements);
+                }
+                // Top-level `#{}` blocks were executed during declaration
+                // collection (§11.2); they declare no runtime members.
+                NodeKind::CompileTimeBlock(_) => {}
                 _ => {}
             }
         }

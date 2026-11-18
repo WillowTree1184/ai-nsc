@@ -2969,11 +2969,15 @@ impl<'a> Sema<'a> {
                 }
             }
             NodeKind::Name(name) => match self
-                .constant_env
-                .iter()
-                .rev()
-                .find_map(|environment| environment.get(&name.name).copied())
-            {
+                .top_level_constants
+                .get(&name.name)
+                .map(|(value, _)| *value)
+                .or_else(|| {
+                    self.constant_env
+                        .iter()
+                        .rev()
+                        .find_map(|environment| environment.get(&name.name).copied())
+                }) {
                 Some(value) => Some(value != 0),
                 None => match self.lookup(&name.name).cloned() {
                     Some(Symbol::Global(global)) => {
@@ -3065,6 +3069,11 @@ impl<'a> Sema<'a> {
                 })
             }
             NodeKind::Name(name) => {
+                // Top-level compile-time variables are compile-time bindings
+                // (§11.2).
+                if let Some((value, _)) = self.top_level_constants.get(&name.name) {
+                    return Some(*value);
+                }
                 // Compile-time constant parameters are compile-time bindings
                 // (§11.5).
                 for environment in self.constant_env.iter().rev() {
@@ -5411,6 +5420,12 @@ impl<'a> Sema<'a> {
         expected: Option<TypeId>,
     ) -> Option<TypeId> {
         let Some(symbol) = self.lookup(&name.name).cloned() else {
+            // Top-level compile-time variables keep their final value at runtime
+            // (§11.4).
+            if let Some((value, ty)) = self.top_level_constants.get(&name.name).copied() {
+                self.result.resolutions[node as usize] = Some(Resolution::Constant { ty, value });
+                return Some(ty);
+            }
             // Name elision for variant states (§3.7.5): in a context that wants a
             // variant, a payload-less state name stands for `Variant.State`.
             if let Some(expected) = expected {
@@ -5849,6 +5864,11 @@ impl<'a> Sema<'a> {
     /// Whether an expression is a compile-time constant (§11.2): literals,
     /// operators over constants, fixed globals and the compiler API.
     fn is_compile_time_constant(&self, node: NodeId) -> bool {
+        if let NodeKind::Name(name) = self.node_kind(node) {
+            if self.top_level_constants.contains_key(&name.name) {
+                return true;
+            }
+        }
         match self.node_kind(node) {
             NodeKind::IntegerLiteral(_)
             | NodeKind::FloatLiteral(_)

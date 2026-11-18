@@ -1101,3 +1101,38 @@ fixed Main(): integer(4) { return 0; }",
     );
     assert!(stderr.contains("'Hidden' is not accessible"), "{stderr}");
 }
+
+#[test]
+fn top_level_compile_time_variables_cross_files() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-toplevel-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let first = directory.join("first.ns");
+    let second = directory.join("second.ns");
+    std::fs::write(&first, "#{ local seed: integer(4) = 7; }").expect("write first");
+    std::fs::write(
+        &second,
+        "#if seed > 3\n{\n    fixed Value: integer(4) = 41;\n}\nelse\n{\n    fixed Value: integer(4) = 99;\n}\n\nfixed Main(): integer(4)\n{\n    return Value + seed;\n}",
+    )
+    .expect("write second");
+    let output = ai_nsc()
+        .args([
+            "run",
+            first.to_str().expect("utf-8 path"),
+            second.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(
+        output.status.code(),
+        Some(48),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

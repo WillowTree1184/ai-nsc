@@ -2956,9 +2956,10 @@ impl<'a> Sema<'a> {
             return;
         };
         let body = match declaration.init {
-            Some(Initializer::Block(block)) => block,
-            _ => {
-                self.unsupported(self.span_of(node), "linkable declarations without a body");
+            Some(Initializer::Block(block)) => Some(block),
+            None => None,
+            Some(Initializer::Expression(_)) => {
+                self.unsupported(self.span_of(node), "function-valued linkable constants");
                 return;
             }
         };
@@ -2966,10 +2967,29 @@ impl<'a> Sema<'a> {
             return;
         };
         let return_type = function.return_type.and_then(|ty| self.resolve_type(ty));
-        let exposed = declaration
-            .symbol
-            .clone()
-            .unwrap_or_else(|| declaration.name.clone());
+        let exposed = match &declaration.symbol {
+            Some(raw) => match literal::decode_string(raw) {
+                Ok(decoded) => String::from_utf8_lossy(&decoded.bytes).into_owned(),
+                Err(_) => {
+                    self.error(self.span_of(node), "invalid linkable symbol string literal");
+                    return;
+                }
+            },
+            None => declaration.name.clone(),
+        };
+        let calling_convention = self.resolve_calling_convention(function.calling_convention);
+        let Some(body) = body else {
+            // No body: the symbol is provided externally (§5.5).
+            self.register_external_linkable(
+                node,
+                declaration,
+                parameters,
+                return_type,
+                exposed,
+                calling_convention,
+            );
+            return;
+        };
         self.register_function(FunctionDeclaration {
             node,
             name: declaration.name.clone(),
@@ -2978,8 +2998,59 @@ impl<'a> Sema<'a> {
             return_type,
             method_of: None,
             exposed_symbol: Some(exposed),
-            calling_convention: None,
+            calling_convention,
         });
+    }
+
+    /// Registers a `linkable` declaration whose symbol is provided by an
+    /// external library (§5.5): the symbol is emitted as an external function
+    /// declaration and calls bind to it at link time.
+    fn register_external_linkable(
+        &mut self,
+        node: NodeId,
+        declaration: &LinkableDecl,
+        parameters: Vec<ParameterInfo>,
+        return_type: Option<TypeId>,
+        exposed: String,
+        calling_convention: Option<i32>,
+    ) {
+        let scope = self.scope_path.clone();
+        let index = self.result.functions.len() as u32;
+        let decl_scope = self.current_scope();
+        self.result.functions.push(FunctionInfo {
+            name: declaration.name.clone(),
+            scope,
+            node,
+            body: None,
+            parameters,
+            method_of: None,
+            static_owner: None,
+            is_virtual: false,
+            is_override: false,
+            is_sealed: false,
+            accessibility: declaration.modifiers.accessibility,
+            calling_convention,
+            scoped: Vec::new(),
+            is_abstract: false,
+            return_type,
+            mangled: exposed.clone(),
+            exposed_symbol: Some(exposed),
+            generic_parameters: Vec::new(),
+            generic_arguments: Vec::new(),
+            template: None,
+            decl_scope,
+            generic_env: self.captured_generic_env(),
+            environment: false,
+            captures: Vec::new(),
+            constant_values: HashMap::new(),
+            locals: Vec::new(),
+            span: self.span_of(node),
+        });
+        self.declare(
+            declaration.name.clone(),
+            Symbol::Functions(vec![index]),
+            self.span_of(node),
+        );
     }
 
     /// Builds the virtual dispatch tables after all declarations are resolved.

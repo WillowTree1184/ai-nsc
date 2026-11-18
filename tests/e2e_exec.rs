@@ -3855,3 +3855,30 @@ fixed Main(): integer(4)
     // The global and the local alias are demands: the unit must not be disposed.
     assert_eq!(run_program(source), 5);
 }
+
+#[test]
+fn external_linkable_symbols_bind_to_library_functions() {
+    let source = "\
+linkable(\"abs\") Absolute: function(value: integer(4)) integer(4);
+
+fixed Main(): integer(4)
+{
+    return Absolute(-5);
+}";
+    assert_eq!(run_program(source), 5);
+}
+
+#[test]
+fn linkable_with_body_exposes_the_given_symbol() {
+    let source = "\
+linkable(\"custom_twice\") Twice: function(value: integer(4)) integer(4)
+{
+    return value * 2;
+}
+
+fixed Main(): integer(4)
+{
+    return Twice(6);
+}";
+    assert_eq!(run_program(source), 12);
+}

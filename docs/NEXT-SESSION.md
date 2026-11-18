@@ -2,7 +2,7 @@
 
 ## State
 
-- Branch `main`; last feature commit `6b57c46` (Draft 1.152 lazy two-phase).
+- Branch `main`; last feature commit `2db7d9a` (Draft 1.152 lazy two-phase, top-level '#()' and cross-module gaps).
   `git status` is clean.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
   — **338 tests green** (41 lib unit including the lexer longest-match test, 98 CLI,

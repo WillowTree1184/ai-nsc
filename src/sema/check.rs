@@ -8208,7 +8208,21 @@ impl<'a> Sema<'a> {
                 Some(left_type)
             }
             BinaryOp::LogicalAnd | BinaryOp::LogicalOr => {
-                if !self.is_boolean(left_type) {
+                // Operands may be `boolean` or implicitly convertible to it
+                // (§4.9.24, §4.9.25).
+                let mut operands_ok = true;
+                for (operand, ty) in [(binary.left, left_type), (binary.right, right_type)] {
+                    if self.is_boolean(ty) {
+                        continue;
+                    }
+                    match self.find_implicit_conversion(ty, TypeId::BOOLEAN) {
+                        Some(method) => {
+                            self.result.implicit_conversions.insert(operand, method);
+                        }
+                        None => operands_ok = false,
+                    }
+                }
+                if !operands_ok {
                     self.error(
                         self.span_of(node),
                         "logical operator requires boolean operands",

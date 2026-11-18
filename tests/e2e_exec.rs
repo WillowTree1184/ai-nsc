@@ -4140,3 +4140,31 @@ fixed Main(): integer(4)
     // out-of-range conversions wrap (§3.2); NaN is deterministic
     assert_eq!(run_program(source), 7);
 }
+
+#[test]
+fn logical_operators_accept_implicit_boolean_conversions() {
+    let source = "\
+structure Flag
+{
+    public Value: boolean;
+
+    extension
+    {
+        public fixed Construct(this: &Flag, value: boolean) { this.Value = value; }
+        implicitable operator boolean(from: Flag): boolean { return from.Value; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local yes: Flag = Flag(true);
+    local no: Flag = Flag(false);
+    local score: integer(4) = 0;
+    if (yes && yes) { score += 1; }
+    if (no || yes) { score += 2; }
+    if (yes) { score += 4; }
+    if (!no) { score += 8; }
+    return score;
+}";
+    assert_eq!(run_program(source), 15);
+}

@@ -6658,7 +6658,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
 
     fn gen_logical(&mut self, binary: &BinaryExpr) -> Result<BasicValueEnum<'ctx>, String> {
         let function = self.current_llvm_function()?;
-        let left = self.gen_expr(binary.left)?.into_int_value();
+        let left = self.gen_coerced_expr(binary.left)?.into_int_value();
         let left = self.as_boolean_i1(left);
         let right_block = self.context.append_basic_block(function, "logic_right");
         let short_block = self.context.append_basic_block(function, "logic_short");
@@ -6685,7 +6685,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .build_unconditional_branch(end_block)
             .map_err(|error| format!("cannot branch: {error}"))?;
         self.builder.position_at_end(right_block);
-        let right = self.gen_expr(binary.right)?.into_int_value();
+        let right = self.gen_coerced_expr(binary.right)?.into_int_value();
         let right = self.as_boolean_i1(right);
         let right_end_block = self
             .builder

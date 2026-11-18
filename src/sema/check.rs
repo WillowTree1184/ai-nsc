@@ -2166,7 +2166,7 @@ impl<'a> Sema<'a> {
                         .collect_methods(owner, &name)
                         .first()
                         .copied()
-                        .map(|method| ScopedKind::Member(method));
+                        .map(ScopedKind::Member);
                     match member {
                         Some(kind) => ScopedInfo {
                             kind,

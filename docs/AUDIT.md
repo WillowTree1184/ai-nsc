@@ -305,3 +305,4 @@ report an error (§4.8).
 | 84 | MED | §12.2 | Linkable calls did not abandon NOLAA analysis / no Never-Disposed warning | fixed (47c9167: linkable abandonment marking, warning reporting, name-callee-only probe) |
 | 85 | MED | §3.8.2, §9.15 | Static accessors with explicit members unsupported | fixed (d4e8e85: parameterless static getter/setter functions, default backing bodies, static member access/codegen) |
 | 86 | LOW | §3.8.2 | Explicit members on local-backed free accessors diagnosed | fixed (5c4d942: member bodies bound to by-reference backing parameter, value parameter naming) |
+| 87 | MED | §11.7 | Compile-time code could read regular runtime locals silently | fixed (47799f9: boundary diagnostic for non-compile-time locals; block locals/constants/# parameters allowed) |

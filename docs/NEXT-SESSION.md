@@ -2,29 +2,37 @@
 
 ## State
 
-- Branch `master`; the last feature commit is `98e56b3` "Execute top-level
-  compile-time code in file order (§11.2, §11.4, §11.6)"; the documentation refresh
-  is `da9a125` (see `git log --oneline`). Check
-  `git status` before committing.
+- Branch `main`; last feature commit `7c3ab3f` (heap class header fix, #108), docs
+  commit `d24eea3`. `git status` is clean.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  — **234 tests green** (40 lib unit including 4 AST-clone tests, 55 CLI,
-  2 codegen/LLVM, 125 end-to-end execution, 10 parser, 2 spec-example
-  conformance). The spec-conformance tests read the specification itself: every
-  `novasharp` example parses, and every whole-program example that passes
-  semantic analysis is compiled end to end.
-- Built-in library (§15) is complete: `Object`, `CallingConvention`,
-  `PlatformKind`, the exception hierarchy with `InnerException`/constructors,
-  `Optional<T>`, `Result<TValue; TAlternative>`, `IIterator<T>`, `IIterable<T>`,
-  `IAllocator`, the platform `DefaultAllocator`, and the compile-time library
-  (`Type.SizeOf`, `Compiler.Log*`/`Assert`, `Platform.Is`, `NOLAA.*`).
-  Containers are intentionally not provided (the spec's §15.2 does not define
-  them).
-- `docs/COVERAGE.md` maps every spec section to ✅/🟡/⛔ with evidence and lists
-  the deliberate deviations; `docs/AUDIT.md` tracks the 60 reproduced defects
-  (all fixed or marked partial with the fixing commit).
+  — **303 tests green** (40 lib unit including 4 AST-clone tests, 78 CLI,
+  2 codegen/LLVM, 1 MCJIT probe, 2 JIT compile-time evaluation, 168 end-to-end
+  execution, 10 parser, 2 spec-example conformance). The spec-conformance tests
+  read the specification itself: every `novasharp` example parses, and every
+  whole-program example that passes semantic analysis is compiled end to end.
+- Targets: x86_64/aarch64/riscv64; **i686** build+run on x86_64 hosts (verified
+  end to end) and **armv7** cross-linked with `--sysroot` + lld and executed under
+  qemu-arm; both covered by CLI tests. riscv32 is object-only (no 32-bit RISC-V
+  sysroot on this host).
+- Compile-time execution (§11): top-level `#{}` blocks run at compile time
+  (constants, assignments incl. compound, if/while/for-range, break/continue,
+  `#if`, ordinary + recursive function calls; strict §11.7 constant predicate for
+  `#` parameters and array dimensions). On the host target the full language is
+  executed through LLVM's MCJIT (LLVM 18 has no IR interpreter); cross targets use
+  the integer interpreter.
+- Built-in library (§15) complete: `Object`, `CallingConvention`, `PlatformKind`,
+  the exception hierarchy with `InnerException`/constructors, `Optional<T>`,
+  `Result<TValue; TAlternative>`, `IIterator<T>`, `IIterable<T>`, `IAllocator`,
+  the platform `DefaultAllocator`, and the compile-time library
+  (`Type.SizeOf`, `Compiler.Log*`/`Assert`, `Platform.Is`, `NOLAA.*`). Containers
+  are intentionally not provided (§15.2 does not define them).
+- Docs: `docs/COVERAGE.md` maps every spec section to ✅/🟡/⛔ with evidence and
+  deliberate deviations; `docs/AUDIT.md` tracks the 108 reproduced defects (all
+  fixed or marked partial with the fixing commit).
 - Build flags (required on this host):
   `CARGO_HOME=/tmp/ainsc-cargo LLVM_SYS_181_PREFIX=/usr/lib/llvm-18`
-- CLI: `target/debug/ai-nsc check|emit-ir|emit-obj|build|run <file.ns> ...`.
+- CLI: `target/debug/ai-nsc check|emit-ir|emit-obj|build|run [--target=<triple>]
+  [--sysroot=<path>] <file.ns> ...`.
 
 ## Remaining backlog (status as of round 128)
 

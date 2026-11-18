@@ -95,15 +95,18 @@ These are deliberate, documented limitations rather than silent miscompiles:
    (§11.4 exact wording).
 2. **Non-leading runtime array dimensions** are diagnosed (multi-dimensional
    VLAs with a leading runtime dimension are supported).
-5. **`verbatim`** is parsed/accepted but has no distinct semantics yet.
+5. **`verbatim`** bodies are emitted with `optnone`/no compile-time evaluation;
+   the run-time semantics are the same as ordinary code (§11.7).
 6. **NOLAA** is a conservative approximation: warnings (including Early-Dispose),
    block-end/return/break/continue auto-dispose, alias/store demand tracking,
    `NOLAA.Bind` groups and `NOLAA.AssumeNoDemandNext`; general CFG safe-point
    insertion and complete alias analysis are not implemented.
 7. **Monomorphization volume optimization** (§14.3.2) is not implemented.
-8. **Target selection**: `--target` configures x86_64/aarch64/riscv64 code
-   generation and object emission with the target data layout; 32-bit
-   architectures and foreign-target linking (needs a sysroot) are diagnosed.
+8. **Target selection**: `--target` configures code generation, object emission
+   and the semantic data layout for x86_64, aarch64, riscv64, i686 (runs natively
+   on x86_64 hosts) and armv7 (cross-link with `--sysroot` + LLVM lld, run under
+   qemu-arm). Other architectures are diagnosed; riscv32 output is object-only
+   because no 32-bit RISC-V sysroot is available on the development host.
 9. **Platform queries** in the compile-time library answer for the host target.
 11. Container/iterator utilities beyond the specification's §15.2 (dynamic
     arrays, lists, maps) are not provided.

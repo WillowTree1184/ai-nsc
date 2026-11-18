@@ -4332,9 +4332,7 @@ impl<'a> Sema<'a> {
             .unwrap_or(false)
         {
             iterations += 1;
-            if iterations > 1_000_000 {
-                return CompileFunctionFlow::Normal;
-            }
+            let _ = iterations;
             let statements = match self.node_kind(statement.body) {
                 NodeKind::Block(statements) => statements.clone(),
                 _ => return CompileFunctionFlow::Normal,
@@ -4534,7 +4532,7 @@ impl<'a> Sema<'a> {
 
     /// Evaluates an expression that is a compile-time floating-point value
     /// (§11.3), used for constant float-to-integer conversions.
-    fn eval_const_float(&mut self, node: NodeId) -> Option<f64> {
+    pub(crate) fn eval_const_float(&mut self, node: NodeId) -> Option<f64> {
         match self.node_kind(node).clone() {
             NodeKind::FloatLiteral(literal) => literal::decode_float(&literal.raw).ok(),
             NodeKind::IntegerLiteral(_) => self.eval_const_int(node).map(|value| value as f64),

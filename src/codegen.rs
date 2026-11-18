@@ -167,6 +167,198 @@ pub fn generate_module<'ctx>(
     Ok(generator.module)
 }
 
+/// One argument passed to an external function executed at compile time.
+#[derive(Clone, Debug)]
+pub enum JitExternalArgument {
+    /// Integer value with the declared byte width and signedness.
+    Integer {
+        /// Value as a 128-bit integer (truncated to the declared width).
+        value: i128,
+        /// Declared byte width.
+        bytes: u8,
+        /// Whether the value is signed.
+        signed: bool,
+    },
+    /// Floating-point value.
+    Float {
+        /// Value.
+        value: f64,
+        /// Declared byte width (4 or 8).
+        bytes: u8,
+    },
+    /// Raw byte string (already NUL-terminated by the caller when needed).
+    Bytes(Vec<u8>),
+}
+
+thread_local! {
+    /// Compiled compile-time external-call trampolines, kept alive for the
+    /// compiler process. The key includes the symbol and the constant arguments,
+    /// so a compile-time loop with fixed arguments reuses one trampoline.
+    static EXTERNAL_TRAMPOLINES: std::cell::RefCell<Vec<(String, usize)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+    static EXTERNAL_ENGINES: std::cell::RefCell<
+        Vec<inkwell::execution_engine::ExecutionEngine<'static>>,
+    > = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Executes an external `linkable` function with constant arguments at compile
+/// time by JIT-compiling a tiny host trampoline (§5.5: the compile-time library
+/// is the host process, so host libc symbols resolve).
+#[allow(unsafe_code)]
+pub fn jit_call_external(
+    symbol: &str,
+    arguments: &[JitExternalArgument],
+    return_type: Option<(u8, bool)>,
+) -> Result<Option<i128>, String> {
+    use inkwell::targets::{InitializationConfig, Target};
+    if arguments.len() > 6 {
+        return Err("too many external compile-time arguments".to_string());
+    }
+    let mut key = format!("{symbol}|{return_type:?}");
+    for argument in arguments {
+        match argument {
+            JitExternalArgument::Integer {
+                value,
+                bytes,
+                signed,
+            } => key.push_str(&format!("|i{bytes}{signed}:{value}")),
+            JitExternalArgument::Float { value, bytes } => {
+                key.push_str(&format!("|f{bytes}:{:x}", value.to_bits()))
+            }
+            JitExternalArgument::Bytes(bytes) => {
+                key.push_str("|b");
+                for byte in bytes {
+                    key.push_str(&format!("{byte:02x}"));
+                }
+            }
+        }
+    }
+    let cached = EXTERNAL_TRAMPOLINES.with(|cache| {
+        cache
+            .borrow()
+            .iter()
+            .find(|(cached_key, _)| *cached_key == key)
+            .map(|(_, address)| *address)
+    });
+    let address = if let Some(address) = cached {
+        address
+    } else {
+        Target::initialize_native(&InitializationConfig::default())
+            .map_err(|error| format!("cannot initialise the host JIT target: {error}"))?;
+        let context: &'static Context = Box::leak(Box::new(Context::create()));
+        let module = context.create_module("nsc.ct.external");
+        let builder = context.create_builder();
+        let return_type =
+            return_type.map(|(bytes, signed)| (context_int_type(context, bytes), signed));
+        let parameters: Vec<inkwell::types::BasicMetadataTypeEnum<'_>> = Vec::new();
+        let callable_type = match return_type {
+            None => context.void_type().fn_type(&parameters, true),
+            Some((int_type, _)) => int_type.fn_type(&parameters, true),
+        };
+        let external = module.add_function(symbol, callable_type, None);
+        let wrapper_type = context.i64_type().fn_type(&[], false);
+        let wrapper = module.add_function("nsc_ct_external_call", wrapper_type, None);
+        let entry = context.append_basic_block(wrapper, "entry");
+        builder.position_at_end(entry);
+        let mut call_arguments: Vec<inkwell::values::BasicMetadataValueEnum<'_>> = Vec::new();
+        for (index, argument) in arguments.iter().enumerate() {
+            let value = match argument {
+                JitExternalArgument::Integer {
+                    value,
+                    bytes,
+                    signed,
+                } => {
+                    // C default argument promotions: integers narrower than
+                    // `int` are passed as i32.
+                    let width = if *bytes < 4 { 4 } else { u32::from(*bytes) };
+                    let int_type = match width {
+                        4 => context.i32_type(),
+                        8 => context.i64_type(),
+                        other => {
+                            return Err(format!(
+                                "unsupported compile-time external integer width {other}"
+                            ))
+                        }
+                    };
+                    int_type.const_int(*value as u64, *signed).into()
+                }
+                JitExternalArgument::Float { value, bytes } => {
+                    if *bytes == 4 {
+                        // Variadic floats are promoted to double.
+                        context.f64_type().const_float(*value).into()
+                    } else {
+                        context.f64_type().const_float(*value).into()
+                    }
+                }
+                JitExternalArgument::Bytes(bytes) => {
+                    let array_type = context.i8_type().array_type(bytes.len() as u32);
+                    let initializer = context.const_string(bytes, false);
+                    let global = module.add_global(array_type, None, &format!("nsc_ct_arg{index}"));
+                    global.set_initializer(&initializer);
+                    global.as_pointer_value().into()
+                }
+            };
+            call_arguments.push(value);
+        }
+        let call = builder
+            .build_call(external, &call_arguments, "ct_call")
+            .map_err(|error| format!("cannot build compile-time external call: {error}"))?;
+        let zero = context.i64_type().const_zero();
+        let result = match (return_type, call.try_as_basic_value()) {
+            (Some((_, signed)), ValueKind::Basic(value)) => {
+                let value = value.into_int_value();
+                builder
+                    .build_int_cast_sign_flag(value, context.i64_type(), signed, "ct_result")
+                    .map_err(|error| format!("cannot convert compile-time result: {error}"))?
+            }
+            _ => zero,
+        };
+        builder
+            .build_return(Some(&result))
+            .map_err(|error| format!("cannot return compile-time result: {error}"))?;
+        let engine = module
+            .create_jit_execution_engine(inkwell::OptimizationLevel::None)
+            .map_err(|error| format!("cannot create compile-time JIT: {error}"))?;
+        let address = engine
+            .get_function_address("nsc_ct_external_call")
+            .map_err(|error| format!("cannot find compile-time trampoline: {error}"))?;
+        EXTERNAL_ENGINES.with(|engines| engines.borrow_mut().push(engine));
+        EXTERNAL_TRAMPOLINES.with(|cache| {
+            cache.borrow_mut().push((key, address));
+        });
+        address
+    };
+    let wrapper: extern "C" fn() -> u64 =
+        unsafe { std::mem::transmute::<usize, extern "C" fn() -> u64>(address) };
+    let result = wrapper();
+    match return_type {
+        None => Ok(None),
+        Some((bytes, signed)) => {
+            let bits = u32::from(bytes) * 8;
+            let mask = if bits >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << bits) - 1
+            };
+            let truncated = result & mask;
+            if signed && bits < 64 && truncated & (1u64 << (bits - 1)) != 0 {
+                Ok(Some((truncated | !mask) as i128))
+            } else {
+                Ok(Some(truncated as i128))
+            }
+        }
+    }
+}
+
+fn context_int_type<'ctx>(context: &'ctx Context, bytes: u8) -> inkwell::types::IntType<'ctx> {
+    match bytes {
+        1 => context.i8_type(),
+        2 => context.i16_type(),
+        4 => context.i32_type(),
+        _ => context.i64_type(),
+    }
+}
+
 /// JIT-evaluates an integer-valued function at compile time (§11.4).
 ///
 /// LLVM 18 no longer ships an IR interpreter, so compile-time execution uses the

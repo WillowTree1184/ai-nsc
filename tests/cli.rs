@@ -2273,13 +2273,15 @@ fixed Main(): integer(4)
 }
 
 #[test]
-fn compile_time_external_linkable_calls_are_diagnosed_explicitly() {
-    let stderr = check_source(
+fn compile_time_external_linkable_calls_execute_on_the_host() {
+    // The host process acts as the compile-time library (§5.5): printf executes
+    // while the program is being compiled.
+    let stderr = check_source_ok(
         "\
 linkable(\"printf\") PrintFormat(wildcard; CDeclaration);
 
 #{
-    PrintFormat(\"Waiting\\0\");
+    PrintFormat(\"compile-time text\\n\\0\");
 }
 
 fixed Main(): integer(4)
@@ -2287,11 +2289,40 @@ fixed Main(): integer(4)
     return 0;
 }",
     );
+    assert!(stderr.is_empty(), "{stderr}");
+}
+
+#[test]
+fn cross_target_compile_time_external_calls_are_diagnosed() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-ctexternal-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("main.ns");
+    std::fs::write(
+        &path,
+        "linkable(\"printf\") PrintFormat(wildcard; CDeclaration);\n\n#{\n    PrintFormat(\"x\\0\");\n}\n\nfixed Main(): integer(4)\n{\n    return 0;\n}",
+    )
+    .expect("write");
+    let output = ai_nsc()
+        .args([
+            "check",
+            "--target=aarch64-unknown-linux-gnu",
+            path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
     assert!(
         stderr.contains("no compile-time library provides this external symbol"),
         "{stderr}"
     );
-    assert!(!stderr.contains("unknown name"), "{stderr}");
 }
 
 #[test]
@@ -2335,27 +2366,4 @@ fixed Main(): integer(4)
     );
     assert_eq!(stderr.matches("error: stop now").count(), 1, "{stderr}");
     assert!(!stderr.contains("iteration limit"), "{stderr}");
-    let linkable = check_source(
-        "\
-linkable(\"printf\") PrintFormat(wildcard; CDeclaration);
-
-#{
-    while true
-    {
-        PrintFormat(\"Waiting\\0\");
-    }
-}
-
-fixed Main(): integer(4)
-{
-    return 0;
-}",
-    );
-    assert_eq!(
-        linkable
-            .matches("no compile-time library provides this external symbol")
-            .count(),
-        1,
-        "{linkable}"
-    );
 }

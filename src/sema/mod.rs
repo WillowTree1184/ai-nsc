@@ -2872,15 +2872,37 @@ impl<'a> Sema<'a> {
                     if let Some(Resolution::Function(index)) =
                         self.result.resolutions[expression as usize].clone()
                     {
-                        let function = &self.result.functions[index as usize];
-                        if function.body.is_none() && function.exposed_symbol.is_some() {
+                        let (is_external, function_name) = {
+                            let function = &self.result.functions[index as usize];
+                            (
+                                function.body.is_none() && function.exposed_symbol.is_some(),
+                                function.name.clone(),
+                            )
+                        };
+                        if is_external {
                             // §5.5: compile-time use of an external library needs
-                            // the library to be provided to the compiler; this
-                            // implementation has no compile-time library loader.
-                            self.error(
-                                self.span_of(expression),
-                                "no compile-time library provides this external symbol (§5.5): compile-time code may only call linkable functions supplied by a compile-time library",
-                            );
+                            // the library to be provided to the compiler. On the
+                            // host target the compiler process itself provides the
+                            // C library through the JIT; other targets have no
+                            // compile-time library.
+                            if !self.jit_allowed {
+                                self.error(
+                                    self.span_of(expression),
+                                    "no compile-time library provides this external symbol (§5.5): compile-time code may only call linkable functions supplied by a compile-time library (cross-target compilation has no host compile-time library)",
+                                );
+                                continue;
+                            }
+                            if let Err(message) =
+                                self.execute_external_compile_time_call(expression, index)
+                            {
+                                self.error(
+                                    self.span_of(expression),
+                                    format!(
+                                        "compile-time external call to '{}' failed: {message}",
+                                        function_name
+                                    ),
+                                );
+                            }
                             continue;
                         }
                         self.suppress_errors += 1;
@@ -2954,6 +2976,108 @@ impl<'a> Sema<'a> {
         CompileTimeFlow::Normal
     }
 
+    /// Executes an external `linkable` call at compile time on the host through
+    /// a JIT trampoline (§5.5: the host C library is the compile-time library).
+    fn execute_external_compile_time_call(
+        &mut self,
+        expression: NodeId,
+        index: u32,
+    ) -> Result<(), String> {
+        let (parameters, return_type, symbol) = {
+            let function = &self.result.functions[index as usize];
+            (
+                function.parameters.clone(),
+                function.return_type,
+                function.exposed_symbol.clone(),
+            )
+        };
+        let symbol = symbol.ok_or_else(|| "missing external symbol name".to_string())?;
+        if !parameters.is_empty() {
+            return Err(
+                "fixed parameters of compile-time external calls are not supported".to_string(),
+            );
+        }
+        let NodeKind::Call(call) = self.node_kind(expression).clone() else {
+            return Err("expected a call expression".to_string());
+        };
+        let mut arguments = Vec::with_capacity(call.arguments.len());
+        for argument in &call.arguments {
+            let node = argument.value;
+            let Some(ty) = self.result.node_types.get(node as usize).copied().flatten() else {
+                return Err("argument type is not known".to_string());
+            };
+            match self.result.types.get(ty).clone() {
+                Type::Integer { bytes, signed } if bytes <= 8 => {
+                    self.suppress_errors += 1;
+                    let value = self.eval_const_int(node);
+                    self.suppress_errors -= 1;
+                    let Some(value) = value else {
+                        return Err("argument is not a compile-time constant".to_string());
+                    };
+                    arguments.push(crate::codegen::JitExternalArgument::Integer {
+                        value,
+                        bytes,
+                        signed,
+                    });
+                }
+                Type::Boolean => {
+                    self.suppress_errors += 1;
+                    let value = self.eval_const_int(node);
+                    self.suppress_errors -= 1;
+                    let Some(value) = value else {
+                        return Err("argument is not a compile-time constant".to_string());
+                    };
+                    arguments.push(crate::codegen::JitExternalArgument::Integer {
+                        value,
+                        bytes: 4,
+                        signed: false,
+                    });
+                }
+                Type::Float { bytes } if bytes == 4 || bytes == 8 => {
+                    let Some(value) = self.eval_const_float(node) else {
+                        return Err("argument is not a compile-time constant".to_string());
+                    };
+                    arguments.push(crate::codegen::JitExternalArgument::Float { value, bytes });
+                }
+                Type::Array { .. } => {
+                    let bytes = match self.node_kind(node).clone() {
+                        NodeKind::StringLiteral(literal)
+                        | NodeKind::VerbatimStringLiteral(literal) => {
+                            crate::literal::decode_string(&literal.raw)
+                                .map_err(|message| format!("invalid string literal: {message}"))?
+                                .bytes
+                        }
+                        _ => {
+                            return Err(
+                                "only string literals are supported as array arguments".to_string()
+                            )
+                        }
+                    };
+                    arguments.push(crate::codegen::JitExternalArgument::Bytes(bytes));
+                }
+                _ => {
+                    return Err(format!(
+                        "argument type '{}' is not supported in compile-time external calls",
+                        self.spelling(ty)
+                    ))
+                }
+            }
+        }
+        let return_signature = match return_type {
+            None => None,
+            Some(ty) => match self.result.types.get(ty) {
+                Type::Integer { bytes, signed } if *bytes <= 8 => Some((*bytes, *signed)),
+                _ => {
+                    return Err(
+                        "compile-time external calls require a void or integer return type"
+                            .to_string(),
+                    )
+                }
+            },
+        };
+        crate::codegen::jit_call_external(&symbol, &arguments, return_signature).map(|_| ())
+    }
+
     fn execute_compile_time_branches(
         &mut self,
         statement: &crate::ast::IfStmt,
@@ -2992,13 +3116,7 @@ impl<'a> Sema<'a> {
             })
         {
             iterations += 1;
-            if iterations > 1_000_000 {
-                self.error(
-                    self.span_of(statement.condition),
-                    "compile-time loop exceeded the iteration limit",
-                );
-                return CompileTimeFlow::Normal;
-            }
+            let _ = iterations;
             let statements = self.block_statements(statement.body);
             let errors_before = self.engine.error_count();
             match self.execute_compile_time_statements(&statements, true) {
@@ -3102,13 +3220,7 @@ impl<'a> Sema<'a> {
                 break;
             }
             iterations += 1;
-            if iterations > 1_000_000 {
-                self.error(
-                    self.span_of(range.start),
-                    "compile-time loop exceeded the iteration limit",
-                );
-                break;
-            }
+            let _ = iterations;
             if let (Some(name), Some(binding_type)) = (binding_name.as_ref(), binding_type) {
                 self.top_level_constants
                     .insert(name.clone(), (value, binding_type));

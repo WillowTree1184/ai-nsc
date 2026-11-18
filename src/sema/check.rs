@@ -2054,6 +2054,7 @@ impl<'a> Sema<'a> {
             return;
         };
         let mut backing_global: Option<u32> = None;
+        let mut backing_local: Option<LocalId> = None;
         if let Some(backing) = declaration.backing {
             let NodeKind::Name(backing_name) = self.node_kind(backing).clone() else {
                 self.error(
@@ -2073,12 +2074,25 @@ impl<'a> Sema<'a> {
                     }
                     backing_global = Some(global);
                 }
-                Some(Symbol::Local(_)) => {
-                    self.unsupported(
-                        self.span_of(backing),
-                        "local variables as free accessor backing",
-                    );
-                    return;
+                Some(Symbol::Local(local)) => {
+                    if self.current_function.is_none() {
+                        self.error(
+                            self.span_of(backing),
+                            "a local variable backing requires a function scope",
+                        );
+                        return;
+                    }
+                    let Some(info) = self.local_info(local).cloned() else {
+                        return;
+                    };
+                    if info.ty != ty {
+                        self.error(
+                            self.span_of(backing),
+                            "the accessor type must match its backing storage",
+                        );
+                        return;
+                    }
+                    backing_local = Some(local);
                 }
                 _ => {
                     self.error(
@@ -2089,8 +2103,10 @@ impl<'a> Sema<'a> {
                 }
             }
         }
-        let backing_readonly =
-            backing_global.is_some_and(|global| self.result.globals[global as usize].fixed);
+        let backing_readonly = backing_global
+            .is_some_and(|global| self.result.globals[global as usize].fixed)
+            || backing_local
+                .is_some_and(|local| self.local_info(local).is_some_and(|info| info.fixed));
         let mut getter_wanted = false;
         let mut setter_wanted = false;
         let mut getter_body: Option<FunctionBody> = None;
@@ -2121,18 +2137,30 @@ impl<'a> Sema<'a> {
                     );
                     None
                 }
-                (None, None) => match backing_global {
-                    Some(global) => Some(if member.is_getter {
+                (None, None) => match (backing_global, backing_local) {
+                    (Some(global), _) => Some(if member.is_getter {
                         FunctionBody::FreeBackingGet(global)
                     } else {
                         FunctionBody::FreeBackingSet(global)
                     }),
-                    None => {
+                    (None, Some(_)) => Some(if member.is_getter {
+                        FunctionBody::LocalBackingGet { parameter: 0 }
+                    } else {
+                        FunctionBody::LocalBackingSet { parameter: 0 }
+                    }),
+                    (None, None) => {
                         self.error(member.span, "accessor member requires an implementation");
                         None
                     }
                 },
             };
+            if backing_local.is_some() && implementation.is_some() && member.expression.is_some() {
+                self.unsupported(
+                    member.span,
+                    "explicit member implementations in function-scope accessors",
+                );
+                return;
+            }
             if member.is_getter {
                 getter_wanted = true;
                 getter_body = implementation;
@@ -2155,6 +2183,16 @@ impl<'a> Sema<'a> {
                 setter_body = Some(FunctionBody::FreeBackingSet(global));
             }
         }
+        if backing_local.is_some() {
+            if !getter_wanted {
+                getter_wanted = true;
+                getter_body = Some(FunctionBody::LocalBackingGet { parameter: 0 });
+            }
+            if !setter_wanted && !backing_readonly {
+                setter_wanted = true;
+                setter_body = Some(FunctionBody::LocalBackingSet { parameter: 0 });
+            }
+        }
         if !getter_wanted && !setter_wanted {
             self.error(
                 self.span_of(node),
@@ -2164,27 +2202,44 @@ impl<'a> Sema<'a> {
         }
         let mut getter = None;
         let mut setter = None;
+        let backing_parameter = ParameterInfo {
+            name: "backing".to_string(),
+            ty,
+            by_ref: true,
+            default: None,
+            compile_time: false,
+        };
         if getter_wanted {
+            let parameters = if backing_local.is_some() {
+                vec![backing_parameter.clone()]
+            } else {
+                Vec::new()
+            };
             getter = self.register_free_accessor_function(
                 &declaration.name,
                 true,
-                Vec::new(),
+                parameters,
                 Some(ty),
                 getter_body,
                 self.span_of(node),
             );
         }
         if setter_wanted {
+            let mut parameters = Vec::new();
+            if backing_local.is_some() {
+                parameters.push(backing_parameter);
+            }
+            parameters.push(ParameterInfo {
+                name: "value".to_string(),
+                ty,
+                by_ref: false,
+                default: None,
+                compile_time: false,
+            });
             setter = self.register_free_accessor_function(
                 &declaration.name,
                 false,
-                vec![ParameterInfo {
-                    name: "value".to_string(),
-                    ty,
-                    by_ref: false,
-                    default: None,
-                    compile_time: false,
-                }],
+                parameters,
                 None,
                 setter_body,
                 self.span_of(node),
@@ -2198,6 +2253,7 @@ impl<'a> Sema<'a> {
             ty,
             getter,
             setter,
+            local_backing: backing_local,
         });
         self.declare(
             declaration.name.clone(),
@@ -3905,7 +3961,9 @@ impl<'a> Sema<'a> {
                 FunctionBody::BackingGet { .. }
                 | FunctionBody::BackingSet { .. }
                 | FunctionBody::FreeBackingGet(_)
-                | FunctionBody::FreeBackingSet(_) => {}
+                | FunctionBody::FreeBackingSet(_)
+                | FunctionBody::LocalBackingGet { .. }
+                | FunctionBody::LocalBackingSet { .. } => {}
                 FunctionBody::BuiltinAllocate | FunctionBody::BuiltinDeallocate => {}
             }
             self.in_function_body = previous_in_body;
@@ -5014,7 +5072,9 @@ impl<'a> Sema<'a> {
             NodeKind::Extension(_) => {
                 self.unsupported(self.span_of(node), "extension declarations")
             }
-            NodeKind::Accessor(_) => self.unsupported(self.span_of(node), "accessor declarations"),
+            NodeKind::Accessor(declaration) => {
+                self.resolve_free_accessor(node, &declaration);
+            }
             NodeKind::Operator(_) => self.unsupported(self.span_of(node), "operator declarations"),
             NodeKind::Field(_) => self.error(
                 self.span_of(node),
@@ -6596,6 +6656,7 @@ impl<'a> Sema<'a> {
                 self.result.resolutions[node as usize] = Some(Resolution::FreeAccessor {
                     getter: accessor.getter,
                     setter: accessor.setter,
+                    local_backing: accessor.local_backing,
                 });
                 Some(accessor.ty)
             }

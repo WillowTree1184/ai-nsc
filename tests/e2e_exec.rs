@@ -3998,3 +3998,24 @@ fixed Main(): integer(4)
     // first = 0+1; setter stores 8; second = 8+1
     assert_eq!(run_program(source), 19);
 }
+
+#[test]
+fn function_scope_accessors_back_local_storage_by_reference() {
+    let source = "\
+fixed Run(): integer(4)
+{
+    local storage: integer(4) = 2;
+    accessor Value: integer(4) => storage;
+
+    local before: integer(4) = Value;
+    Value = 7;
+    return before * 10 + storage;
+}
+
+fixed Main(): integer(4)
+{
+    return Run();
+}";
+    // read 2, then the setter updates the local storage to 7
+    assert_eq!(run_program(source), 27);
+}

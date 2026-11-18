@@ -426,6 +426,16 @@ pub enum FunctionBody {
     FreeBackingGet(u32),
     /// Write a module-level storage from a free accessor (§3.8.2).
     FreeBackingSet(u32),
+    /// Read a local backing storage through a by-reference parameter (§3.8.2).
+    LocalBackingGet {
+        /// Parameter index of the backing pointer.
+        parameter: u32,
+    },
+    /// Write a local backing storage through a by-reference parameter (§3.8.2).
+    LocalBackingSet {
+        /// Parameter index of the backing pointer.
+        parameter: u32,
+    },
 }
 
 /// The overloadable operator kinds (§4.9.2).
@@ -675,6 +685,8 @@ pub enum Resolution {
         getter: Option<u32>,
         /// Setter function, if the accessor provides one.
         setter: Option<u32>,
+        /// Local variable backing the accessor, passed by reference (§3.8.2).
+        local_backing: Option<LocalId>,
     },
     /// An accessor member read or write (§3.8.2).
     Accessor {
@@ -844,6 +856,8 @@ pub struct FreeAccessorInfo {
     pub getter: Option<u32>,
     /// Setter function constant.
     pub setter: Option<u32>,
+    /// Local variable backing the accessor, passed by reference (§3.8.2).
+    pub local_backing: Option<LocalId>,
 }
 
 /// An `extension for array(length: cardinal(4)) T` template (§3.8.3).

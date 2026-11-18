@@ -1010,6 +1010,44 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                         .build_return(Some(&zero))
                         .map_err(|error| format!("cannot return: {error}"))?;
                 }
+                crate::sema::FunctionBody::LocalBackingGet { parameter } => {
+                    let pointer = function
+                        .get_nth_param(parameter)
+                        .ok_or_else(|| "missing backing parameter".to_string())?;
+                    let pointer = pointer.into_pointer_value();
+                    let value_type = return_type.ok_or_else(|| {
+                        "local accessor getter requires a return type".to_string()
+                    })?;
+                    let llvm_type = self.llvm_type(value_type)?;
+                    let value = self
+                        .builder
+                        .build_load(llvm_type, pointer, "accessor_load")
+                        .map_err(|error| format!("cannot load accessor backing: {error}"))?;
+                    self.builder
+                        .build_return(Some(&value))
+                        .map_err(|error| format!("cannot return: {error}"))?;
+                }
+                crate::sema::FunctionBody::LocalBackingSet { parameter } => {
+                    let pointer = function
+                        .get_nth_param(parameter)
+                        .ok_or_else(|| "missing backing parameter".to_string())?;
+                    let pointer = pointer.into_pointer_value();
+                    let value_index = if self.sema.functions[index as usize].parameters[0].by_ref {
+                        1
+                    } else {
+                        0
+                    };
+                    let _ = value_index;
+                    let value = function
+                        .get_nth_param(1)
+                        .ok_or_else(|| "accessor setter has no value parameter".to_string())?;
+                    self.builder
+                        .build_store(pointer, value)
+                        .map_err(|error| format!("cannot store accessor backing: {error}"))?;
+                    self.builder
+                        .build_return(None)
+                        .map_err(|error| format!("cannot return: {error}"))?;
+                }
                 crate::sema::FunctionBody::FreeBackingGet(global) => {
                     let global = *self
                         .globals
@@ -1386,6 +1424,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 Ok(())
             }
             NodeKind::Use(_) => Ok(()),
+            // Free accessor declarations have no run-time statement of their own;
+            // their member functions are generated as functions (§3.8.2).
+            NodeKind::Accessor(_) => Ok(()),
             NodeKind::CompileTimeBlock(block) => {
                 // Blocks without run-time end products are not emitted (§11.4).
                 if self.sema.compile_time_only_blocks.contains(&node) {
@@ -2729,8 +2770,11 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
 
     fn gen_set_statement(&mut self, statement: &SetStmt) -> Result<(), String> {
         // Free accessor write: call the setter function constant (§3.8.2).
-        if let Some(Resolution::FreeAccessor { setter, .. }) =
-            self.sema.resolutions[statement.target as usize].clone()
+        if let Some(Resolution::FreeAccessor {
+            setter,
+            local_backing,
+            ..
+        }) = self.sema.resolutions[statement.target as usize].clone()
         {
             let setter = setter.ok_or_else(|| "accessor is read-only".to_string())?;
             let value = self.gen_expr(statement.value)?;
@@ -2738,8 +2782,18 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 .functions
                 .get(&setter)
                 .ok_or_else(|| "missing accessor setter".to_string())?;
+            let arguments: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+                if let Some(local) = local_backing {
+                    let slot = *self
+                        .local_slots
+                        .get(&local)
+                        .ok_or_else(|| "missing backing slot".to_string())?;
+                    vec![slot.into(), value.into()]
+                } else {
+                    vec![value.into()]
+                };
             self.builder
-                .build_call(function, &[value.into()], "accessor_set")
+                .build_call(function, &arguments, "accessor_set")
                 .map_err(|error| format!("cannot call accessor setter: {error}"))?;
             return Ok(());
         }
@@ -4426,15 +4480,29 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             Some(Resolution::Construct { .. })
             | Some(Resolution::ConstructVariant { .. })
             | Some(Resolution::ConstructUnion { .. }) => self.gen_construction(node),
-            Some(Resolution::FreeAccessor { getter, .. }) => {
+            Some(Resolution::FreeAccessor {
+                getter,
+                local_backing,
+                ..
+            }) => {
                 let getter = getter.ok_or_else(|| "accessor is write-only".to_string())?;
                 let function = *self
                     .functions
                     .get(&getter)
                     .ok_or_else(|| "missing accessor getter".to_string())?;
+                let arguments: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+                    if let Some(local) = local_backing {
+                        let slot = *self
+                            .local_slots
+                            .get(&local)
+                            .ok_or_else(|| "missing backing slot".to_string())?;
+                        vec![slot.into()]
+                    } else {
+                        Vec::new()
+                    };
                 let call = self
                     .builder
-                    .build_call(function, &[], "accessor_get")
+                    .build_call(function, &arguments, "accessor_get")
                     .map_err(|error| format!("cannot call accessor: {error}"))?;
                 match call.try_as_basic_value() {
                     ValueKind::Basic(value) => Ok(value),

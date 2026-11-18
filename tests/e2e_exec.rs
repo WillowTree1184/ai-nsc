@@ -4071,3 +4071,33 @@ fixed Main(): integer(4)
     // getter sees 3 (4), setter writes 10, result 4*10 + 10
     assert_eq!(run_program(source), 50);
 }
+
+#[test]
+fn modules_inside_type_bodies_organize_identifiers() {
+    let source = "\
+class Registry
+{
+    module Helpers
+    {
+        fixed Double(value: integer(4)): integer(4)
+        {
+            return value * 2;
+        }
+
+        module Deeper
+        {
+            fixed Triple(value: integer(4)): integer(4)
+            {
+                return value * 3;
+            }
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    return Registry.Helpers.Double(3) + Registry.Helpers.Deeper.Triple(2);
+}";
+    // 6 + 6
+    assert_eq!(run_program(source), 12);
+}

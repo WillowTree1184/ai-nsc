@@ -260,6 +260,9 @@ pub struct TypeDef {
     pub accessors: Vec<AccessorInfo>,
     /// Static accessors (§3.8.2, §9.15).
     pub static_accessors: Vec<AccessorInfo>,
+    /// Modules declared inside the type body (identifier organization only,
+    /// §7): module name to scope index.
+    pub modules: HashMap<String, usize>,
     /// Operator definitions declared in extension blocks.
     pub operators: Vec<OperatorInfo>,
     /// Interfaces this class implements (§3.7.3/§3.7.7).
@@ -1543,6 +1546,7 @@ impl<'a> Sema<'a> {
             interface_dispatch: Vec::new(),
             interface_bases: Vec::new(),
             static_accessors: Vec::new(),
+            modules: HashMap::new(),
             sealed: false,
             is_abstract,
             is_static: false,
@@ -1601,6 +1605,7 @@ impl<'a> Sema<'a> {
             interface_dispatch: Vec::new(),
             interface_bases: Vec::new(),
             static_accessors: Vec::new(),
+            modules: HashMap::new(),
             sealed: false,
             is_abstract: false,
             is_static: false,
@@ -1655,6 +1660,7 @@ impl<'a> Sema<'a> {
             interface_dispatch: Vec::new(),
             interface_bases: Vec::new(),
             static_accessors: Vec::new(),
+            modules: HashMap::new(),
             sealed: false,
             is_abstract: true,
             is_static: false,
@@ -1717,6 +1723,7 @@ impl<'a> Sema<'a> {
             interface_dispatch: Vec::new(),
             interface_bases: Vec::new(),
             static_accessors: Vec::new(),
+            modules: HashMap::new(),
             sealed: false,
             is_abstract: true,
             is_static: false,
@@ -1957,6 +1964,7 @@ impl<'a> Sema<'a> {
                 interface_dispatch: Vec::new(),
                 interface_bases: Vec::new(),
                 static_accessors: Vec::new(),
+                modules: HashMap::new(),
                 sealed: false,
                 is_abstract: false,
                 is_static: false,
@@ -2306,6 +2314,7 @@ impl<'a> Sema<'a> {
                 interface_dispatch: Vec::new(),
                 interface_bases: Vec::new(),
                 static_accessors: Vec::new(),
+                modules: HashMap::new(),
                 sealed: false,
                 is_abstract: false,
                 is_static: false,
@@ -2392,6 +2401,18 @@ impl<'a> Sema<'a> {
                     self.execute_top_level_compile_time(node, block);
                 }
                 _ => {}
+            }
+            // Modules directly inside a type body organize identifiers (§3.7.1).
+            if matches!(
+                self.node_kind(node),
+                NodeKind::Class(_)
+                    | NodeKind::Structure(_)
+                    | NodeKind::Interface(_)
+                    | NodeKind::Enumeration(_)
+                    | NodeKind::Variant(_)
+                    | NodeKind::Union(_)
+            ) {
+                self.declare_type_body_modules(node);
             }
         }
     }
@@ -2481,6 +2502,45 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Declares modules that appear directly inside a type body (§3.7.1): they
+    /// only organize identifiers, so their members are declared in a fresh scope
+    /// reachable through the type name.
+    fn declare_type_body_modules(&mut self, node: NodeId) {
+        let members: Vec<NodeId> = match self.node_kind(node) {
+            NodeKind::Class(declaration) => declaration.members.clone(),
+            NodeKind::Structure(declaration) => declaration.members.clone(),
+            NodeKind::Interface(declaration) => declaration.members.clone(),
+            NodeKind::Enumeration(declaration) => declaration.extensions.clone(),
+            NodeKind::Variant(declaration) => declaration.extensions.clone(),
+            NodeKind::Union(declaration) => declaration.extensions.clone(),
+            _ => Vec::new(),
+        };
+        let Some(type_id) = self.type_id_for_node(node) else {
+            return;
+        };
+        let Type::Named(index) = self.types_of(type_id) else {
+            return;
+        };
+        for member in members {
+            let NodeKind::Module(module) = self.node_kind(member).clone() else {
+                continue;
+            };
+            let module_scope = self.create_child_scope();
+            self.declare(
+                module.name.clone(),
+                Symbol::Module(module_scope),
+                self.span_of(member),
+            );
+            self.result.type_defs[index as usize]
+                .modules
+                .insert(module.name.clone(), module_scope);
+            self.scope_stack.push(module_scope);
+            let nested = module.members;
+            self.declare_types(&nested);
+            self.scope_stack.pop();
+        }
+    }
+
     fn declare_named_type(&mut self, node: NodeId, name: String, kind: TypeDefKind) {
         let generic_parameters: Vec<GenericParameterInfo> = match self.node_kind(node) {
             NodeKind::Class(declaration)
@@ -2531,6 +2591,7 @@ impl<'a> Sema<'a> {
             interface_dispatch: Vec::new(),
             interface_bases: Vec::new(),
             static_accessors: Vec::new(),
+            modules: HashMap::new(),
             sealed: false,
             is_abstract: false,
             is_static: false,
@@ -2574,16 +2635,28 @@ impl<'a> Sema<'a> {
                         declaration.name.clone(),
                         TypeDefKind::Structure,
                     );
+                    self.resolve_type_body_modules(node);
                 }
                 NodeKind::Class(declaration) => {
                     self.resolve_structure_like(node, declaration.name.clone(), TypeDefKind::Class);
+                    self.resolve_type_body_modules(node);
                 }
                 NodeKind::Enumeration(declaration) => {
                     self.resolve_enumeration(node, declaration.name.clone());
+                    self.resolve_type_body_modules(node);
                 }
-                NodeKind::Variant(_declaration) => self.resolve_variant(node),
-                NodeKind::Union(_declaration) => self.resolve_union(node),
-                NodeKind::Interface(_declaration) => self.resolve_interface(node),
+                NodeKind::Variant(_declaration) => {
+                    self.resolve_variant(node);
+                    self.resolve_type_body_modules(node);
+                }
+                NodeKind::Union(_declaration) => {
+                    self.resolve_union(node);
+                    self.resolve_type_body_modules(node);
+                }
+                NodeKind::Interface(_declaration) => {
+                    self.resolve_interface(node);
+                    self.resolve_type_body_modules(node);
+                }
                 NodeKind::Fixed(declaration) => {
                     if declaration.generics.is_empty() {
                         self.resolve_function_signature(node, &declaration);

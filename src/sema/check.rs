@@ -652,7 +652,7 @@ impl<'a> Sema<'a> {
         self.result.types.get(ty).clone()
     }
 
-    fn type_id_for_node(&mut self, node: NodeId) -> Option<TypeId> {
+    pub(crate) fn type_id_for_node(&mut self, node: NodeId) -> Option<TypeId> {
         let index = self
             .result
             .type_defs
@@ -2190,6 +2190,44 @@ impl<'a> Sema<'a> {
     /// Resolves an accessor declared outside type bodies and extension blocks
     /// (§3.8.2): its members become function constants and its name acts as the
     /// property.
+    /// Resolves the contents of modules declared directly inside a type body
+    /// (§3.7.1): they only organize identifiers and have no runtime existence.
+    pub(crate) fn resolve_type_body_modules(&mut self, node: NodeId) {
+        let members: Vec<NodeId> = match self.node_kind(node).clone() {
+            NodeKind::Class(declaration) => declaration.members,
+            NodeKind::Structure(declaration) => declaration.members,
+            NodeKind::Interface(declaration) => declaration.members,
+            NodeKind::Enumeration(declaration) => declaration.extensions,
+            NodeKind::Variant(declaration) => declaration.extensions,
+            NodeKind::Union(declaration) => declaration.extensions,
+            _ => Vec::new(),
+        };
+        let Some(type_id) = self.type_id_for_node(node) else {
+            return;
+        };
+        let Type::Named(index) = self.types_of(type_id) else {
+            return;
+        };
+        for member in members {
+            let NodeKind::Module(module) = self.node_kind(member).clone() else {
+                continue;
+            };
+            let Some(scope) = self.result.type_defs[index as usize]
+                .modules
+                .get(&module.name)
+                .copied()
+            else {
+                continue;
+            };
+            self.scope_stack.push(scope);
+            self.scope_path.push(module.name.clone());
+            let nested = module.members;
+            self.resolve_declarations(&nested);
+            self.scope_path.pop();
+            self.scope_stack.pop();
+        }
+    }
+
     pub(crate) fn resolve_free_accessor(&mut self, node: NodeId, declaration: &AccessorDecl) {
         let Some(ty) = self.resolve_type(declaration.ty) else {
             return;
@@ -7291,6 +7329,18 @@ impl<'a> Sema<'a> {
                 let base = self.try_resolve_name(access.base)?;
                 match base {
                     Symbol::Module(scope) => self.lookup_in(scope, &access.name).cloned(),
+                    // Modules declared inside a type body are reachable through
+                    // the type name (§3.7.1, §7).
+                    Symbol::Type(type_id) => {
+                        let Type::Named(index) = self.types_of(type_id) else {
+                            return None;
+                        };
+                        let scope = self.result.type_defs[index as usize]
+                            .modules
+                            .get(&access.name)
+                            .copied()?;
+                        Some(Symbol::Module(scope))
+                    }
                     _ => None,
                 }
             }

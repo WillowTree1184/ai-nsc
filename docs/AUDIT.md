@@ -47,10 +47,10 @@ only after the reproduction is re-run and its regression test is green.
 | 25 | MED | §3.6.1, §3.8.1, §5.8, §5.9, §12.2 | Warning subsystem unused: zero `Severity::Warning` sites; all spec warnings missing (index out of bounds, array↔pointer cast, match exhaustiveness, dispose warnings, initializer-order adjustment) | partial (ccb385b out-of-bounds index, 3bc3b49 array/pointer conversion, 8f6c41b variant match exhaustiveness, de212c5 double dispose; initializer-order adjustment is open) |
 | 26 | LOW | §8.2 | Array parameter expansion sugar (`message[length: cardinal(4)]`) missing | partial (bf40b34: declaration expands to pointer+length parameters; implicit call-site conversion still missing) |
 | 27 | LOW | §5.9.1 | `for &ref` element references missing | fixed (24244ab: by-reference array iteration implemented) |
-| 28 | LOW | §5.7 | Compound-assignment evaluation order not specified/implemented | open |
-| 29 | LOW | §3.2 | Signed `INT_MIN / -1` sdiv poison possible | open |
-| 30 | LOW | §4.8 | `is` on statically impossible operands should evaluate to false rather than report an error | open |
-| 31 | LOW | §4.8 | `is`-patterns over interface targets missing | open |
+| 28 | LOW | §5.7 | Compound-assignment evaluation order not specified/implemented | fixed (52650b1) |
+| 29 | LOW | §3.2 | Signed `INT_MIN / -1` sdiv poison possible | fixed (52650b1) |
+| 30 | LOW | §4.8 | `is` on statically impossible operands should evaluate to false rather than report an error | fixed (52650b1) |
+| 31 | LOW | §4.8 | `is`-patterns over interface targets missing | fixed (52650b1) |
 | 32 | MED | §8.2 | `#` compile-time parameters silently treated as runtime parameters | fixed (de34ae0: explicit 'not implemented yet' diagnostic in functions/methods/operators) |
 
 ## HIGH

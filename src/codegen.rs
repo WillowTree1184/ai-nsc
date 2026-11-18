@@ -1716,7 +1716,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .build_conditional_branch(matches, true_block, next_block)
             .map_err(|error| format!("cannot branch: {error}"))?;
         self.builder.position_at_end(next_block);
-        let base = self.load_pointer_at(current, 8)?;
+        let base = self.load_pointer_at(current, self.pointer_byte_offset(1))?;
         self.builder
             .build_store(current_slot, base)
             .map_err(|error| format!("cannot store catch state: {error}"))?;
@@ -1765,11 +1765,16 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             return self.emit_abort();
         };
         let typeinfo = self.load_pointer_at(exception_slot, 0)?;
-        let payload = self.load_pointer_at(exception_slot, 8)?;
+        let payload = self.load_pointer_at(exception_slot, self.pointer_byte_offset(1))?;
         let typeinfo_slot =
             self.address_with_size(outer_slot, 1, self.context.i64_type().const_zero())?;
-        let payload_slot =
-            self.address_with_size(outer_slot, 1, self.context.i64_type().const_int(8, false))?;
+        let payload_slot = self.address_with_size(
+            outer_slot,
+            1,
+            self.context
+                .i64_type()
+                .const_int(self.pointer_byte_offset(1), false),
+        )?;
         self.builder
             .build_store(typeinfo_slot, typeinfo)
             .map_err(|error| format!("cannot propagate exception: {error}"))?;
@@ -1956,7 +1961,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 ) =>
             {
                 let instance = value.into_pointer_value();
-                let typeinfo = self.load_pointer_at(instance, 8)?.into_pointer_value();
+                let typeinfo = self
+                    .load_pointer_at(instance, self.pointer_byte_offset(1))?
+                    .into_pointer_value();
                 (typeinfo, instance)
             }
             _ => {
@@ -1976,7 +1983,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         let payload_slot = self.address_with_size(
             exception_slot,
             1,
-            self.context.i64_type().const_int(8, false),
+            self.context
+                .i64_type()
+                .const_int(self.pointer_byte_offset(1), false),
         )?;
         self.builder
             .build_store(typeinfo_slot, typeinfo)
@@ -2115,7 +2124,8 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .map(|frame| (frame.exception_slot, frame.dispatch));
         match trap_frame {
             Some((exception_slot, dispatch)) => {
-                let typeinfo = self.load_pointer_at(exception.into_pointer_value(), 8)?;
+                let typeinfo = self
+                    .load_pointer_at(exception.into_pointer_value(), self.pointer_byte_offset(1))?;
                 let typeinfo_slot = self.address_with_size(
                     exception_slot,
                     1,
@@ -2124,7 +2134,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 let payload_slot = self.address_with_size(
                     exception_slot,
                     1,
-                    self.context.i64_type().const_int(8, false),
+                    self.context
+                        .i64_type()
+                        .const_int(self.pointer_byte_offset(1), false),
                 )?;
                 self.builder
                     .build_store(typeinfo_slot, typeinfo)
@@ -2658,8 +2670,13 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         }
         let closure = self.malloc_bytes(16)?;
         let code_slot = self.address_with_size(closure, 1, self.context.i64_type().const_zero())?;
-        let environment_slot =
-            self.address_with_size(closure, 1, self.context.i64_type().const_int(8, false))?;
+        let environment_slot = self.address_with_size(
+            closure,
+            1,
+            self.context
+                .i64_type()
+                .const_int(self.pointer_byte_offset(1), false),
+        )?;
         self.builder
             .build_store(code_slot, code_pointer)
             .map_err(|error| format!("cannot store closure code: {error}"))?;
@@ -2763,8 +2780,13 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
     ) -> Result<(PointerValue<'ctx>, PointerValue<'ctx>), String> {
         let pointer_type = self.context.ptr_type(AddressSpace::default());
         let code_slot = self.address_with_size(closure, 1, self.context.i64_type().const_zero())?;
-        let environment_slot =
-            self.address_with_size(closure, 1, self.context.i64_type().const_int(8, false))?;
+        let environment_slot = self.address_with_size(
+            closure,
+            1,
+            self.context
+                .i64_type()
+                .const_int(self.pointer_byte_offset(1), false),
+        )?;
         let code = self
             .builder
             .build_load(pointer_type, code_slot, "closure_code")
@@ -4051,8 +4073,12 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .position(|entry| *entry == method)
             .ok_or_else(|| "interface method is not part of the interface".to_string())?;
         let pointer_type = self.context.ptr_type(AddressSpace::default());
-        let typeinfo = self.load_pointer_at(receiver, 8)?.into_pointer_value();
-        let table = self.load_pointer_at(typeinfo, 16)?.into_pointer_value();
+        let typeinfo = self
+            .load_pointer_at(receiver, self.pointer_byte_offset(1))?
+            .into_pointer_value();
+        let table = self
+            .load_pointer_at(typeinfo, self.pointer_byte_offset(2))?
+            .into_pointer_value();
         let target = self
             .typeinfo_globals
             .get(&interface_index)
@@ -4110,8 +4136,13 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .build_conditional_branch(matches, found_block, advance_block)
             .map_err(|error| format!("cannot branch: {error}"))?;
         self.builder.position_at_end(advance_block);
-        let next =
-            self.address_with_size(current, 1, self.context.i64_type().const_int(16, false))?;
+        let next = self.address_with_size(
+            current,
+            1,
+            self.context
+                .i64_type()
+                .const_int(self.pointer_byte_offset(2), false),
+        )?;
         self.builder
             .build_store(current_slot, next)
             .map_err(|error| format!("cannot store interface state: {error}"))?;
@@ -4119,7 +4150,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .build_unconditional_branch(loop_block)
             .map_err(|error| format!("cannot branch: {error}"))?;
         self.builder.position_at_end(found_block);
-        let vtable = self.load_pointer_at(current, 8)?.into_pointer_value();
+        let vtable = self
+            .load_pointer_at(current, self.pointer_byte_offset(1))?
+            .into_pointer_value();
         let slot_address = self.address_with_size(
             vtable,
             8,
@@ -4171,7 +4204,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         instance: PointerValue<'ctx>,
         interface_index: u32,
     ) -> Result<IntValue<'ctx>, String> {
-        let typeinfo = self.load_pointer_at(instance, 8)?.into_pointer_value();
+        let typeinfo = self
+            .load_pointer_at(instance, self.pointer_byte_offset(1))?
+            .into_pointer_value();
         self.emit_interface_from_typeinfo(typeinfo, interface_index)
     }
 
@@ -4235,7 +4270,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         self.builder
             .build_store(current_type_slot, current_type)
             .map_err(|error| format!("cannot store typeinfo: {error}"))?;
-        let table = self.load_pointer_at(current_type, 16)?;
+        let table = self.load_pointer_at(current_type, self.pointer_byte_offset(2))?;
         self.builder
             .build_store(table_slot, table)
             .map_err(|error| format!("cannot store interface table: {error}"))?;
@@ -4287,8 +4322,13 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .build_conditional_branch(matches, found, table_advance_next)
             .map_err(|error| format!("cannot branch: {error}"))?;
         self.builder.position_at_end(table_advance_next);
-        let next =
-            self.address_with_size(table, 1, self.context.i64_type().const_int(16, false))?;
+        let next = self.address_with_size(
+            table,
+            1,
+            self.context
+                .i64_type()
+                .const_int(self.pointer_byte_offset(2), false),
+        )?;
         self.builder
             .build_store(table_slot, next)
             .map_err(|error| format!("cannot store interface table: {error}"))?;
@@ -4300,7 +4340,10 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .builder
             .build_load(pointer_type, current_type_slot, "current_type")
             .map_err(|error| format!("cannot load typeinfo: {error}"))?;
-        let base_typeinfo = self.load_pointer_at(current_type.into_pointer_value(), 8)?;
+        let base_typeinfo = self.load_pointer_at(
+            current_type.into_pointer_value(),
+            self.pointer_byte_offset(1),
+        )?;
         let is_null = self
             .builder
             .build_int_compare(
@@ -4351,7 +4394,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .get(&target_index)
             .ok_or_else(|| "missing target type information".to_string())?;
         let pointer_type = self.context.ptr_type(AddressSpace::default());
-        let current_typeinfo = self.load_pointer_at(instance, 8)?.into_pointer_value();
+        let current_typeinfo = self
+            .load_pointer_at(instance, self.pointer_byte_offset(1))?
+            .into_pointer_value();
         let current_slot = self
             .builder
             .build_alloca(pointer_type, "is_current")
@@ -4407,7 +4452,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .build_conditional_branch(is_null, end_block, next_block)
             .map_err(|error| format!("cannot branch: {error}"))?;
         self.builder.position_at_end(next_block);
-        let base_typeinfo = self.load_pointer_at(current, 8)?;
+        let base_typeinfo = self.load_pointer_at(current, self.pointer_byte_offset(1))?;
         self.builder
             .build_store(current_slot, base_typeinfo)
             .map_err(|error| format!("cannot store is state: {error}"))?;
@@ -5207,6 +5252,11 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
     }
 
     /// Loads the pointer stored `offset` bytes into `base`.
+    /// Byte offset of `slots` pointers for the current target (§13).
+    fn pointer_byte_offset(&self, slots: u64) -> u64 {
+        slots * u64::from(self.sema.types.pointer_size())
+    }
+
     fn load_pointer_at(
         &mut self,
         base: PointerValue<'ctx>,
@@ -6770,8 +6820,13 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             Some((slot, dispatch, false)) => {
                 let typeinfo_slot =
                     self.address_with_size(slot, 1, self.context.i64_type().const_zero())?;
-                let payload_slot =
-                    self.address_with_size(slot, 1, self.context.i64_type().const_int(8, false))?;
+                let payload_slot = self.address_with_size(
+                    slot,
+                    1,
+                    self.context
+                        .i64_type()
+                        .const_int(self.pointer_byte_offset(1), false),
+                )?;
                 self.builder
                     .build_store(typeinfo_slot, typeinfo)
                     .map_err(|error| format!("cannot raise exception: {error}"))?;

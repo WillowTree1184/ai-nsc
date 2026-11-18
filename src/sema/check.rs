@@ -11446,7 +11446,7 @@ enum IsTargetResolved {
 
 /// Detects the compiler API call `Type.SizeOf<T>()` (§11.8) and returns its type
 /// argument. `Type` is a built-in compiler namespace, not a declared module.
-fn builtin_size_of_type_argument(ast: &Ast, callee: NodeId) -> Option<NodeId> {
+pub(crate) fn builtin_size_of_type_argument(ast: &Ast, callee: NodeId) -> Option<NodeId> {
     let NodeKind::Monomorphization(monomorphization) = ast.node(callee).kind.clone() else {
         return None;
     };
@@ -11469,7 +11469,7 @@ fn builtin_size_of_type_argument(ast: &Ast, callee: NodeId) -> Option<NodeId> {
 }
 
 /// Detects a `Compiler.<name>(...)` call from the compile-time library (§15.3).
-fn builtin_compiler_function(ast: &Ast, callee: NodeId) -> Option<String> {
+pub(crate) fn builtin_compiler_function(ast: &Ast, callee: NodeId) -> Option<String> {
     let NodeKind::MemberAccess(access) = ast.node(callee).kind.clone() else {
         return None;
     };
@@ -11484,7 +11484,7 @@ fn builtin_compiler_function(ast: &Ast, callee: NodeId) -> Option<String> {
 
 /// Detects a call `Namespace.<name>(...)` on a built-in compiler namespace
 /// (§15.3).
-fn builtin_namespace_call(ast: &Ast, callee: NodeId, namespace: &str) -> Option<String> {
+pub(crate) fn builtin_namespace_call(ast: &Ast, callee: NodeId, namespace: &str) -> Option<String> {
     let NodeKind::MemberAccess(access) = ast.node(callee).kind.clone() else {
         return None;
     };

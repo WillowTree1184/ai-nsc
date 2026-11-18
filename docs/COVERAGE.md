@@ -106,6 +106,11 @@ These are deliberate, documented limitations rather than silent miscompiles:
 5. **`@` no-optimize markers** mirror the old `verbatim` behaviour (optnone
    bodies, no compile-time evaluation). Marked constant subexpressions are still
    represented as LLVM constants (canonical IR, not an optimisation pass).
+6. **Compile-time libraries for external `linkable` functions** (§5.5: "编译期
+   所需的库必须由编译器命令参数提供") are not implemented: calling an external
+   linkable function inside compile-time code reports an explicit limitation
+   diagnostic. Ordinary compile-time functions are interpreted/JIT-executed and
+   compiler-API calls are evaluated at compile time.
 6. **NOLAA** is a conservative approximation: warnings (including Early-Dispose),
    block-end/return/break/continue auto-dispose, alias/store demand tracking,
    `NOLAA.Bind` groups and `NOLAA.AssumeNoDemandNext`; general CFG safe-point

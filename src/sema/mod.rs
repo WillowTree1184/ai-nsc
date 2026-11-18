@@ -11,6 +11,9 @@
 //! declared type.
 
 mod check;
+use self::check::{
+    builtin_compiler_function, builtin_namespace_call, builtin_size_of_type_argument,
+};
 mod generics;
 pub mod types;
 
@@ -1226,6 +1229,7 @@ pub fn analyze_with_options(
         unknown_compile_time_names: std::collections::HashSet::new(),
         jit_allowed,
         compile_time_phase_b: false,
+        compile_time_deferred: false,
         array_binding_lengths: Vec::new(),
         heap_groups: Vec::new(),
         pending_assume_no_demand: None,
@@ -1328,6 +1332,9 @@ pub(crate) struct Sema<'a> {
     /// Whether top-level compile-time blocks are being re-executed after all
     /// declarations are resolved (§11.2).
     pub(crate) compile_time_phase_b: bool,
+    /// Set when a phase-A top-level block contains a call that can only be
+    /// resolved after declaration resolution; the block is re-run in phase B.
+    pub(crate) compile_time_deferred: bool,
     /// Bound array dimension values while instantiating an array extension
     /// (§3.8.3).
     pub(crate) array_binding_lengths: Vec<HashMap<String, u64>>,
@@ -2619,6 +2626,7 @@ impl<'a> Sema<'a> {
         }
         self.top_level_constants.clear();
         self.compile_time_phase_b = true;
+        self.compile_time_deferred = false;
         let blocks = self.top_level_blocks.clone();
         for node in blocks {
             let block = match self.node_kind(node) {
@@ -2628,6 +2636,7 @@ impl<'a> Sema<'a> {
             self.execute_top_level_compile_time(node, block);
         }
         self.compile_time_phase_b = false;
+        self.compile_time_deferred = false;
         self.result.compile_time_variables = self.top_level_constants.clone();
         self.unknown_compile_time_names.clear();
     }
@@ -2707,6 +2716,9 @@ impl<'a> Sema<'a> {
     }
 
     fn execute_top_level_compile_time(&mut self, node: NodeId, block: NodeId) {
+        if !self.compile_time_phase_b {
+            self.compile_time_deferred = false;
+        }
         let statements = self.block_statements(block);
         let flow = self.execute_compile_time_statements(&statements, false);
         if matches!(flow, CompileTimeFlow::Break | CompileTimeFlow::Continue) {
@@ -2724,6 +2736,9 @@ impl<'a> Sema<'a> {
         in_loop: bool,
     ) -> CompileTimeFlow {
         for statement in statements {
+            if !self.compile_time_phase_b && self.compile_time_deferred {
+                return CompileTimeFlow::Normal;
+            }
             let flow = match self.node_kind(*statement).clone() {
                 NodeKind::CompileTimeIf(if_statement) => {
                     if self.compile_time_phase_b {
@@ -2809,13 +2824,59 @@ impl<'a> Sema<'a> {
                     continue;
                 }
                 NodeKind::ExpressionStmt(expression) => {
-                    if self.compile_time_phase_b {
+                    let is_api = builtin_compiler_function(self.ast, expression).is_some()
+                        || ["Platform", "NOLAA"].iter().any(|namespace| {
+                            builtin_namespace_call(self.ast, expression, namespace).is_some()
+                        })
+                        || builtin_size_of_type_argument(self.ast, expression).is_some();
+                    if !self.compile_time_phase_b {
+                        // Compiler API statements execute in phase A; any other
+                        // call needs resolved declarations, so the whole block is
+                        // deferred to phase B instead of reporting an unknown name
+                        // after a collection pass.
+                        if !is_api {
+                            self.compile_time_deferred = true;
+                            return CompileTimeFlow::Normal;
+                        }
+                        self.compile_time_constants
+                            .push(std::collections::HashMap::new());
+                        self.check_expr(expression, None);
+                        self.compile_time_constants.pop();
                         continue;
                     }
+                    if is_api {
+                        // Already executed during phase A.
+                        continue;
+                    }
+                    let errors_before = self.engine.error_count();
                     self.compile_time_constants
                         .push(std::collections::HashMap::new());
                     self.check_expr(expression, None);
                     self.compile_time_constants.pop();
+                    if let Some(Resolution::Function(index)) =
+                        self.result.resolutions[expression as usize].clone()
+                    {
+                        let function = &self.result.functions[index as usize];
+                        if function.body.is_none() && function.exposed_symbol.is_some() {
+                            // §5.5: compile-time use of an external library needs
+                            // the library to be provided to the compiler; this
+                            // implementation has no compile-time library loader.
+                            self.unsupported(
+                                self.span_of(expression),
+                                "calling an external linkable function at compile time",
+                            );
+                            continue;
+                        }
+                        self.suppress_errors += 1;
+                        let value = self.eval_const_int(expression);
+                        self.suppress_errors -= 1;
+                        if value.is_none() && self.engine.error_count() == errors_before {
+                            self.unsupported(
+                                self.span_of(expression),
+                                "this compile-time function call",
+                            );
+                        }
+                    }
                     continue;
                 }
                 NodeKind::Set(set_statement) => {
@@ -2920,9 +2981,15 @@ impl<'a> Sema<'a> {
                 return CompileTimeFlow::Normal;
             }
             let statements = self.block_statements(statement.body);
+            let errors_before = self.engine.error_count();
             match self.execute_compile_time_statements(&statements, true) {
                 CompileTimeFlow::Break => break,
                 CompileTimeFlow::Normal | CompileTimeFlow::Continue => {}
+            }
+            if (!self.compile_time_phase_b && self.compile_time_deferred)
+                || self.engine.error_count() > errors_before
+            {
+                break;
             }
         }
         CompileTimeFlow::Normal

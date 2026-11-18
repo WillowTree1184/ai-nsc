@@ -2271,3 +2271,48 @@ fixed Main(): integer(4)
     );
     assert!(!stderr.contains("must not be by-reference"), "{stderr}");
 }
+
+#[test]
+fn compile_time_external_linkable_calls_are_diagnosed_explicitly() {
+    let stderr = check_source(
+        "\
+linkable(\"printf\") PrintFormat(wildcard; CDeclaration);
+
+#{
+    PrintFormat(\"Waiting\\0\");
+}
+
+fixed Main(): integer(4)
+{
+    return 0;
+}",
+    );
+    assert!(
+        stderr.contains("calling an external linkable function at compile time"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("unknown name"), "{stderr}");
+}
+
+#[test]
+fn compile_time_blocks_may_call_ordinary_functions_as_statements() {
+    let stderr = check_source_ok(
+        "\
+fixed Helper(): integer(4)
+{
+    return 40 + 2;
+}
+
+#{
+    local value: integer(4) = 0;
+    Helper();
+    local ignored: integer(4) = 1;
+}
+
+fixed Main(): integer(4)
+{
+    return 0;
+}",
+    );
+    assert!(stderr.is_empty(), "{stderr}");
+}

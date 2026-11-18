@@ -2679,6 +2679,7 @@ impl<'a> Sema<'a> {
                 NodeKind::While(while_statement) => {
                     self.execute_compile_time_while(&while_statement)
                 }
+                NodeKind::For(for_statement) => self.execute_compile_time_for(&for_statement),
                 NodeKind::Break(_) => {
                     if !in_loop {
                         self.error(
@@ -2762,6 +2763,112 @@ impl<'a> Sema<'a> {
                 CompileTimeFlow::Break => break,
                 CompileTimeFlow::Normal | CompileTimeFlow::Continue => {}
             }
+        }
+        CompileTimeFlow::Normal
+    }
+
+    /// Executes a compile-time `for` loop over a range (§5.9.5, §11.4).
+    fn execute_compile_time_for(&mut self, statement: &crate::ast::ForStmt) -> CompileTimeFlow {
+        let crate::ast::ForTarget::Range(range) = statement.target.clone() else {
+            if self.compile_time_phase_b {
+                self.unsupported(
+                    self.span_of(statement.body),
+                    "compile-time 'for' loops over arrays/iterables",
+                );
+            }
+            return CompileTimeFlow::Normal;
+        };
+        if statement.by_ref {
+            if self.compile_time_phase_b {
+                self.unsupported(
+                    self.span_of(statement.body),
+                    "by-reference compile-time 'for' bindings",
+                );
+            }
+            return CompileTimeFlow::Normal;
+        }
+        let Some(binding_type) = self.resolve_type(statement.ty) else {
+            return CompileTimeFlow::Normal;
+        };
+        self.suppress_errors += 1;
+        let start = self.eval_const_int(range.start);
+        let end = self.eval_const_int(range.end);
+        let explicit_step = range.step.map(|step| self.eval_const_int(step));
+        self.suppress_errors -= 1;
+        let (Some(start), Some(end)) = (start, end) else {
+            if self.compile_time_phase_b {
+                self.error(
+                    self.span_of(range.start),
+                    "compile-time range bounds must be constant (§11.4)",
+                );
+            }
+            return CompileTimeFlow::Normal;
+        };
+        let step = match explicit_step {
+            Some(Some(step)) => step,
+            Some(None) => {
+                if self.compile_time_phase_b {
+                    self.error(
+                        self.span_of(range.start),
+                        "compile-time range step must be constant (§11.4)",
+                    );
+                }
+                return CompileTimeFlow::Normal;
+            }
+            None => {
+                if end >= start {
+                    1
+                } else {
+                    -1
+                }
+            }
+        };
+        if step == 0 {
+            if self.compile_time_phase_b {
+                self.error(self.span_of(range.start), "range step must not be zero");
+            }
+            return CompileTimeFlow::Normal;
+        }
+        let previous = self.top_level_constants.get(&statement.name).copied();
+        let mut value = start;
+        let mut iterations = 0usize;
+        loop {
+            let in_range = if range.inclusive == (step > 0) {
+                if step > 0 {
+                    value <= end
+                } else {
+                    value >= end
+                }
+            } else if step > 0 {
+                value < end
+            } else {
+                value > end
+            };
+            if !in_range {
+                break;
+            }
+            iterations += 1;
+            if iterations > 1_000_000 {
+                self.error(
+                    self.span_of(range.start),
+                    "compile-time loop exceeded the iteration limit",
+                );
+                break;
+            }
+            self.top_level_constants
+                .insert(statement.name.clone(), (value, binding_type));
+            let statements = self.block_statements(statement.body);
+            match self.execute_compile_time_statements(&statements, true) {
+                CompileTimeFlow::Break => break,
+                CompileTimeFlow::Normal | CompileTimeFlow::Continue => {}
+            }
+            value = value.wrapping_add(step);
+        }
+        if let Some(previous) = previous {
+            self.top_level_constants
+                .insert(statement.name.clone(), previous);
+        } else {
+            self.top_level_constants.remove(&statement.name);
         }
         CompileTimeFlow::Normal
     }

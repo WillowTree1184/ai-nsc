@@ -4389,3 +4389,54 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 55);
 }
+
+#[test]
+fn compile_time_blocks_execute_range_for_loops() {
+    let source = "\
+#{
+    local total: integer(4) = 0;
+    for index: integer(4) in 0..!5
+    {
+        total += index;
+    }
+    for down: integer(4) in 3..!0
+    {
+        total += down;
+    }
+}
+
+local value: integer(4) = total;
+
+fixed Main(): integer(4)
+{
+    return value;
+}";
+    // (0+1+2+3+4) + (3+2+1)
+    assert_eq!(run_program(source), 16);
+}
+
+#[test]
+fn compile_time_functions_execute_range_for_loops() {
+    let source = "\
+fixed Sum(limit: integer(4)): integer(4)
+{
+    local total: integer(4) = 0;
+    for index: integer(4) in 0..!limit
+    {
+        total += index;
+    }
+    return total;
+}
+
+#{
+    local result: integer(4) = Sum(5);
+}
+
+local value: integer(4) = result;
+
+fixed Main(): integer(4)
+{
+    return value;
+}";
+    assert_eq!(run_program(source), 10);
+}

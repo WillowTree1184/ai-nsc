@@ -4037,6 +4037,18 @@ impl<'a> Sema<'a> {
                     self.assign_compile_time_variable(&name.name, updated);
                     continue;
                 }
+                NodeKind::For(for_statement) => {
+                    let flow = self.execute_compile_time_function_for(&for_statement);
+                    if matches!(
+                        flow,
+                        CompileFunctionFlow::Break
+                            | CompileFunctionFlow::Continue
+                            | CompileFunctionFlow::Return(_)
+                    ) {
+                        return flow;
+                    }
+                    continue;
+                }
                 NodeKind::If(if_statement) => {
                     let flow = self.execute_compile_time_function_if(&if_statement);
                     if matches!(
@@ -4152,6 +4164,96 @@ impl<'a> Sema<'a> {
                     return CompileFunctionFlow::Return(value);
                 }
                 CompileFunctionFlow::Normal | CompileFunctionFlow::Continue => {}
+            }
+        }
+        CompileFunctionFlow::Normal
+    }
+
+    /// Executes a `for` range loop inside an interpreted compile-time function
+    /// (§5.9.5, §11.4).
+    fn execute_compile_time_function_for(
+        &mut self,
+        statement: &crate::ast::ForStmt,
+    ) -> CompileFunctionFlow {
+        let crate::ast::ForTarget::Range(range) = statement.target.clone() else {
+            return CompileFunctionFlow::Normal;
+        };
+        if statement.by_ref {
+            return CompileFunctionFlow::Normal;
+        }
+        let (Some(start), Some(end)) = (
+            self.eval_const_int(range.start),
+            self.eval_const_int(range.end),
+        ) else {
+            return CompileFunctionFlow::Normal;
+        };
+        let step = match range.step {
+            Some(step) => {
+                let Some(step) = self.eval_const_int(step) else {
+                    return CompileFunctionFlow::Normal;
+                };
+                step
+            }
+            None => {
+                if end >= start {
+                    1
+                } else {
+                    -1
+                }
+            }
+        };
+        if step == 0 {
+            return CompileFunctionFlow::Normal;
+        }
+        let previous = self
+            .constant_env
+            .last()
+            .and_then(|environment| environment.get(&statement.name).copied());
+        let mut value = start;
+        let mut iterations = 0usize;
+        loop {
+            let in_range = if step > 0 {
+                if range.inclusive {
+                    value <= end
+                } else {
+                    value < end
+                }
+            } else if range.inclusive {
+                value >= end
+            } else {
+                value > end
+            };
+            if !in_range {
+                break;
+            }
+            iterations += 1;
+            if iterations > 1_000_000 {
+                break;
+            }
+            if let Some(environment) = self.constant_env.last_mut() {
+                environment.insert(statement.name.clone(), value);
+            }
+            let statements = match self.node_kind(statement.body) {
+                NodeKind::Block(statements) => statements.clone(),
+                _ => return CompileFunctionFlow::Normal,
+            };
+            match self.execute_compile_time_function_statements(&statements) {
+                CompileFunctionFlow::Break => break,
+                CompileFunctionFlow::Continue | CompileFunctionFlow::Normal => {}
+                CompileFunctionFlow::Return(value) => {
+                    return CompileFunctionFlow::Return(value);
+                }
+            }
+            value = value.wrapping_add(step);
+        }
+        if let Some(environment) = self.constant_env.last_mut() {
+            match previous {
+                Some(previous) => {
+                    environment.insert(statement.name.clone(), previous);
+                }
+                None => {
+                    environment.remove(&statement.name);
+                }
             }
         }
         CompileFunctionFlow::Normal

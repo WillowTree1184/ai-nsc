@@ -302,3 +302,4 @@ report an error (§4.8).
 | 81 | MED | §9.15 | Static function-valued constants rejected ('static method requires a body') | fixed (e1815d6: expression-initialized static function constants as values, callable and passable) |
 | 82 | MED | §3.8.2 | Free accessors (outside type bodies/extensions) unsupported | fixed (cb9acc2: free accessor function constants, default backing get/set, explicit members, read-only constant backing, scope visibility) |
 | 83 | LOW | §3.8.2 | Function-scope free accessors with local backing unsupported | fixed (f05fe40: by-reference backing parameter getter/setter, read-only fixed backings; explicit members diagnosed) |
+| 84 | MED | §12.2 | Linkable calls did not abandon NOLAA analysis / no Never-Disposed warning | fixed (47c9167: linkable abandonment marking, warning reporting, name-callee-only probe) |

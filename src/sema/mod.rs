@@ -1096,6 +1096,7 @@ pub fn analyze(
         top_level_constants: HashMap::new(),
         in_verbatim: false,
         array_binding_lengths: Vec::new(),
+        heap_groups: Vec::new(),
         block_stack: Vec::new(),
         loop_blocks: Vec::new(),
     };
@@ -1170,6 +1171,9 @@ pub(crate) struct Sema<'a> {
     /// Bound array dimension values while instantiating an array extension
     /// (§3.8.3).
     pub(crate) array_binding_lengths: Vec<HashMap<String, u64>>,
+    /// NOLAA existence-demand groups created by `NOLAA.Bind` (§12.2): each
+    /// group is disposed at the same safe point.
+    pub(crate) heap_groups: Vec<Vec<LocalId>>,
     /// Enclosing code blocks (innermost last), for NOLAA jump safe points.
     pub(crate) block_stack: Vec<NodeId>,
     /// Loop body blocks (innermost last), for NOLAA break/continue safe points.

@@ -2645,6 +2645,11 @@ fixed Main(): integer(4)
 #[test]
 fn reference_expressions_nolaa_and_canonical_platform_names() {
     let source = "\
+class Cell
+{
+    public Value: integer(4);
+}
+
 fixed Bump(location: pointer integer(4))
 {
     *location = *location + 1;
@@ -2658,9 +2663,10 @@ fixed Main(): integer(4)
     if (*address == 10) { score += 1; }
     Bump(address);
     if (counter == 11) { score += 2; }
-    NOLAA.Abandon(address);
-    NOLAA.AssumeNoDemandNext(address);
-    NOLAA.Bind(address, address);
+    heap cell: Cell = Cell();
+    NOLAA.Abandon(cell);
+    NOLAA.AssumeNoDemandNext(cell);
+    NOLAA.Bind(cell, cell);
     if (Platform.Is(\"Linux\")) { score += 4; }
     if (!Platform.Is(\"linux\")) { score += 8; }
     if (!Platform.Is(PlatformKind.Other)) { score += 16; }
@@ -3681,4 +3687,36 @@ fixed Main(): integer(4)
 }";
     // continue, block-end and break each dispose one unit: 1 + 3 * 10.
     assert_eq!(run_program(source), 31);
+}
+
+#[test]
+fn nolaa_bind_groups_are_disposed_at_the_same_safe_point() {
+    let source = "\
+local destroyed: integer(4) = 0;
+
+structure Token
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Destruct(this: &Token) { destroyed = destroyed + 1; }
+    }
+}
+
+fixed Run(): integer(4)
+{
+    heap first: Token = Token();
+    heap second: Token = Token();
+    NOLAA.Bind(first, second);
+    return 0;
+}
+
+fixed Main(): integer(4)
+{
+    local result: integer(4) = Run();
+    return result + destroyed * 10;
+}";
+    // The bound pair shares one analysis unit: both are disposed (2 destructors).
+    assert_eq!(run_program(source), 20);
 }

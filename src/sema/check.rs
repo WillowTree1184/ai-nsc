@@ -3949,20 +3949,57 @@ impl<'a> Sema<'a> {
         };
         let inside: Vec<NodeId> = self.block_stack[position..].to_vec();
         let mut locals = Vec::new();
-        for unit in &self.heap_units {
-            if unit.manual || unit.abandoned || unit.escaped || unit.disposed {
+        let candidates: Vec<LocalId> = self
+            .heap_units
+            .iter()
+            .filter(|unit| {
+                !unit.manual
+                    && !unit.abandoned
+                    && !unit.escaped
+                    && !unit.disposed
+                    && inside.contains(&unit.block)
+            })
+            .map(|unit| unit.local)
+            .collect();
+        for local in candidates {
+            if !self.heap_group_disposable(local) {
                 continue;
             }
-            if !inside.contains(&unit.block) {
-                continue;
-            }
-            if !locals.contains(&unit.local) {
-                locals.push(unit.local);
+            for peer in self.heap_group_peers(local) {
+                if !locals.contains(&peer) {
+                    locals.push(peer);
+                }
             }
         }
         if !locals.is_empty() {
             self.result.jump_dispose.insert(node, locals);
         }
+    }
+
+    /// Local ids of all heap units bound to `local` through `NOLAA.Bind`
+    /// (§12.2: same analysis unit, same safe point).
+    fn heap_group_peers(&self, local: LocalId) -> Vec<LocalId> {
+        for group in &self.heap_groups {
+            if group.contains(&local) {
+                return group.clone();
+            }
+        }
+        vec![local]
+    }
+
+    /// Whether every member of `local`'s analysis group may be auto-disposed
+    /// now (non-manual, not abandoned, not escaped, not yet disposed).
+    fn heap_group_disposable(&self, local: LocalId) -> bool {
+        for peer in self.heap_group_peers(local) {
+            let Some(index) = self.heap_unit_locals.get(&peer).copied() else {
+                return false;
+            };
+            let unit = &self.heap_units[index];
+            if unit.manual || unit.abandoned || unit.escaped || unit.disposed {
+                return false;
+            }
+        }
+        true
     }
 
     /// Schedules NOLAA auto-dispose before a `return` leaves the function
@@ -3971,12 +4008,20 @@ impl<'a> Sema<'a> {
     /// an enclosing block end) are skipped.
     fn plan_return_dispose(&mut self, node: NodeId) {
         let mut locals = Vec::new();
-        for unit in &self.heap_units {
-            if unit.manual || unit.abandoned || unit.escaped || unit.disposed {
+        let candidates: Vec<LocalId> = self
+            .heap_units
+            .iter()
+            .filter(|unit| !unit.manual && !unit.abandoned && !unit.escaped && !unit.disposed)
+            .map(|unit| unit.local)
+            .collect();
+        for local in candidates {
+            if !self.heap_group_disposable(local) {
                 continue;
             }
-            if !locals.contains(&unit.local) {
-                locals.push(unit.local);
+            for peer in self.heap_group_peers(local) {
+                if !locals.contains(&peer) {
+                    locals.push(peer);
+                }
             }
         }
         if !locals.is_empty() {
@@ -3994,13 +4039,31 @@ impl<'a> Sema<'a> {
             return;
         }
         let mut locals = Vec::new();
-        for unit in &mut self.heap_units {
-            if unit.block != block || unit.manual || unit.disposed || unit.abandoned || unit.escaped
-            {
+        let candidates: Vec<(usize, LocalId)> = self
+            .heap_units
+            .iter()
+            .enumerate()
+            .filter(|(_, unit)| {
+                unit.block == block
+                    && !unit.manual
+                    && !unit.disposed
+                    && !unit.abandoned
+                    && !unit.escaped
+            })
+            .map(|(index, unit)| (index, unit.local))
+            .collect();
+        for (_, local) in candidates {
+            if !self.heap_group_disposable(local) {
                 continue;
             }
-            unit.disposed = true;
-            locals.push(unit.local);
+            for peer in self.heap_group_peers(local) {
+                if let Some(index) = self.heap_unit_locals.get(&peer).copied() {
+                    self.heap_units[index].disposed = true;
+                }
+                if !locals.contains(&peer) {
+                    locals.push(peer);
+                }
+            }
         }
         if !locals.is_empty() {
             self.result
@@ -4735,8 +4798,12 @@ impl<'a> Sema<'a> {
             _ => return,
         };
         if let Some(Symbol::Local(local)) = self.lookup(&name).cloned() {
-            if let Some(index) = self.heap_unit_locals.get(&local).copied() {
-                self.heap_units[index].escaped = true;
+            if self.heap_unit_locals.contains_key(&local) {
+                for peer in self.heap_group_peers(local) {
+                    if let Some(index) = self.heap_unit_locals.get(&peer).copied() {
+                        self.heap_units[index].escaped = true;
+                    }
+                }
             }
         }
     }
@@ -7657,28 +7724,64 @@ impl<'a> Sema<'a> {
             self.error(span, format!("'NOLAA.{name}' takes {expected} argument(s)"));
             return None;
         }
-        if name == "Abandon" {
-            if let NodeKind::Name(argument) = self.node_kind(arguments[0].value) {
-                if let Some(Symbol::Local(local)) = self.lookup(&argument.name).cloned() {
-                    if let Some(index) = self.heap_unit_locals.get(&local).copied() {
-                        self.heap_units[index].abandoned = true;
-                    }
-                }
-            }
-        }
+        // Every argument must point at a NOLAA-trackable heap object (§12.2).
+        let mut locals: Vec<LocalId> = Vec::new();
         for argument in arguments {
-            let ty = self.check_expr(argument.value, None)?;
-            let convertible = match self.types_of(ty) {
-                Type::Pointer { .. } | Type::Function { .. } => true,
-                Type::Named(index) => matches!(
-                    self.result.type_defs[index as usize].kind,
-                    TypeDefKind::Class | TypeDefKind::Interface
-                ),
+            let trackable = match self.node_kind(argument.value) {
+                NodeKind::Name(argument_name) => match self.lookup(&argument_name.name).cloned() {
+                    Some(Symbol::Local(local)) => self.heap_unit_locals.contains_key(&local),
+                    _ => false,
+                },
                 _ => false,
             };
-            if !convertible {
-                self.error(self.span_of(argument.value), "expected a pointer argument");
+            if !trackable {
+                self.error(
+                    self.span_of(argument.value),
+                    "NOLAA arguments must point to a trackable heap object",
+                );
                 return None;
+            }
+            let NodeKind::Name(argument_name) = self.node_kind(argument.value) else {
+                return None;
+            };
+            let Some(Symbol::Local(local)) = self.lookup(&argument_name.name).cloned() else {
+                return None;
+            };
+            locals.push(local);
+        }
+        if name == "Abandon" {
+            if let Some(index) = self.heap_unit_locals.get(&locals[0]).copied() {
+                self.heap_units[index].abandoned = true;
+            }
+        }
+        if name == "Bind" {
+            let (required, required_by) = (locals[0], locals[1]);
+            if required != required_by {
+                let (mut group, other) = match self
+                    .heap_groups
+                    .iter()
+                    .position(|group| group.contains(&required))
+                {
+                    Some(index) => {
+                        let group = self.heap_groups.remove(index);
+                        let other = self
+                            .heap_groups
+                            .iter()
+                            .position(|group| group.contains(&required_by))
+                            .map(|index| self.heap_groups.remove(index));
+                        (group, other)
+                    }
+                    None => (vec![required], {
+                        self.heap_groups
+                            .iter()
+                            .position(|group| group.contains(&required_by))
+                            .map(|index| self.heap_groups.remove(index))
+                    }),
+                };
+                group.extend(other.unwrap_or_else(|| vec![required_by]));
+                group.sort_unstable();
+                group.dedup();
+                self.heap_groups.push(group);
             }
         }
         self.result.resolutions[node as usize] = Some(Resolution::CompileTimeNoOp);
@@ -7945,8 +8048,16 @@ impl<'a> Sema<'a> {
                 );
             }
         }
-        for argument in &call.arguments {
-            self.note_heap_escape(argument.value);
+        // Compile-time API calls (Platform/Compiler/NOLAA, Type.SizeOf) are
+        // no-ops at run time and must not count as heap escapes (§15.3).
+        let compile_time_api = ["Platform", "Compiler", "NOLAA"]
+            .iter()
+            .any(|namespace| builtin_namespace_call(self.ast, call.callee, namespace).is_some())
+            || builtin_size_of_type_argument(self.ast, call.callee).is_some();
+        if !compile_time_api {
+            for argument in &call.arguments {
+                self.note_heap_escape(argument.value);
+            }
         }
         // Generic method calls: `receiver.Method<TypeArgs>(...)` (§10.2).
         if builtin_size_of_type_argument(self.ast, call.callee).is_none() {

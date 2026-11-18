@@ -1257,3 +1257,18 @@ fn compile_time_expressions_are_folded_in_ir() {
     assert!(ir.contains("ret i32 5"), "{ir}");
     assert!(!ir.contains("add i32"), "{ir}");
 }
+
+#[test]
+fn nolaa_arguments_must_be_trackable_heap_objects() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    local value: integer(4) = 1;
+    local address: pointer integer(4) = &value;
+    NOLAA.Bind(address, address);
+    return 0;
+}",
+    );
+    assert!(stderr.contains("trackable heap object"), "{stderr}");
+}

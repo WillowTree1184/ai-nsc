@@ -276,3 +276,4 @@ report an error (§4.8).
 | 55 | MED | §9.5 | `scoped(...)` accessibility clipping unimplemented | fixed (eaedf73 type/operator targets; 46d31aa member-name targets with override and sealed semantics) |
 | 56 | MED | §5.3, §2.7.9 | Nested function definitions and '&function' pointers unsupported | fixed (4437802: nested functions as capturing literals bound to constants; function pointer address/deref calls) |
 | 57 | LOW | §5.9.6 | `is illegal`/`is infinite` patterns in match unimplemented | fixed (59ebb2c: NaN and ±infinity patterns with float validation) |
+| 58 | LOW | §5.9.5 | Range array literals without expected element type rejected | fixed (468f8ac: element type inferred from the range start or for binding type) |

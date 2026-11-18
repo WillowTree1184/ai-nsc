@@ -173,6 +173,8 @@ pub enum ScopedKind {
     Type(TypeId),
     /// The declaring type's operators.
     Operator,
+    /// The declaring type's operators for one symbol/conversion target (§9.5).
+    OperatorSymbol(String),
     /// A member (and its overrides); resolved after declarations.
     Member(u32),
     /// A member name awaiting declaration resolution.

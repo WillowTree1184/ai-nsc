@@ -1205,3 +1205,23 @@ fixed Main(): integer(4)
     );
     assert!(stderr.contains("requires type arguments"), "{stderr}");
 }
+
+#[test]
+fn scoped_operator_symbol_targets_restrict_other_operators() {
+    let stderr = check_source(
+        "\
+structure Num
+{
+    public scoped(operator -) Value: integer(4);
+
+    extension
+    {
+        operator -(left: Num, right: Num): Num { return Num(); }
+        operator +(left: Num, right: Num): integer(4) { return left.Value; }
+    }
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(stderr.contains("'Value' is not accessible"), "{stderr}");
+}

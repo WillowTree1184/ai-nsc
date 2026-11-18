@@ -3503,3 +3503,28 @@ fixed Main(): integer(4)
     // 5 + 10 + 2
     assert_eq!(run_program(source), 17);
 }
+
+#[test]
+fn scoped_operator_symbol_targets() {
+    let source = "\
+structure Meter
+{
+    public scoped(operator +, Meter) Value: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Meter, value: integer(4)) { this.Value = value; }
+        public fixed Read(this: &Meter): integer(4) { return this.Value; }
+        operator +(left: Meter, right: Meter): Meter { return Meter(left.Value + right.Value); }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local left: Meter = Meter(2);
+    local right: Meter = Meter(3);
+    local sum: Meter = left + right;
+    return sum.Read();
+}";
+    assert_eq!(run_program(source), 5);
+}

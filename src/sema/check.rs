@@ -2121,8 +2121,11 @@ impl<'a> Sema<'a> {
         let mut result = Vec::new();
         for target in &modifiers.scoped {
             match target {
-                crate::ast::ScopedTarget::Operator { .. } => result.push(ScopedInfo {
-                    kind: ScopedKind::Operator,
+                crate::ast::ScopedTarget::Operator { name } => result.push(ScopedInfo {
+                    kind: match name {
+                        Some(name) => ScopedKind::OperatorSymbol(name.clone()),
+                        None => ScopedKind::Operator,
+                    },
                     sealed: false,
                 }),
                 crate::ast::ScopedTarget::Named { sealed, name } => {
@@ -2284,6 +2287,41 @@ impl<'a> Sema<'a> {
                 .any(|parameter| parameter.ty == ty)
     }
 
+    /// Whether the current function is an operator declared by `owner`, optionally
+    /// for a specific symbol or conversion target (§9.5).
+    fn current_operator_matches(&self, owner: TypeId, symbol: Option<&str>) -> bool {
+        let Some(index) = self.current_function else {
+            return false;
+        };
+        let function = &self.result.functions[index as usize];
+        if !function.name.starts_with("operator") {
+            return false;
+        }
+        let declared_by_owner = function.method_of == Some(owner) || {
+            match self.types_of(owner) {
+                Type::Named(index) => {
+                    let qualified = &self.result.type_defs[index as usize].qualified_name;
+                    let scope = function.scope.join(".");
+                    &scope == qualified
+                }
+                _ => false,
+            }
+        };
+        if !declared_by_owner {
+            return false;
+        }
+        let Some(symbol) = symbol else {
+            return true;
+        };
+        if function.name == format!("operator{symbol}") {
+            return true;
+        }
+        if let Some(target) = function.name.strip_prefix("operator:") {
+            return target == symbol;
+        }
+        false
+    }
+
     /// Whether the innermost checked member is inside the accessible set of the
     /// declaration's scoped targets (§9.5).
     fn scope_allows(&self, declaring: TypeId, scoped: &[ScopedInfo]) -> bool {
@@ -2319,7 +2357,13 @@ impl<'a> Sema<'a> {
                     current = base;
                 }
             }
-            ScopedKind::Operator => self.current_is_operator_of(declaring),
+            ScopedKind::Operator => {
+                self.current_is_operator_of(declaring)
+                    || self.current_operator_matches(declaring, None)
+            }
+            ScopedKind::OperatorSymbol(symbol) => {
+                self.current_operator_matches(declaring, Some(symbol))
+            }
             ScopedKind::Member(member) => self.member_scope_allows(*member, target.sealed),
             ScopedKind::Pending(_) => false,
         })

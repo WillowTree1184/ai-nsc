@@ -43,7 +43,7 @@ size. Each round also keeps the docs' audit register in sync.
 | 5b | JIT-based compile-time execution (user-approved) | **done (host)** | MCJIT evaluator wired into phase B: function bodies checked before compile-time execution, live `Resolution::TopLevelConstant`, address-based calls, integer args/results <=64 bits. Host uses JIT (float/loop bodies verified, 9/2 -> 4); cross targets keep the integer interpreter. Remaining: wider signatures (128-bit, floats as args/results) if needed. |
 | 6 | Monomorphization volume optimization (§14.3.2) | **out of scope for correctness** | Constant/literal pooling is delegated to LLVM, which merges identical read-only data; no conformance requirement forces hand-written pooling. |
 | 7 | Conformance audit | **ongoing** | 105 defects recorded (see `docs/AUDIT.md`); the audit continues each round. |
-| 8 | **HIGH: heap-of-structure miscompile (§12)** | **open, top priority** | `heap pair: Pair = Pair(40,2); return pair.A + pair.B;` returns nondeterministic wrong results while the locals-first variant is correct. Suspect heap lifetime/dispose planning or allocation layout. Fix before any 32-bit enablement. |
+| 8 | ~~HIGH: heap-of-structure miscompile (§12)~~ | **fixed** | Cause: return-value disposal ran before evaluating the returned expression, freeing heap units that were then read. Fixed by evaluating first, spilling only when disposals exist (#105). |
 
 ## Where things live
 

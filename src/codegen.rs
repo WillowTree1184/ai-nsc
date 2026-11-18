@@ -1198,6 +1198,19 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             }
             self.gen_statement(statement)?;
         }
+        // NOLAA auto-dispose insertion at the block's safe point (§12.2): only
+        // when control can fall through, so the dispose is safe.
+        if self
+            .builder
+            .get_insert_block()
+            .is_some_and(|block| block.get_terminator().is_none())
+        {
+            if let Some(locals) = self.sema.auto_dispose.get(&block).cloned() {
+                for local in locals {
+                    self.gen_dispose_local(local)?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -2100,6 +2113,12 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         else {
             return Err("dispose requires a heap variable".to_string());
         };
+        let _ = name;
+        self.gen_dispose_local(local)
+    }
+
+    /// Emits destructor + deallocation for a local (§5.8).
+    fn gen_dispose_local(&mut self, local: u32) -> Result<(), String> {
         let info = self
             .local_info(local)
             .ok_or_else(|| "missing heap information".to_string())?;
@@ -2155,7 +2174,6 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .map_err(|error| format!("cannot deallocate: {error}"))?;
             }
         }
-        let _ = name;
         Ok(())
     }
 

@@ -545,6 +545,10 @@ pub(crate) struct HeapUnit {
     pub(crate) abandoned: bool,
     /// Whether the pointer escaped the function (argument, return, store...).
     pub(crate) escaped: bool,
+    /// The local holding the heap pointer.
+    pub(crate) local: LocalId,
+    /// Block containing the declaration.
+    pub(crate) block: NodeId,
 }
 
 /// A module-level variable or constant.
@@ -815,6 +819,8 @@ pub struct SemaResult {
     pub heap_default_allocator: std::collections::HashSet<NodeId>,
     /// Heap locals allocated through `DefaultAllocator`.
     pub heap_default_allocator_locals: std::collections::HashSet<u32>,
+    /// Heap locals that NOLAA disposes at the end of a block (§12.2).
+    pub auto_dispose: HashMap<NodeId, Vec<LocalId>>,
     /// Number of errors reported.
     pub error_count: u32,
 }
@@ -999,6 +1005,7 @@ pub fn analyze(
         heap_unit_locals: HashMap::new(),
         early_dispose_warned: std::collections::HashSet::new(),
         current_owner: None,
+        current_block: NodeId::default(),
     };
     sema.run();
     sema.result.error_count = sema.engine.error_count();
@@ -1055,6 +1062,8 @@ pub(crate) struct Sema<'a> {
     pub(crate) early_dispose_warned: std::collections::HashSet<u32>,
     /// Type whose body is currently being checked, for accessibility (§9.1).
     pub(crate) current_owner: Option<TypeId>,
+    /// Block whose statements are currently being checked (§12.2).
+    pub(crate) current_block: NodeId,
 }
 
 impl<'a> Sema<'a> {

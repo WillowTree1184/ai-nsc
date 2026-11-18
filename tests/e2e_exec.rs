@@ -3010,3 +3010,62 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 6);
 }
+
+#[test]
+fn nolaa_inserts_dispose_at_the_block_safe_point() {
+    let source = "\
+static class Arena
+{
+    public static Buffer: array(256) integer(1);
+    public static Offset: cardinal(8);
+}
+
+class Stats
+{
+    public static Deallocations: integer(4);
+}
+
+class CountingAllocator : IAllocator
+{
+    extension
+    {
+        public fixed Allocate(this: &CountingAllocator, size: cardinal(8), alignment: cardinal(8)): Result<pointer; AllocateFailedException>
+        {
+            local origin: pointer integer(1) = &Arena.Buffer[0];
+            local address: pointer integer(1) = origin + Cast<integer(8)>(Arena.Offset);
+            Arena.Offset += size;
+            return Result<pointer; AllocateFailedException>.Value(Cast<pointer>(address));
+        }
+
+        public fixed Deallocate(this: &CountingAllocator, block: pointer): Result<; DeallocateFailedException>
+        {
+            Stats.Deallocations += 1;
+            return Result<; DeallocateFailedException>.Value;
+        }
+    }
+}
+
+fixed Allocator: IAllocator = CountingAllocator();
+
+structure Node
+{
+    public Value: integer(4);
+}
+
+fixed UseAllocation(): integer(4)
+{
+    local score: integer(4) = 0;
+    {
+        heap(Allocator) node: Node = Node();
+        node.Value = 5;
+        score = node.Value;
+    }
+    return score + Stats.Deallocations;
+}
+
+fixed Main(): integer(4)
+{
+    return UseAllocation();
+}";
+    assert_eq!(run_program(source), 6);
+}

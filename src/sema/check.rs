@@ -3171,11 +3171,42 @@ impl<'a> Sema<'a> {
         // Disposal tracking is restored at block boundaries so that disjoint
         // branches do not look like a double dispose (§5.8).
         let disposed_before = self.disposed_locals.clone();
+        let block_before = self.current_block;
+        self.current_block = node;
         for statement in statements {
             self.check_statement(statement);
         }
+        self.current_block = block_before;
+        self.plan_auto_dispose(node);
         self.disposed_locals = disposed_before;
         self.pop_scope();
+    }
+
+    /// Schedules NOLAA auto-dispose for eligible heap units declared in `block`
+    /// (§12.2): non-manual, not explicitly disposed, not abandoned and not
+    /// escaping.
+    fn plan_auto_dispose(&mut self, block: NodeId) {
+        // Without a fall-through safe point NOLAA must not insert a dispose
+        // (§12.2), so keep the never-disposed warning for such units.
+        if self.block_always_returns(block) {
+            return;
+        }
+        let mut locals = Vec::new();
+        for unit in &mut self.heap_units {
+            if unit.block != block || unit.manual || unit.disposed || unit.abandoned || unit.escaped
+            {
+                continue;
+            }
+            unit.disposed = true;
+            locals.push(unit.local);
+        }
+        if !locals.is_empty() {
+            self.result
+                .auto_dispose
+                .entry(block)
+                .or_default()
+                .extend(locals);
+        }
     }
 
     /// Checks a function body block in the scope that already holds `this` and
@@ -3194,9 +3225,13 @@ impl<'a> Sema<'a> {
             }
         };
         let disposed_before = self.disposed_locals.clone();
+        let block_before = self.current_block;
+        self.current_block = block;
         for statement in statements {
             self.check_statement(statement);
         }
+        self.current_block = block_before;
+        self.plan_auto_dispose(block);
         self.disposed_locals = disposed_before;
     }
 
@@ -3765,6 +3800,8 @@ impl<'a> Sema<'a> {
             disposed: false,
             abandoned: false,
             escaped: false,
+            local,
+            block: self.current_block,
         });
         if let Some(allocator) = allocator {
             self.result.heap_allocator_locals.insert(local, allocator);

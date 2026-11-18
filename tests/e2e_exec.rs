@@ -3443,3 +3443,34 @@ fixed Main(): integer(4)
     // (1+2)*3 + (1+2)
     assert_eq!(run_program(source), 12);
 }
+
+#[test]
+fn multi_dimensional_vlas_use_a_leading_runtime_dimension() {
+    let source = "\
+fixed Fill(rows: integer(4)): integer(4)
+{
+    local matrix: array(rows, 3) integer(4);
+    for row: integer(4) in 0..!rows
+    {
+        matrix[row][0] = row;
+        matrix[row][1] = row * 2;
+        matrix[row][2] = row * 3;
+    }
+    local total: integer(4) = 0;
+    for row: integer(4) in 0..!rows
+    {
+        for column: integer(4) in 0..!3
+        {
+            total += matrix[row][column];
+        }
+    }
+    return total;
+}
+
+fixed Main(): integer(4)
+{
+    return Fill(3);
+}";
+    // rows 0,1,2 → 0 + 6 + 12
+    assert_eq!(run_program(source), 18);
+}

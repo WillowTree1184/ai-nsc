@@ -16,15 +16,25 @@ impl<'a> Sema<'a> {
             NodeKind::ArrayType(array) => {
                 let mut dimensions = Vec::new();
                 let mut runtime: Option<NodeId> = None;
+                let mut position = 0usize;
                 for dimension in &array.dimensions {
+                    position += 1;
                     match dimension {
                         ArrayDimension::Size(expression) => {
                             if !self.is_compile_time_constant(*expression) {
                                 // Runtime dimensions are only allowed inside a
-                                // function body (§3.6.1).
-                                if self.in_function_body && runtime.is_none() {
+                                // function body (§3.6.1), and only as the leading
+                                // dimension (the VLA value carries one length).
+                                if self.in_function_body && runtime.is_none() && position == 1 {
                                     runtime = Some(*expression);
                                     continue;
+                                }
+                                if self.in_function_body && runtime.is_none() {
+                                    self.unsupported(
+                                        self.span_of(*expression),
+                                        "non-leading variable-length array dimensions",
+                                    );
+                                    return None;
                                 }
                                 self.error(
                                     self.span_of(*expression),
@@ -55,13 +65,13 @@ impl<'a> Sema<'a> {
                 }
                 let element = self.resolve_type(array.element)?;
                 if let Some(length_expression) = runtime {
-                    if !dimensions.is_empty() || array.dimensions.len() > 1 {
-                        self.unsupported(
-                            self.span_of(node),
-                            "multi-dimensional variable-length arrays",
-                        );
-                        return None;
-                    }
+                    // Remaining (compile-time) dimensions form the element type,
+                    // e.g. `array(rows, 3) T` is a VLA of `array(3) T`.
+                    let element = if dimensions.is_empty() {
+                        element
+                    } else {
+                        self.result.types.array(dimensions, element)
+                    };
                     let length_type = self.check_expr(length_expression, None)?;
                     if !self.is_integer(length_type) {
                         self.error(

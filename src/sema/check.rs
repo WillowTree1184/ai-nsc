@@ -3973,10 +3973,15 @@ impl<'a> Sema<'a> {
                 .heap_units
                 .iter()
                 .filter(|unit| {
-                    !unit.manual
-                        && !unit.disposed
-                        && !unit.abandoned
-                        && !unit.escaped
+                    if unit.manual || unit.disposed || unit.abandoned {
+                        return false;
+                    }
+                    // Linkable calls force NOLAA to abandon the unit, which is
+                    // still reported as never disposed (§12.2).
+                    if unit.linkable_abandoned {
+                        return true;
+                    }
+                    !unit.escaped
                         && !self
                             .result
                             .jump_dispose
@@ -5495,6 +5500,21 @@ impl<'a> Sema<'a> {
 
     /// Records that a heap allocation may escape the function through `node`
     /// (§12.2), suppressing the never-disposed warning.
+    /// Marks a heap unit passed to a `linkable` call as abandoned by NOLAA
+    /// (§12.2): no dispose is inserted and it is reported as never disposed.
+    fn note_linkable_abandon(&mut self, node: NodeId) {
+        let name = match self.node_kind(node) {
+            NodeKind::Name(name) => name.name.clone(),
+            _ => return,
+        };
+        if let Some(Symbol::Local(local)) = self.lookup(&name).cloned() {
+            if let Some(index) = self.heap_unit_locals.get(&local).copied() {
+                self.heap_units[index].linkable_abandoned = true;
+                self.heap_units[index].escaped = true;
+            }
+        }
+    }
+
     fn note_heap_escape(&mut self, node: NodeId) {
         let name = match self.node_kind(node) {
             NodeKind::Name(name) => name.name.clone(),
@@ -5602,6 +5622,7 @@ impl<'a> Sema<'a> {
             disposed: false,
             abandoned: false,
             escaped: false,
+            linkable_abandoned: false,
             local,
             block: self.current_block,
         });
@@ -8806,7 +8827,20 @@ impl<'a> Sema<'a> {
             .any(|namespace| builtin_namespace_call(self.ast, call.callee, namespace).is_some())
             || builtin_size_of_type_argument(self.ast, call.callee).is_some();
         if !compile_time_api {
+            // Only plain name callees can be linkable functions; probing other
+            // callee forms would resolve monomorphizations prematurely.
+            let linkable_call = matches!(self.node_kind(call.callee), NodeKind::Name(_))
+                && matches!(
+                    self.try_callee_symbol(call.callee),
+                    Some(Symbol::Functions(overloads))
+                        if overloads.iter().any(|index| {
+                            self.result.functions[*index as usize].exposed_symbol.is_some()
+                        })
+                );
             for argument in &call.arguments {
+                if linkable_call {
+                    self.note_linkable_abandon(argument.value);
+                }
                 self.note_heap_escape(argument.value);
             }
         }

@@ -1568,3 +1568,32 @@ fixed Main(): integer(4)
     );
     assert!(stderr.contains("accessor is read-only"), "{stderr}");
 }
+
+#[test]
+fn linkable_calls_abandon_nolaa_analysis_with_a_never_disposed_warning() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-linkabandon-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(
+        &path,
+        "linkable(\"consume\") Consume: function(value: Token);\n\nclass Token\n{\n    public Value: integer(4);\n}\n\nfixed Main(): integer(4)\n{\n    heap token: Token = Token();\n    token.Value = 1;\n    Consume(token);\n    return 0;\n}",
+    )
+    .expect("write");
+    let output = ai_nsc()
+        .args(["check", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("never disposed"),
+        "linkable calls must abandon NOLAA analysis: {stderr}"
+    );
+}

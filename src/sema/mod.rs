@@ -595,6 +595,9 @@ pub(crate) struct HeapUnit {
     pub(crate) abandoned: bool,
     /// Whether the pointer escaped the function (argument, return, store...).
     pub(crate) escaped: bool,
+    /// Whether the unit was passed to a `linkable` call, which makes NOLAA
+    /// abandon its lifetime analysis (§12.2) and report it as never disposed.
+    pub(crate) linkable_abandoned: bool,
     /// The local holding the heap pointer.
     pub(crate) local: LocalId,
     /// Block containing the declaration.

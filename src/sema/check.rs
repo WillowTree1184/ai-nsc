@@ -1437,11 +1437,13 @@ impl<'a> Sema<'a> {
             self.unsupported(self.span_of(node), "operators outside type bodies");
             return;
         };
-        let Type::Named(owner_index) = self.types_of(owner) else {
-            return;
+        let owner_index = match self.types_of(owner) {
+            Type::Named(index) => Some(index),
+            _ => None,
         };
-        let is_interface =
-            self.result.type_defs[owner_index as usize].kind == TypeDefKind::Interface;
+        let is_interface = owner_index
+            .map(|index| self.result.type_defs[index as usize].kind == TypeDefKind::Interface)
+            .unwrap_or(false);
         if !matches!(
             declaration.modifiers.accessibility,
             Accessibility::Unspecified
@@ -1530,14 +1532,14 @@ impl<'a> Sema<'a> {
                         );
                     }
                 }
-                let definition = &mut self.result.type_defs[owner_index as usize];
-                definition.operators.push(OperatorInfo {
+                let operator = OperatorInfo {
                     kind: OperatorKind::Index,
                     method: u32::MAX,
                     getter,
                     setter,
                     implicitable: false,
-                });
+                };
+                self.register_operator_info(owner, owner_index, operator);
             }
             OperatorHead::Shorthand {
                 symbol,
@@ -1581,14 +1583,14 @@ impl<'a> Sema<'a> {
                 ) else {
                     return;
                 };
-                let definition = &mut self.result.type_defs[owner_index as usize];
-                definition.operators.push(OperatorInfo {
+                let operator = OperatorInfo {
                     kind,
                     method,
                     getter: None,
                     setter: None,
                     implicitable: declaration.modifiers.implicitable,
-                });
+                };
+                self.register_operator_info(owner, owner_index, operator);
             }
             OperatorHead::Conversion {
                 type_,
@@ -1661,15 +1663,36 @@ impl<'a> Sema<'a> {
                 ) else {
                     return;
                 };
-                let definition = &mut self.result.type_defs[owner_index as usize];
-                definition.operators.push(OperatorInfo {
+                let operator = OperatorInfo {
                     kind: OperatorKind::Conversion,
                     method,
                     getter: None,
                     setter: None,
                     implicitable: declaration.modifiers.implicitable,
-                });
+                };
+                self.register_operator_info(owner, owner_index, operator);
             }
+        }
+    }
+
+    /// Records an operator on a named type or a non-named owner (array
+    /// extensions, §3.8.3).
+    fn register_operator_info(
+        &mut self,
+        owner: TypeId,
+        owner_index: Option<u32>,
+        operator: OperatorInfo,
+    ) {
+        if let Some(index) = owner_index {
+            self.result.type_defs[index as usize]
+                .operators
+                .push(operator);
+        } else {
+            self.result
+                .owner_operators
+                .entry(owner)
+                .or_default()
+                .push(operator);
         }
     }
 
@@ -1827,7 +1850,7 @@ impl<'a> Sema<'a> {
             Type::Named(index) => self.result.type_defs[*index as usize]
                 .qualified_name
                 .clone(),
-            _ => return None,
+            _ => self.spelling(owner),
         };
         let scope: Vec<String> = owner_name.split('.').map(str::to_string).collect();
         let spellings: Vec<String> = all_parameters
@@ -1876,6 +1899,13 @@ impl<'a> Sema<'a> {
             locals: Vec::new(),
             span,
         });
+        if let Some(lengths) = self.array_binding_lengths.last() {
+            for (name, value) in lengths {
+                self.result.functions[index as usize]
+                    .constant_values
+                    .insert(name.clone(), *value as i128);
+            }
+        }
         if with_this {
             if let Type::Named(owner_index) = self.result.types.get(owner).clone() {
                 let definition = &mut self.result.type_defs[owner_index as usize];
@@ -6606,6 +6636,33 @@ impl<'a> Sema<'a> {
     }
 
     fn find_operator(&self, owner: TypeId, other: TypeId, kind: OperatorKind) -> Option<u32> {
+        // Non-named owners (array extensions, §3.8.3).
+        if !matches!(self.types_of(owner), Type::Named(_)) {
+            for operator in self
+                .result
+                .owner_operators
+                .get(&owner)
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+            {
+                if operator.kind != kind || operator.method == u32::MAX {
+                    continue;
+                }
+                let parameters = &self.result.functions[operator.method as usize].parameters;
+                let expected = if matches!(kind, OperatorKind::Negate | OperatorKind::Coalesce) {
+                    1
+                } else {
+                    2
+                };
+                if parameters.len() == expected
+                    && self.is_assignable(owner, parameters[0].ty)
+                    && (expected == 1 || self.is_assignable(other, parameters[1].ty))
+                {
+                    return Some(operator.method);
+                }
+            }
+            return None;
+        }
         let mut current = Some(owner);
         let mut depth = 0;
         while let Some(ty) = current {
@@ -6825,6 +6882,13 @@ impl<'a> Sema<'a> {
                 self.span_of(node),
                 "the illegal value literal must not be used as a comparison operand",
             );
+        }
+        // Array extension operators are instantiated for the operand types
+        // before overload resolution (§3.8.3).
+        for operand in [left_type, right_type] {
+            if matches!(self.result.types.get(operand), Type::Array { .. }) {
+                self.ensure_array_extensions(operand);
+            }
         }
         if let Some(result) = self.check_overloaded_binary(
             node,
@@ -8103,7 +8167,7 @@ impl<'a> Sema<'a> {
                         self.create_array_extension_accessor(cloned, &declaration, type_id);
                     }
                     NodeKind::Operator(_) => {
-                        self.unsupported(self.span_of(cloned), "array extension operators")
+                        self.resolve_operator_declaration(cloned, Some(type_id));
                     }
                     _ => {}
                 }

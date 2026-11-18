@@ -887,6 +887,8 @@ pub struct SemaResult {
     pub owner_methods: HashMap<TypeId, Vec<u32>>,
     /// Accessors belonging to non-named owners (array extensions, §3.8.3).
     pub owner_accessors: HashMap<TypeId, Vec<AccessorInfo>>,
+    /// Operators belonging to non-named owners (array extensions, §3.8.3).
+    pub owner_operators: HashMap<TypeId, Vec<OperatorInfo>>,
     /// `extension for array(...)` templates.
     pub array_extension_templates: Vec<ArrayExtensionTemplate>,
     /// Instantiated array extension methods per target array type.

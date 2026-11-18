@@ -3583,3 +3583,24 @@ fixed Main(): integer(4)
     // 4 + 7
     assert_eq!(run_program(source), 11);
 }
+
+#[test]
+fn array_extension_operators_dispatch_to_extensions() {
+    let source = "\
+extension for array(length: cardinal(4)) T
+{
+    operator +(left: array(length) T, right: array(length) T): integer(4)
+    {
+        return Cast<integer(4)>(length) * 2;
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local left: array(3) integer(4);
+    local right: array(3) integer(4);
+    return left + right;
+}";
+    // 3 * 2
+    assert_eq!(run_program(source), 6);
+}

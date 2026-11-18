@@ -42,6 +42,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 
 | Spec area | Status | Notes / evidence |
 |---|---|---|
+| §2.1 source text files: UTF-8, `.ns` extension, NovaSharp-only content | ✅ | UTF-8 reads and the `.ns` extension are enforced by the driver; content is validated by the lexer/parser |
 | §2 lexical: tokens, comments, `@` forced keywords, verbatim strings, encoding tags, contextual keywords, `..`/`..!` | 🟡 | lexer unit tests; keyword spellings are accepted as names, but full keyword-shadowing resolution (a same-named declaration disabling the keyword meaning) is not enforced yet |
 | Literal decoding: integer/float/character/string, encodings, raw `\x` bytes | ✅ | `src/literal.rs` unit tests |
 | §3.1–3.2 type constructors, basic types, no implicit basic conversions | ✅ | e2e arithmetic, casts, comparison tests |

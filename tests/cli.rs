@@ -55,14 +55,14 @@ fn no_arguments_prints_usage_to_stderr_and_fails() {
 #[test]
 fn missing_input_file_reports_the_path() {
     let output = ai_nsc()
-        .args(["check", "definitely-not-here.nova"])
+        .args(["check", "definitely-not-here.ns"])
         .output()
         .expect("run ai-nsc");
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(!output.status.success());
     assert!(
-        stderr.contains("cannot read 'definitely-not-here.nova'"),
+        stderr.contains("cannot read 'definitely-not-here.ns'"),
         "{stderr}"
     );
 }
@@ -2022,4 +2022,26 @@ fn i686_type_sizeof_uses_pointer_width() {
         .expect("run 32-bit program");
     let _ = std::fs::remove_dir_all(&directory);
     assert_eq!(status.code(), Some(4));
+}
+
+#[test]
+fn source_files_must_have_the_ns_extension() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-ext-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.txt");
+    std::fs::write(&path, "fixed Main(): integer(4)\n{\n    return 0;\n}").expect("write");
+    let output = ai_nsc()
+        .args(["check", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("'.ns' extension"), "{stderr}");
 }

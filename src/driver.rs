@@ -269,6 +269,14 @@ fn compile(options: &Options) -> i32 {
     let mut ast = ast::Ast::new(crate::source::FileId::INVALID);
     let mut failed = false;
     for input in &options.inputs {
+        // Source text files must have the `.ns` extension (§2.1).
+        if input.extension().and_then(std::ffi::OsStr::to_str) != Some("ns") {
+            eprintln!(
+                "ai-nsc: source file '{}' must have the '.ns' extension (§2.1)",
+                input.display()
+            );
+            return 1;
+        }
         let file = match sources.load_file(input) {
             Ok(file) => file,
             Err(error) => {

@@ -2798,6 +2798,7 @@ impl<'a> Sema<'a> {
                     self.check_expr(expression, None);
                 }
                 FunctionBody::BackingGet { .. } | FunctionBody::BackingSet { .. } => {}
+                FunctionBody::BuiltinAllocate | FunctionBody::BuiltinDeallocate => {}
             }
             // NOLAA never-disposed warning (§12.2): conservative — units that
             // escaped the function (returned, passed on or stored) are exempt.
@@ -3655,6 +3656,21 @@ impl<'a> Sema<'a> {
             }
             allocator = Some(allocator_node);
             self.result.heap_allocators.insert(node, allocator_node);
+        } else {
+            // The omitted allocator expression uses the global DefaultAllocator
+            // (§5.4).
+            match self.lookup("DefaultAllocator").cloned() {
+                Some(Symbol::Global(_)) => {
+                    self.result.heap_default_allocator.insert(node);
+                }
+                _ => {
+                    self.error(
+                        self.span_of(node),
+                        "no 'DefaultAllocator' global is available for this heap allocation",
+                    );
+                    return;
+                }
+            }
         }
         // The type may be omitted when an initializer provides it (§5.4).
         let declared = declaration.ty.map(|type_node| self.resolve_type(type_node));
@@ -3700,6 +3716,8 @@ impl<'a> Sema<'a> {
         });
         if let Some(allocator) = allocator {
             self.result.heap_allocator_locals.insert(local, allocator);
+        } else {
+            self.result.heap_default_allocator_locals.insert(local);
         }
         self.result.local_declarations.insert(node, vec![local]);
     }

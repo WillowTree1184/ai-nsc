@@ -92,6 +92,8 @@ pub fn generate(ast: &Ast, sema: &SemaResult, options: &CodegenOptions) -> Resul
         trap_stack: Vec::new(),
         type_key_globals: HashMap::new(),
         closure_globals: HashMap::new(),
+        default_allocator_instance: None,
+        default_allocator_class: None,
         current_env_slot: None,
         builtin_exceptions: HashMap::new(),
     };
@@ -148,6 +150,10 @@ struct Generator<'ctx, 'a> {
     type_key_globals: HashMap<TypeId, GlobalValue<'ctx>>,
     /// Static closure objects created for function values (§2.7.9).
     closure_globals: HashMap<u32, GlobalValue<'ctx>>,
+    /// Static instance backing the platform `DefaultAllocator` (§15.2).
+    default_allocator_instance: Option<GlobalValue<'ctx>>,
+    /// Class index of the platform `DefaultAllocator`.
+    default_allocator_class: Option<u32>,
     /// Slot holding the current literal's closure environment pointer.
     current_env_slot: Option<PointerValue<'ctx>>,
     builtin_exceptions: HashMap<u32, GlobalValue<'ctx>>,
@@ -619,6 +625,27 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
     }
 
     fn declare_globals(&mut self) -> Result<(), String> {
+        // The platform-provided DefaultAllocator points at a static instance of
+        // its class (§5.4, §15.2).
+        let default_allocator_global = self.sema.default_allocator_global;
+        if let Some(global_index) = default_allocator_global {
+            let class_index = self
+                .sema
+                .type_defs
+                .iter()
+                .position(|definition| definition.name == "DefaultAllocatorImpl")
+                .map(|index| index as u32);
+            if let Some(class_index) = class_index {
+                let instance_type = self.struct_type(class_index)?;
+                let instance = self
+                    .module
+                    .add_global(instance_type, None, "nsc.default_allocator");
+                instance.set_initializer(&instance_type.const_zero());
+                self.default_allocator_instance = Some(instance);
+                self.default_allocator_class = Some(class_index);
+                let _ = global_index;
+            }
+        }
         for index in 0..self.sema.globals.len() as u32 {
             let (mangled, ty, fixed, init) = {
                 let info = &self.sema.globals[index as usize];
@@ -626,6 +653,15 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             };
             let llvm_type = self.llvm_type(ty)?;
             let global = self.module.add_global(llvm_type, None, &mangled);
+            if default_allocator_global == Some(index) {
+                let instance = self
+                    .default_allocator_instance
+                    .ok_or_else(|| "missing DefaultAllocator instance".to_string())?;
+                global.set_initializer(&instance.as_pointer_value());
+                global.set_constant(true);
+                self.globals.insert(index, global);
+                continue;
+            }
             match init.and_then(|node| self.const_scalar(node)) {
                 Some(value) => {
                     global.set_initializer(&value);
@@ -789,6 +825,123 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                         }
                     }
                 }
+                crate::sema::FunctionBody::BuiltinAllocate => {
+                    let result_type = return_type.ok_or_else(|| {
+                        "DefaultAllocator.Allocate must return a Result".to_string()
+                    })?;
+                    let result_llvm = self.llvm_type(result_type)?;
+                    let Type::Named(result_index) = self.sema.types.get(result_type).clone() else {
+                        return Err("Allocate result type is not a variant".to_string());
+                    };
+                    let payload_offset = self.sema.type_defs[result_index as usize].payload_offset;
+                    let size = function
+                        .get_nth_param(1)
+                        .ok_or_else(|| "Allocate has no size parameter".to_string())?
+                        .into_int_value();
+                    let malloc = self
+                        .malloc_fn
+                        .ok_or_else(|| "malloc is not declared".to_string())?;
+                    let call = self
+                        .builder
+                        .build_call(malloc, &[size.into()], "allocate")
+                        .map_err(|error| format!("cannot allocate: {error}"))?;
+                    let pointer = match call.try_as_basic_value() {
+                        ValueKind::Basic(value) => value.into_pointer_value(),
+                        ValueKind::Instruction(_) => {
+                            return Err("allocation produced no pointer".to_string())
+                        }
+                    };
+                    let failed = self
+                        .builder
+                        .build_int_compare(
+                            IntPredicate::EQ,
+                            self.builder
+                                .build_ptr_to_int(
+                                    pointer,
+                                    self.context.i64_type(),
+                                    "allocation_bits",
+                                )
+                                .map_err(|error| format!("cannot check allocation: {error}"))?,
+                            self.context.i64_type().const_zero(),
+                            "allocation_failed",
+                        )
+                        .map_err(|error| format!("cannot check allocation: {error}"))?;
+                    let slot = self
+                        .builder
+                        .build_alloca(result_llvm, "allocate_result")
+                        .map_err(|error| format!("cannot allocate result: {error}"))?;
+                    let tag_slot =
+                        self.address_with_size(slot, 1, self.context.i64_type().const_zero())?;
+                    let payload_slot = self.address_with_size(
+                        slot,
+                        1,
+                        self.context.i64_type().const_int(payload_offset, false),
+                    )?;
+                    let ok_block = self.context.append_basic_block(function, "allocate_ok");
+                    let fail_block = self.context.append_basic_block(function, "allocate_fail");
+                    let done_block = self.context.append_basic_block(function, "allocate_done");
+                    self.builder
+                        .build_conditional_branch(failed, fail_block, ok_block)
+                        .map_err(|error| format!("cannot branch: {error}"))?;
+                    self.builder.position_at_end(ok_block);
+                    self.builder
+                        .build_store(tag_slot, self.context.i8_type().const_zero())
+                        .map_err(|error| format!("cannot store result: {error}"))?;
+                    self.builder
+                        .build_store(payload_slot, pointer)
+                        .map_err(|error| format!("cannot store result: {error}"))?;
+                    self.builder
+                        .build_unconditional_branch(done_block)
+                        .map_err(|error| format!("cannot branch: {error}"))?;
+                    self.builder.position_at_end(fail_block);
+                    let failure_type = self
+                        .sema
+                        .type_defs
+                        .iter()
+                        .position(|definition| {
+                            definition.qualified_name == "AllocateFailedException"
+                        })
+                        .and_then(|index| self.builtin_exceptions.get(&(index as u32)).copied());
+                    let failure = match failure_type {
+                        Some(global) => global.as_pointer_value(),
+                        None => self.context.ptr_type(AddressSpace::default()).const_zero(),
+                    };
+                    self.builder
+                        .build_store(tag_slot, self.context.i8_type().const_int(1, false))
+                        .map_err(|error| format!("cannot store result: {error}"))?;
+                    self.builder
+                        .build_store(payload_slot, failure)
+                        .map_err(|error| format!("cannot store result: {error}"))?;
+                    self.builder
+                        .build_unconditional_branch(done_block)
+                        .map_err(|error| format!("cannot branch: {error}"))?;
+                    self.builder.position_at_end(done_block);
+                    let result = self
+                        .builder
+                        .build_load(result_llvm, slot, "allocate_result_value")
+                        .map_err(|error| format!("cannot load result: {error}"))?;
+                    self.builder
+                        .build_return(Some(&result))
+                        .map_err(|error| format!("cannot return: {error}"))?;
+                }
+                crate::sema::FunctionBody::BuiltinDeallocate => {
+                    let block = function
+                        .get_nth_param(1)
+                        .ok_or_else(|| "Deallocate has no block parameter".to_string())?;
+                    let free = self
+                        .free_fn
+                        .ok_or_else(|| "free is not declared".to_string())?;
+                    self.builder
+                        .build_call(free, &[block.into()], "deallocate")
+                        .map_err(|error| format!("cannot deallocate: {error}"))?;
+                    let result_type =
+                        return_type.ok_or_else(|| "Deallocate must return a Result".to_string())?;
+                    let result_llvm = self.llvm_type(result_type)?;
+                    let zero = result_llvm.const_zero();
+                    self.builder
+                        .build_return(Some(&zero))
+                        .map_err(|error| format!("cannot return: {error}"))?;
+                }
                 crate::sema::FunctionBody::BackingGet { owner, field_index } => {
                     let this_pointer = self
                         .current_this_slot
@@ -912,6 +1065,38 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 self.builder
                     .build_store(pointer, header_value)
                     .map_err(|error| format!("cannot initialize exception: {error}"))?;
+            }
+        }
+
+        // Initialize the platform DefaultAllocator's static instance header.
+        if let (Some(instance), Some(class_index)) = (
+            self.default_allocator_instance,
+            self.default_allocator_class,
+        ) {
+            let instance_struct = self.struct_type(class_index)?;
+            let storage = instance.as_pointer_value();
+            let pointer_type = self.context.ptr_type(AddressSpace::default());
+            let vtable = self.vtable_globals.get(&class_index).map_or_else(
+                || pointer_type.const_zero(),
+                |vtable| vtable.as_pointer_value(),
+            );
+            let typeinfo = self.typeinfo_globals.get(&class_index).map_or_else(
+                || pointer_type.const_zero(),
+                |typeinfo| typeinfo.as_pointer_value(),
+            );
+            for (field_index, header_value) in [vtable, typeinfo].into_iter().enumerate() {
+                let pointer = self
+                    .builder
+                    .build_struct_gep(
+                        instance_struct,
+                        storage,
+                        field_index as u32,
+                        "default_allocator_header",
+                    )
+                    .map_err(|error| format!("cannot initialize DefaultAllocator: {error}"))?;
+                self.builder
+                    .build_store(pointer, header_value)
+                    .map_err(|error| format!("cannot initialize DefaultAllocator: {error}"))?;
             }
         }
 
@@ -1636,6 +1821,24 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         Ok(phi.as_basic_value().into_pointer_value())
     }
 
+    /// Loads the platform `DefaultAllocator` value (§5.4).
+    fn load_default_allocator(&mut self) -> Result<PointerValue<'ctx>, String> {
+        let index = self
+            .sema
+            .default_allocator_global
+            .ok_or_else(|| "no DefaultAllocator is available".to_string())?;
+        let global = *self
+            .globals
+            .get(&index)
+            .ok_or_else(|| "missing DefaultAllocator storage".to_string())?;
+        let pointer_type = self.context.ptr_type(AddressSpace::default());
+        Ok(self
+            .builder
+            .build_load(pointer_type, global.as_pointer_value(), "default_allocator")
+            .map_err(|error| format!("cannot load DefaultAllocator: {error}"))?
+            .into_pointer_value())
+    }
+
     fn gen_heap_statement(
         &mut self,
         node: NodeId,
@@ -1662,6 +1865,10 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         // otherwise the platform allocator is used.
         let storage = if let Some(allocator_node) = self.sema.heap_allocators.get(&node).copied() {
             let allocator = self.gen_expr(allocator_node)?.into_pointer_value();
+            let alignment = self.sema.size_align(info.ty).1;
+            self.gen_allocator_allocate(allocator, size, alignment)?
+        } else if self.sema.heap_default_allocator.contains(&node) {
+            let allocator = self.load_default_allocator()?;
             let alignment = self.sema.size_align(info.ty).1;
             self.gen_allocator_allocate(allocator, size, alignment)?
         } else {
@@ -1927,6 +2134,13 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         if is_heap {
             if let Some(allocator_node) = self.sema.heap_allocator_locals.get(&local).copied() {
                 let allocator = self.gen_expr(allocator_node)?.into_pointer_value();
+                let (interface_index, method) = self
+                    .builtin_interface_method("IAllocator", "Deallocate")
+                    .ok_or_else(|| "IAllocator.Deallocate is missing".to_string())?;
+                let arguments = vec![allocator.into(), storage.into()];
+                self.gen_interface_call(allocator, interface_index, method, &arguments)?;
+            } else if self.sema.heap_default_allocator_locals.contains(&local) {
+                let allocator = self.load_default_allocator()?;
                 let (interface_index, method) = self
                     .builtin_interface_method("IAllocator", "Deallocate")
                     .ok_or_else(|| "IAllocator.Deallocate is missing".to_string())?;

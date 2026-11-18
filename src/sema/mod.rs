@@ -380,6 +380,10 @@ pub enum FunctionBody {
         /// Field index.
         field_index: u32,
     },
+    /// Built-In Library `DefaultAllocator.Allocate` (§15.2).
+    BuiltinAllocate,
+    /// Built-In Library `DefaultAllocator.Deallocate` (§15.2).
+    BuiltinDeallocate,
 }
 
 /// The overloadable operator kinds (§4.9.2).
@@ -797,6 +801,12 @@ pub struct SemaResult {
     /// Iteration over `IIterator`/`IIterable` targets, keyed by the `for` node
     /// (§5.6).
     pub for_iterators: HashMap<NodeId, ForIteratorInfo>,
+    /// Index of the platform-provided `DefaultAllocator` global (§5.4).
+    pub default_allocator_global: Option<u32>,
+    /// Heap statements that use `DefaultAllocator` (allocator omitted).
+    pub heap_default_allocator: std::collections::HashSet<NodeId>,
+    /// Heap locals allocated through `DefaultAllocator`.
+    pub heap_default_allocator_locals: std::collections::HashSet<u32>,
     /// Number of errors reported.
     pub error_count: u32,
 }
@@ -1511,6 +1521,81 @@ impl<'a> Sema<'a> {
         type_id
     }
 
+    /// Adds a concrete method with a built-in body to a synthetic class.
+    fn push_builtin_class_method(
+        &mut self,
+        owner: TypeId,
+        name: &str,
+        parameters: &[(&str, TypeId)],
+        return_type: Option<TypeId>,
+        body: FunctionBody,
+    ) -> u32 {
+        let Type::Named(owner_index) = self.result.types.get(owner) else {
+            return 0;
+        };
+        let owner_index = *owner_index;
+        let qualified = self.result.type_defs[owner_index as usize]
+            .qualified_name
+            .clone();
+        let scope: Vec<String> = qualified.split('.').map(str::to_string).collect();
+        let mut all_parameters = vec![ParameterInfo {
+            name: "this".to_string(),
+            ty: owner,
+            by_ref: true,
+            default: None,
+            compile_time: false,
+        }];
+        for (name, ty) in parameters {
+            all_parameters.push(ParameterInfo {
+                name: (*name).to_string(),
+                ty: *ty,
+                by_ref: false,
+                default: None,
+                compile_time: false,
+            });
+        }
+        let spellings: Vec<String> = all_parameters
+            .iter()
+            .map(|parameter| self.spelling(parameter.ty))
+            .collect();
+        let mangled = mangle_function(&scope, name, &spellings);
+        let index = self.result.functions.len() as u32;
+        self.result.functions.push(FunctionInfo {
+            name: name.to_string(),
+            scope,
+            node: NodeId::default(),
+            body: Some(body),
+            parameters: all_parameters,
+            method_of: Some(owner),
+            static_owner: None,
+            is_virtual: false,
+            is_override: false,
+            is_sealed: false,
+            is_abstract: false,
+            return_type,
+            mangled,
+            exposed_symbol: None,
+            generic_parameters: Vec::new(),
+            generic_arguments: Vec::new(),
+            template: None,
+            decl_scope: 0,
+            generic_env: HashMap::new(),
+            environment: false,
+            captures: Vec::new(),
+            constant_values: HashMap::new(),
+            locals: Vec::new(),
+            span: Span::default(),
+        });
+        let definition = &mut self.result.type_defs[owner_index as usize];
+        definition
+            .methods
+            .entry(name.to_string())
+            .or_default()
+            .push(index);
+        definition.method_list.push(index);
+        index
+    }
+
     /// Adds an abstract method to a synthetic interface (Built-In Library).
     fn push_builtin_interface_method(
         &mut self,
@@ -1735,32 +1820,88 @@ impl<'a> Sema<'a> {
             let deallocate_failed = named_exception(self, "DeallocateFailedException");
             if let Some(template_node) = result_template {
                 let cardinal8 = self.result.types.integer(false, 8);
-                if let Some(allocate_failed) = allocate_failed {
-                    let allocate_result = self.instantiate_type(
+                let allocate_result = allocate_failed.and_then(|failure| {
+                    self.instantiate_type(template_node, vec![pointer, failure], Span::default())
+                });
+                let deallocate_result = deallocate_failed.and_then(|failure| {
+                    self.instantiate_type(
                         template_node,
-                        vec![pointer, allocate_failed],
+                        vec![TypeId::VOID, failure],
                         Span::default(),
-                    );
-                    self.push_builtin_interface_method(
+                    )
+                });
+                let mut allocate_method = None;
+                if let Some(allocate_result) = allocate_result {
+                    allocate_method = Some(self.push_builtin_interface_method(
                         allocator,
                         "Allocate",
                         &[("size", cardinal8), ("alignment", cardinal8)],
-                        allocate_result,
-                    );
+                        Some(allocate_result),
+                    ));
                 }
-                if let Some(deallocate_failed) = deallocate_failed {
-                    let deallocate_result = self.instantiate_type(
-                        template_node,
-                        vec![TypeId::VOID, deallocate_failed],
-                        Span::default(),
-                    );
-                    self.push_builtin_interface_method(
+                let mut deallocate_method = None;
+                if let Some(deallocate_result) = deallocate_result {
+                    deallocate_method = Some(self.push_builtin_interface_method(
                         allocator,
                         "Deallocate",
                         &[("block", pointer)],
-                        deallocate_result,
-                    );
+                        Some(deallocate_result),
+                    ));
                 }
+                // Platform-provided DefaultAllocator (§5.4, §15.2).
+                let default_allocator =
+                    self.push_builtin_class("DefaultAllocatorImpl", None, false);
+                let mut implementations = Vec::new();
+                if let (Some(allocate_result), Some(method)) = (allocate_result, allocate_method) {
+                    let _ = method;
+                    let allocate = self.push_builtin_class_method(
+                        default_allocator,
+                        "Allocate",
+                        &[("size", cardinal8), ("alignment", cardinal8)],
+                        Some(allocate_result),
+                        FunctionBody::BuiltinAllocate,
+                    );
+                    implementations.push(allocate);
+                }
+                if let (Some(deallocate_result), Some(method)) =
+                    (deallocate_result, deallocate_method)
+                {
+                    let _ = method;
+                    let deallocate = self.push_builtin_class_method(
+                        default_allocator,
+                        "Deallocate",
+                        &[("block", pointer)],
+                        Some(deallocate_result),
+                        FunctionBody::BuiltinDeallocate,
+                    );
+                    implementations.push(deallocate);
+                }
+                if let Type::Named(default_index) = self.result.types.get(default_allocator) {
+                    let definition = &mut self.result.type_defs[*default_index as usize];
+                    definition.interfaces.push(allocator);
+                    definition
+                        .interface_dispatch
+                        .push((allocator, implementations));
+                }
+                let spelling = self.spelling(allocator);
+                let mangled = mangle_function(&[], "DefaultAllocator", &[spelling]);
+                let global_index = self.result.globals.len() as u32;
+                self.result.globals.push(GlobalInfo {
+                    name: "DefaultAllocator".to_string(),
+                    scope: Vec::new(),
+                    ty: allocator,
+                    init: None,
+                    fixed: true,
+                    mangled,
+                    node: NodeId::MAX - 700 - global_index,
+                    span: Span::default(),
+                });
+                self.declare(
+                    "DefaultAllocator".to_string(),
+                    Symbol::Global(global_index),
+                    Span::default(),
+                );
+                self.result.default_allocator_global = Some(global_index);
             }
             // Generic iterator interfaces (§15.2).
             self.push_builtin_interface_template(

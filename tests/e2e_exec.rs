@@ -2953,3 +2953,26 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 15);
 }
+
+#[test]
+fn default_allocator_serves_implicit_heap_allocations() {
+    let source = "\
+structure Node
+{
+    public Value: integer(4);
+}
+
+fixed Main(): integer(4)
+{
+    heap node: Node = Node();
+    node.Value = 7;
+    local first: integer(4) = node.Value;
+    dispose(node);
+    heap other: Node = Node();
+    other.Value = 3;
+    local second: integer(4) = other.Value;
+    dispose(other);
+    return first + second;
+}";
+    assert_eq!(run_program(source), 10);
+}

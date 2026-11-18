@@ -3645,3 +3645,40 @@ fixed Main(): integer(4)
     // Both returns dispose the heap unit: 2 destructor calls.
     assert_eq!(run_program(source), 202);
 }
+
+#[test]
+fn nolaa_disposes_loop_locals_on_break_and_continue() {
+    let source = "\
+local destroyed: integer(4) = 0;
+
+structure Token
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Destruct(this: &Token) { destroyed = destroyed + 1; }
+    }
+}
+
+fixed Run(): integer(4)
+{
+    local count: integer(4) = 0;
+    for index: integer(4) in 0..!3
+    {
+        heap token: Token = Token();
+        if (index == 0) { continue; }
+        if (index == 2) { break; }
+        count += 1;
+    }
+    return count;
+}
+
+fixed Main(): integer(4)
+{
+    local result: integer(4) = Run();
+    return result + destroyed * 10;
+}";
+    // continue, block-end and break each dispose one unit: 1 + 3 * 10.
+    assert_eq!(run_program(source), 31);
+}

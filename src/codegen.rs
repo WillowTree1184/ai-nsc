@@ -1274,16 +1274,34 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             NodeKind::For(statement) => self.gen_for_statement(node, &statement),
             NodeKind::Match(statement) => self.gen_match_statement(node, &statement),
             NodeKind::Break(statement) => {
-                let target = self.find_loop(statement.label.as_deref())?;
+                let break_block = {
+                    let target = self.find_loop(statement.label.as_deref())?;
+                    target.break_block
+                };
+                // NOLAA: dispose heap units declared inside the loop body before
+                // leaving it (§12.2).
+                if let Some(locals) = self.sema.jump_dispose.get(&node).cloned() {
+                    for local in locals {
+                        self.gen_dispose_local(local)?;
+                    }
+                }
                 self.builder
-                    .build_unconditional_branch(target.break_block)
+                    .build_unconditional_branch(break_block)
                     .map_err(|error| format!("cannot branch: {error}"))?;
                 Ok(())
             }
             NodeKind::Continue(statement) => {
-                let target = self.find_loop(statement.label.as_deref())?;
+                let continue_block = {
+                    let target = self.find_loop(statement.label.as_deref())?;
+                    target.continue_block
+                };
+                if let Some(locals) = self.sema.jump_dispose.get(&node).cloned() {
+                    for local in locals {
+                        self.gen_dispose_local(local)?;
+                    }
+                }
                 self.builder
-                    .build_unconditional_branch(target.continue_block)
+                    .build_unconditional_branch(continue_block)
                     .map_err(|error| format!("cannot branch: {error}"))?;
                 Ok(())
             }

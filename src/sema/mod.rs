@@ -1096,6 +1096,8 @@ pub fn analyze(
         top_level_constants: HashMap::new(),
         in_verbatim: false,
         array_binding_lengths: Vec::new(),
+        block_stack: Vec::new(),
+        loop_blocks: Vec::new(),
     };
     sema.run();
     sema.result.error_count = sema.engine.error_count();
@@ -1168,6 +1170,10 @@ pub(crate) struct Sema<'a> {
     /// Bound array dimension values while instantiating an array extension
     /// (§3.8.3).
     pub(crate) array_binding_lengths: Vec<HashMap<String, u64>>,
+    /// Enclosing code blocks (innermost last), for NOLAA jump safe points.
+    pub(crate) block_stack: Vec<NodeId>,
+    /// Loop body blocks (innermost last), for NOLAA break/continue safe points.
+    pub(crate) loop_blocks: Vec<NodeId>,
 }
 
 impl<'a> Sema<'a> {

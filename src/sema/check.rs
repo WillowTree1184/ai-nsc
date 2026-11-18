@@ -3926,13 +3926,43 @@ impl<'a> Sema<'a> {
         let disposed_before = self.disposed_locals.clone();
         let block_before = self.current_block;
         self.current_block = node;
+        self.block_stack.push(node);
         for statement in statements {
             self.check_statement(statement);
         }
+        self.block_stack.pop();
         self.current_block = block_before;
         self.plan_auto_dispose(node);
         self.disposed_locals = disposed_before;
         self.pop_scope();
+    }
+
+    /// Schedules NOLAA auto-dispose before `break`/`continue` leaves the loop
+    /// body scope (§12.2): units declared inside the innermost loop body are
+    /// still alive and safe to dispose.
+    fn plan_loop_jump_dispose(&mut self, node: NodeId) {
+        let Some(body) = self.loop_blocks.last().copied() else {
+            return;
+        };
+        let Some(position) = self.block_stack.iter().rposition(|block| *block == body) else {
+            return;
+        };
+        let inside: Vec<NodeId> = self.block_stack[position..].to_vec();
+        let mut locals = Vec::new();
+        for unit in &self.heap_units {
+            if unit.manual || unit.abandoned || unit.escaped || unit.disposed {
+                continue;
+            }
+            if !inside.contains(&unit.block) {
+                continue;
+            }
+            if !locals.contains(&unit.local) {
+                locals.push(unit.local);
+            }
+        }
+        if !locals.is_empty() {
+            self.result.jump_dispose.insert(node, locals);
+        }
     }
 
     /// Schedules NOLAA auto-dispose before a `return` leaves the function
@@ -3999,9 +4029,11 @@ impl<'a> Sema<'a> {
         let disposed_before = self.disposed_locals.clone();
         let block_before = self.current_block;
         self.current_block = block;
+        self.block_stack.push(block);
         for statement in statements {
             self.check_statement(statement);
         }
+        self.block_stack.pop();
         self.current_block = block_before;
         self.plan_auto_dispose(block);
         self.disposed_locals = disposed_before;
@@ -4123,18 +4155,23 @@ impl<'a> Sema<'a> {
             NodeKind::While(loop_statement) => {
                 self.check_condition(loop_statement.condition);
                 self.loop_labels.push(loop_statement.label.clone());
+                self.loop_blocks.push(loop_statement.body);
                 self.check_block(loop_statement.body);
+                self.loop_blocks.pop();
                 self.loop_labels.pop();
             }
             NodeKind::DoWhile(loop_statement) => {
                 self.loop_labels.push(loop_statement.label.clone());
+                self.loop_blocks.push(loop_statement.body);
                 self.check_block(loop_statement.body);
+                self.loop_blocks.pop();
                 self.loop_labels.pop();
                 self.check_condition(loop_statement.condition);
             }
             NodeKind::For(for_statement) => self.check_for_statement(node, &for_statement),
             NodeKind::Match(match_statement) => self.check_match_statement(node, &match_statement),
             NodeKind::Break(statement) => {
+                self.plan_loop_jump_dispose(node);
                 if matches!(self.trap_contexts.last(), Some(TrapContextKind::Finally)) {
                     self.error(
                         self.span_of(node),
@@ -4150,6 +4187,7 @@ impl<'a> Sema<'a> {
                 }
             }
             NodeKind::Continue(statement) => {
+                self.plan_loop_jump_dispose(node);
                 if matches!(self.trap_contexts.last(), Some(TrapContextKind::Finally)) {
                     self.error(
                         self.span_of(node),
@@ -5028,7 +5066,9 @@ impl<'a> Sema<'a> {
         self.result.loop_bindings.insert(node, binding_local);
         self.result.node_types[node as usize] = Some(binding_type);
         self.loop_labels.push(statement.label.clone());
+        self.loop_blocks.push(statement.body);
         self.check_block(statement.body);
+        self.loop_blocks.pop();
         self.loop_labels.pop();
         self.pop_scope();
     }

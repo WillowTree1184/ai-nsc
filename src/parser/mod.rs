@@ -430,17 +430,21 @@ impl<'a> Parser<'a> {
         }
         loop {
             if self.eat(TokenKind::Operator) {
-                // `operator Identifier` (conversion target) or `operator Symbol`.
-                let name = if self.at(TokenKind::Identifier) || self.peek_kind().is_keyword() {
-                    self.bump().text(self.source).to_string()
-                } else if let Some(symbol) = self.operator_symbol_text() {
-                    self.bump();
-                    symbol
-                } else {
-                    self.bump();
-                    String::new()
-                };
-                targets.push(ScopedTarget::Operator { name: Some(name) });
+                // `operator` alone, `operator Identifier` (conversion target) or
+                // `operator Symbol`.
+                let name =
+                    if self.at(TokenKind::Comma) || self.at(TokenKind::RightParen) || self.at_end()
+                    {
+                        None
+                    } else if self.at(TokenKind::Identifier) || self.peek_kind().is_keyword() {
+                        Some(self.bump().text(self.source).to_string())
+                    } else if let Some(symbol) = self.operator_symbol_text() {
+                        self.bump();
+                        Some(symbol)
+                    } else {
+                        None
+                    };
+                targets.push(ScopedTarget::Operator { name });
             } else {
                 let sealed = self.eat(TokenKind::Sealed);
                 if let Some((name, _)) = self.parse_qualified_name_text() {

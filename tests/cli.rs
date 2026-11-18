@@ -1597,3 +1597,22 @@ fn linkable_calls_abandon_nolaa_analysis_with_a_never_disposed_warning() {
         "linkable calls must abandon NOLAA analysis: {stderr}"
     );
 }
+
+#[test]
+fn compile_time_code_may_not_read_runtime_locals() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    local runtime: integer(4) = 3;
+    #{
+        local copy: integer(4) = runtime;
+    }
+    return 0;
+}",
+    );
+    assert!(
+        stderr.contains("compile-time code may only reference compile-time constants"),
+        "{stderr}"
+    );
+}

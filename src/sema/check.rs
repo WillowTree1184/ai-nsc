@@ -4394,6 +4394,9 @@ impl<'a> Sema<'a> {
         let function_index = self.current_function_index();
         let locals = &mut self.result.functions[function_index as usize].locals;
         let id = locals.len() as LocalId;
+        if self.compile_time_depth > 0 {
+            self.compile_time_local_ids.push((function_index, id));
+        }
         locals.push(LocalInfo {
             name: name.clone(),
             ty,
@@ -5180,7 +5183,9 @@ impl<'a> Sema<'a> {
                 });
                 self.compile_time_constants
                     .push(std::collections::HashMap::new());
+                self.compile_time_depth += 1;
                 self.check_block(block);
+                self.compile_time_depth -= 1;
                 // Compile-time side effects cannot be preserved at run time; the
                 // block is lowered as an equivalent at run time (§11.4 warning).
                 if let Some(span) = self.compile_time_block_side_effect(block) {
@@ -6810,6 +6815,36 @@ impl<'a> Sema<'a> {
     fn check_symbol_expr(&mut self, node: NodeId, name: &str, symbol: Symbol) -> Option<TypeId> {
         match symbol {
             Symbol::Local(local) => {
+                if self.compile_time_depth > 0 {
+                    let declared_in_block = self.current_function.is_some_and(|function| {
+                        self.compile_time_local_ids.contains(&(function, local))
+                    });
+                    let compile_time_parameter = self
+                        .local_info(local)
+                        .and_then(|info| info.parameter)
+                        .is_some_and(|position| {
+                            self.current_function.is_some_and(|function| {
+                                self.result.functions[function as usize]
+                                    .parameters
+                                    .get(position as usize)
+                                    .is_some_and(|parameter| parameter.compile_time)
+                            })
+                        });
+                    let compile_time_name = self
+                        .compile_time_constants
+                        .iter()
+                        .rev()
+                        .any(|environment| environment.contains_key(name));
+                    if !declared_in_block && !compile_time_parameter && !compile_time_name {
+                        // Compile-time code may only read compile-time constants
+                        // from the run-time side of the boundary (§11.7).
+                        self.error(
+                            self.span_of(node),
+                            "compile-time code may only reference compile-time constants",
+                        );
+                        return None;
+                    }
+                }
                 if self.disposed_locals.contains(&local) && self.early_dispose_warned.insert(local)
                 {
                     // Using a value after `dispose` is an early dispose (§12.2).

@@ -1152,6 +1152,8 @@ pub fn analyze(
         expected_array_element: None,
         top_level_constants: HashMap::new(),
         in_verbatim: false,
+        compile_time_depth: 0,
+        compile_time_local_ids: Vec::new(),
         array_binding_lengths: Vec::new(),
         heap_groups: Vec::new(),
         pending_assume_no_demand: None,
@@ -1227,6 +1229,10 @@ pub(crate) struct Sema<'a> {
     pub(crate) top_level_constants: HashMap<String, (i128, TypeId)>,
     /// Whether the code being checked is inside a `verbatim` target (§9.8).
     pub(crate) in_verbatim: bool,
+    /// Nesting depth of `#{}` compile-time blocks (§11.7).
+    pub(crate) compile_time_depth: usize,
+    /// Locals declared inside compile-time blocks, keyed by function.
+    pub(crate) compile_time_local_ids: Vec<(u32, LocalId)>,
     /// Bound array dimension values while instantiating an array extension
     /// (§3.8.3).
     pub(crate) array_binding_lengths: Vec<HashMap<String, u64>>,

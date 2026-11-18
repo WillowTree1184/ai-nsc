@@ -2692,7 +2692,7 @@ fixed Make(#count: integer(4)): integer(4)
     return buffer[count - 1];
 }
 
-fixed Scaled(#factor: integer(4), plain: integer(4)): integer(4)
+fixed Scaled(#factor: integer(4), #plain: integer(4)): integer(4)
 {
     #{
         return factor * plain;

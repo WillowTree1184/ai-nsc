@@ -289,3 +289,4 @@ report an error (§4.8).
 | 68 | MED | §12.2 | NOLAA had no return safe point (trailing-return heap units leaked) | fixed (2f41b11: dispose still-alive units before return, warning suppression updated) |
 | 69 | MED | §12.2 | NOLAA had no break/continue safe points (loop-body heap units leaked) | fixed (73255c9: block/loop tracking, dispose loop-body units before break/continue) |
 | 70 | MED | §12.2 | `NOLAA.Bind` groups, escape propagation and trackable-argument checking unimplemented | fixed (fdb1c9b: Bind merges analysis groups, group-wide safe points/escapes, strict argument diagnostics, compile-time APIs not escapes) |
+| 71 | LOW | §11.4 | Compile-time-only `#{}` blocks emitted run-time code | fixed (db51aa2: marked compile-time-only blocks, locals pruned, code generation skipped) |

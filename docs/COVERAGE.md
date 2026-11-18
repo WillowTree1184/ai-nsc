@@ -88,10 +88,11 @@ means the area has tests, not that every conceivable defect is ruled out.
 
 These are deliberate, documented limitations rather than silent miscompiles:
 
-1. **Compile-time blocks**: integer `#(...)` end products are folded at code
-   generation (#64), but `#{}` blocks are still lowered as runtime equivalents;
-   generated code is observationally equivalent rather than reduced to solely
-   the required end products (§11.4 exact wording).
+1. **Compile-time blocks**: integer `#(...)` end products are folded (#64) and
+   blocks consisting solely of compile-time statements are not emitted (#71);
+   blocks containing run-time statements are still lowered as runtime
+   equivalents, so the generated code is not always reduced to solely the
+   required end products (§11.4 exact wording).
 2. **Non-leading runtime array dimensions** are diagnosed (multi-dimensional
    VLAs with a leading runtime dimension are supported).
 5. **`verbatim`** is parsed/accepted but has no distinct semantics yet.

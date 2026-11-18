@@ -2759,3 +2759,80 @@ fixed Main(): integer(4)
     // 3*2*10 + 3*5*10 - 200 = 10
     assert_eq!(run_program(source), 10);
 }
+
+#[test]
+fn custom_allocator_serves_heap_allocations() {
+    let source = "\
+class ArenaAllocator : IAllocator
+{
+    public Buffer: array(64) integer(1);
+    public Offset: cardinal(8);
+
+    extension
+    {
+        public fixed Allocate(this: &ArenaAllocator, size: cardinal(8), alignment: cardinal(8)): Result<pointer; AllocateFailedException>
+        {
+            local origin: pointer integer(1) = &this.Buffer[0];
+            local address: pointer integer(1) = origin + Cast<integer(8)>(this.Offset);
+            this.Offset += size;
+            return Result<pointer; AllocateFailedException>.Value(Cast<pointer>(address));
+        }
+
+        public fixed Deallocate(this: &ArenaAllocator, block: pointer): Result<; DeallocateFailedException>
+        {
+            return Result<; DeallocateFailedException>.Value;
+        }
+    }
+}
+
+class FailingAllocator : IAllocator
+{
+    extension
+    {
+        public fixed Allocate(this: &FailingAllocator, size: cardinal(8), alignment: cardinal(8)): Result<pointer; AllocateFailedException>
+        {
+            return Result<pointer; AllocateFailedException>.Alternative(AllocateFailedException());
+        }
+
+        public fixed Deallocate(this: &FailingAllocator, block: pointer): Result<; DeallocateFailedException>
+        {
+            return Result<; DeallocateFailedException>.Value;
+        }
+    }
+}
+
+fixed Arena: ArenaAllocator = ArenaAllocator();
+fixed Allocator: IAllocator = Arena;
+fixed Failing: IAllocator = FailingAllocator();
+
+structure Node
+{
+    public Value: integer(4);
+}
+
+fixed Main(): integer(4)
+{
+    heap(Allocator) first: Node = Node();
+    first.Value = 7;
+    heap(Allocator) second: Node = Node();
+    second.Value = 4;
+    local result: integer(4) = first.Value + second.Value;
+    dispose(first);
+    dispose(second);
+
+    local caught: integer(4) = 0;
+    trap
+    {
+        heap(Failing) broken: Node = Node();
+        broken.Value = 1;
+        dispose(broken);
+    }
+    catch error: AllocateFailedException
+    {
+        caught = 2;
+    }
+    return result + Cast<integer(4)>(Arena.Offset) + caught;
+}";
+    // 7 + 4 + two 4-byte node allocations + the caught failure path
+    assert_eq!(run_program(source), 21);
+}

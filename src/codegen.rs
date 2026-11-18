@@ -625,10 +625,14 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             };
             let llvm_type = self.llvm_type(ty)?;
             let global = self.module.add_global(llvm_type, None, &mangled);
-            global.set_constant(fixed);
             match init.and_then(|node| self.const_scalar(node)) {
-                Some(value) => global.set_initializer(&value),
+                Some(value) => {
+                    global.set_initializer(&value);
+                    global.set_constant(fixed);
+                }
                 None => {
+                    // Runtime initializers are written by the launcher, so the
+                    // storage must be writable even for constants (§14.2).
                     let zero = self.zero_value(ty)?;
                     global.set_initializer(&zero);
                     if init.is_some() {
@@ -1424,7 +1428,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
     fn emit_throw_value(&mut self, value: BasicValueEnum<'ctx>, ty: TypeId) -> Result<(), String> {
         let frame_index = self.trap_stack.iter().rposition(|frame| !frame.is_handler);
         let Some(frame_index) = frame_index else {
-            return Err("'throw' outside a trap".to_string());
+            // No enclosing trap: the exception is unhandled and terminates the
+            // program (§5.10.1-7).
+            return self.emit_abort();
         };
         let (exception_slot, dispatch) = {
             let frame = &self.trap_stack[frame_index];
@@ -1507,6 +1513,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .builtin_interface_method("IAllocator", "Allocate")
             .ok_or_else(|| "IAllocator.Allocate is missing".to_string())?;
         let arguments = vec![
+            allocator.into(),
             self.context.i64_type().const_int(size, false).into(),
             self.context
                 .i64_type()
@@ -1533,14 +1540,6 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             return Err("Allocate must return a variant".to_string());
         };
         let payload_offset = self.sema.type_defs[result_index as usize].payload_offset;
-        let alternative = self.sema.type_defs[result_index as usize]
-            .variant_states
-            .iter()
-            .position(|state| state.name == "Alternative")
-            .and_then(|position| {
-                self.sema.type_defs[result_index as usize].variant_states[position].payload
-            })
-            .ok_or_else(|| "Allocate result has no alternative".to_string())?;
         let ok_block = self.current_llvm_function()?;
         let _ = ok_block;
         let function = self.current_llvm_function()?;
@@ -1594,10 +1593,39 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 "allocate_exception",
             )
             .map_err(|error| format!("cannot load allocation exception: {error}"))?;
-        self.emit_throw_value(exception, alternative)?;
-        self.builder
-            .build_unreachable()
-            .map_err(|error| format!("cannot build unreachable: {error}"))?;
+        // Transfer the failure to the innermost trap (or abort when unhandled),
+        // then continue with the success path only.
+        let trap_frame = self
+            .trap_stack
+            .iter()
+            .rev()
+            .find(|frame| !frame.is_handler)
+            .map(|frame| (frame.exception_slot, frame.dispatch));
+        match trap_frame {
+            Some((exception_slot, dispatch)) => {
+                let typeinfo = self.load_pointer_at(exception.into_pointer_value(), 8)?;
+                let typeinfo_slot = self.address_with_size(
+                    exception_slot,
+                    1,
+                    self.context.i64_type().const_zero(),
+                )?;
+                let payload_slot = self.address_with_size(
+                    exception_slot,
+                    1,
+                    self.context.i64_type().const_int(8, false),
+                )?;
+                self.builder
+                    .build_store(typeinfo_slot, typeinfo)
+                    .map_err(|error| format!("cannot store exception: {error}"))?;
+                self.builder
+                    .build_store(payload_slot, exception)
+                    .map_err(|error| format!("cannot store exception: {error}"))?;
+                self.builder
+                    .build_unconditional_branch(dispatch)
+                    .map_err(|error| format!("cannot transfer exception: {error}"))?;
+            }
+            None => self.emit_abort()?,
+        }
         self.builder.position_at_end(merge_block);
         let phi = self
             .builder
@@ -1901,7 +1929,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 let (interface_index, method) = self
                     .builtin_interface_method("IAllocator", "Deallocate")
                     .ok_or_else(|| "IAllocator.Deallocate is missing".to_string())?;
-                let arguments = vec![storage.into()];
+                let arguments = vec![allocator.into(), storage.into()];
                 self.gen_interface_call(allocator, interface_index, method, &arguments)?;
             } else {
                 let free = self

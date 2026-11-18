@@ -130,8 +130,14 @@ fn sema_clean_spec_programs_compile() {
         }
         let path = directory.join(format!("spec-{line}.ns"));
         std::fs::write(&path, source).expect("write spec program");
+        let executable = directory.join(format!("spec-{line}"));
         let output = Command::new(env!("CARGO_BIN_EXE_ai-nsc"))
-            .args(["build", path.to_str().expect("utf-8 path")])
+            .args([
+                "build",
+                path.to_str().expect("utf-8 path"),
+                "-o",
+                executable.to_str().expect("utf-8 path"),
+            ])
             .output()
             .expect("run ai-nsc");
         let stderr = String::from_utf8_lossy(&output.stderr);

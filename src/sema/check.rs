@@ -3960,7 +3960,40 @@ impl<'a> Sema<'a> {
                         left.wrapping_rem(right)
                     }
                     BinaryOp::ShiftLeft => left.wrapping_shl(right as u32),
-                    BinaryOp::ShiftRight => left.wrapping_shr(right as u32),
+                    BinaryOp::ShiftRight => {
+                        // `>>` is a logical shift within the operand's integer
+                        // width (§4.9.14).
+                        let width = self
+                            .result
+                            .node_types
+                            .get(binary.left as usize)
+                            .copied()
+                            .flatten()
+                            .map(|ty| match self.type_of(ty) {
+                                Type::Integer { bytes, signed } => (u32::from(bytes) * 8, signed),
+                                _ => (128, true),
+                            })
+                            .unwrap_or((128, true));
+                        let (bits, signed) = width;
+                        let bits = bits.clamp(1, 128);
+                        let count = (right as u128) % u128::from(bits);
+                        let bit_mask = if bits >= 128 {
+                            u128::MAX
+                        } else {
+                            (1u128 << bits) - 1
+                        };
+                        let shifted = ((left as u128) & bit_mask) >> count;
+                        let sign_bit = if bits >= 128 {
+                            1u128 << 127
+                        } else {
+                            1u128 << (bits - 1)
+                        };
+                        if signed && shifted & sign_bit != 0 {
+                            (shifted | !bit_mask) as i128
+                        } else {
+                            shifted as i128
+                        }
+                    }
                     _ => {
                         self.error(
                             self.span_of(node),

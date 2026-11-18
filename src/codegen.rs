@@ -6538,8 +6538,10 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                         if op == BinaryOp::ShiftLeft {
                             self.builder.build_left_shift(left, masked, "shl")
                         } else {
-                            self.builder
-                                .build_right_shift(left, masked, signed, "shift")
+                            // §4.9.14 defines `>>` as a logical (zero-filling)
+                            // right shift, even for signed integer operands.
+                            let _ = signed;
+                            self.builder.build_right_shift(left, masked, false, "shift")
                         }
                     }
                     _ => return Err("unsupported integer operator".to_string()),

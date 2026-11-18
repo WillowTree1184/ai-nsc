@@ -4101,3 +4101,24 @@ fixed Main(): integer(4)
     // 6 + 6
     assert_eq!(run_program(source), 12);
 }
+
+#[test]
+fn right_shift_is_logical_for_signed_integers() {
+    let source = "\
+fixed Shifted: integer(4) = Cast<integer(4)>(-1) >> 1;
+
+fixed Main(): integer(4)
+{
+    local value: integer(4) = -1;
+    local runtime: integer(4) = value >> 1;
+    local unsigned: cardinal(4) = 4294967295;
+    local logical: cardinal(4) = unsigned >> 1;
+    local score: integer(4) = 0;
+    if (runtime == 2147483647) { score += 1; }
+    if (Shifted == 2147483647) { score += 2; }
+    if (logical == 2147483647) { score += 4; }
+    return score;
+}";
+    // §4.9.14 defines `>>` as a logical (zero-filling) shift.
+    assert_eq!(run_program(source), 7);
+}

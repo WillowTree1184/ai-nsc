@@ -3150,3 +3150,48 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 13);
 }
+
+#[test]
+fn extension_functions_and_reference_this_parameters() {
+    let source = "\
+class Counter
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Bump(this: Counter) { this.Value += 1; }
+        public fixed Read(this: Counter): integer(4) { return this.Value; }
+    }
+}
+
+structure Vec2
+{
+    public X: integer(4);
+    public Y: integer(4);
+}
+
+extension for Vec2
+{
+    public fixed Sum(left: Vec2, right: Vec2): integer(4)
+    {
+        return left.X + right.X + left.Y + right.Y;
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local counter: Counter = Counter();
+    counter.Bump();
+    counter.Bump();
+    local a: Vec2;
+    a.X = 1;
+    a.Y = 2;
+    local b: Vec2;
+    b.X = 3;
+    b.Y = 4;
+    return counter.Read() + Sum(a, b);
+}";
+    // 2 + 10
+    assert_eq!(run_program(source), 12);
+}

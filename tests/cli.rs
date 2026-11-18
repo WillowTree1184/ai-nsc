@@ -1021,3 +1021,22 @@ fixed Main(): integer(4) { return Run(1); }",
         "{stderr}"
     );
 }
+
+#[test]
+fn value_type_methods_require_a_by_reference_this() {
+    let stderr = check_source(
+        "\
+structure Point
+{
+    public X: integer(4);
+
+    extension
+    {
+        public fixed Read(this: Point): integer(4) { return this.X; }
+    }
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(stderr.contains("must be by-reference"), "{stderr}");
+}

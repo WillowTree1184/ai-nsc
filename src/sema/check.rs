@@ -789,34 +789,66 @@ impl<'a> Sema<'a> {
             );
             return None;
         }
-        let Some(first) = function.parameters.first() else {
-            self.error(self.span_of(node), "a method requires a 'this' parameter");
-            return None;
-        };
-        if first.name.as_deref() != Some("this") || !first.by_ref {
-            self.error(
-                self.span_of(node),
-                "the first parameter of a method must be 'this: &T'",
-            );
+        // A function in an extension block is a method only when it declares a
+        // `this` parameter of the extension target type (§8.4); otherwise it is
+        // an extension-scoped function constant.
+        let this_position = function
+            .parameters
+            .iter()
+            .position(|parameter| parameter.name.as_deref() == Some("this"));
+        let mut is_method = false;
+        if let Some(position) = this_position {
+            if let Some(this_type) = function.parameters[position].ty {
+                self.suppress_errors += 1;
+                let resolved = self.resolve_type(this_type);
+                self.suppress_errors -= 1;
+                is_method = resolved == Some(owner);
+            }
+        }
+        if !is_method {
+            if is_abstract {
+                self.error(
+                    self.span_of(node),
+                    "an extension-scoped function requires a body",
+                );
+                return None;
+            }
+            let parameters = self.resolve_parameters(&function)?;
+            let return_type = function.return_type.and_then(|ty| self.resolve_type(ty));
+            let calling_convention = self.resolve_calling_convention(function.calling_convention);
+            if let Some(Initializer::Block(body_block)) = declaration.init {
+                self.register_function(FunctionDeclaration {
+                    node,
+                    name: declaration.name.clone(),
+                    body: body_block,
+                    parameters,
+                    return_type,
+                    method_of: None,
+                    exposed_symbol: None,
+                    calling_convention,
+                });
+            }
             return None;
         }
-        if let Some(first_type) = first.ty {
-            match self.resolve_type(first_type) {
-                Some(resolved) if resolved == owner => {}
-                Some(_) => {
-                    self.error(
-                        self.span_of(node),
-                        "the type of 'this' must be the extension target",
-                    );
-                    return None;
-                }
-                None => return None,
-            }
+        let this_parameter = &function.parameters[this_position.unwrap_or(0)];
+        let value_type_target = matches!(
+            owner_kind,
+            TypeDefKind::Structure | TypeDefKind::Union | TypeDefKind::Variant
+        );
+        if value_type_target && !this_parameter.by_ref {
+            self.error(
+                this_parameter.span,
+                "the 'this' parameter of a value-type method must be by-reference ('&')",
+            );
+            return None;
         }
         let method_convention = self.resolve_calling_convention(function.calling_convention);
 
         let mut parameters = Vec::new();
         for (index, parameter) in function.parameters.iter().enumerate() {
+            if Some(index) == this_position {
+                continue;
+            }
             if let Some(expanded) = self.expand_array_parameter(parameter) {
                 parameters.extend(expanded);
                 continue;
@@ -839,6 +871,16 @@ impl<'a> Sema<'a> {
             });
         }
         let return_type = function.return_type.and_then(|ty| self.resolve_type(ty));
+        parameters.insert(
+            0,
+            ParameterInfo {
+                name: "this".to_string(),
+                ty: owner,
+                by_ref: this_parameter.by_ref,
+                default: None,
+                compile_time: false,
+            },
+        );
         let owner_name = match self.result.types.get(owner) {
             Type::Named(index) => self.result.type_defs[*index as usize]
                 .qualified_name

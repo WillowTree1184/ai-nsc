@@ -2877,9 +2877,9 @@ impl<'a> Sema<'a> {
                             // §5.5: compile-time use of an external library needs
                             // the library to be provided to the compiler; this
                             // implementation has no compile-time library loader.
-                            self.unsupported(
+                            self.error(
                                 self.span_of(expression),
-                                "calling an external linkable function at compile time",
+                                "no compile-time library provides this external symbol (§5.5): compile-time code may only call linkable functions supplied by a compile-time library",
                             );
                             continue;
                         }

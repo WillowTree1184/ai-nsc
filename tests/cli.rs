@@ -2288,7 +2288,7 @@ fixed Main(): integer(4)
 }",
     );
     assert!(
-        stderr.contains("calling an external linkable function at compile time"),
+        stderr.contains("no compile-time library provides this external symbol"),
         "{stderr}"
     );
     assert!(!stderr.contains("unknown name"), "{stderr}");
@@ -2352,7 +2352,9 @@ fixed Main(): integer(4)
 }",
     );
     assert_eq!(
-        linkable.matches("external linkable function").count(),
+        linkable
+            .matches("no compile-time library provides this external symbol")
+            .count(),
         1,
         "{linkable}"
     );

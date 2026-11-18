@@ -6001,7 +6001,9 @@ impl<'a> Sema<'a> {
                     );
                     return;
                 }
+                self.compile_time_expression_depth += 1;
                 self.check_expr(statement.condition, Some(TypeId::BOOLEAN));
+                self.compile_time_expression_depth -= 1;
                 let taken = self
                     .eval_compile_time_bool(statement.condition, 0)
                     .unwrap_or_else(|| {
@@ -7347,7 +7349,9 @@ impl<'a> Sema<'a> {
                     );
                     return None;
                 }
+                self.compile_time_expression_depth += 1;
                 let ty = self.check_expr(inner, expected);
+                self.compile_time_expression_depth -= 1;
                 // A '#(...)' expression must be evaluable at compile time (§11.3).
                 if self.is_compile_time_evaluable(inner) {
                     // Record the value so code generation can emit the
@@ -10008,6 +10012,15 @@ impl<'a> Sema<'a> {
         self.result.functions[instance as usize].return_type
     }
 
+    /// Whether the checker is currently inside compile-time code (`#{}`,
+    /// `#(...)` or a `#if` condition), where the compiler API is accessible
+    /// (§11.2, §11.8).
+    fn in_compile_time_code(&self) -> bool {
+        self.compile_time_depth > 0
+            || !self.compile_time_constants.is_empty()
+            || self.compile_time_expression_depth > 0
+    }
+
     fn check_call(&mut self, node: NodeId, call: &CallExpr) -> Option<TypeId> {
         if self.in_verbatim {
             for namespace in ["Platform", "Compiler", "NOLAA"] {
@@ -10031,6 +10044,18 @@ impl<'a> Sema<'a> {
             .iter()
             .any(|namespace| builtin_namespace_call(self.ast, call.callee, namespace).is_some())
             || builtin_size_of_type_argument(self.ast, call.callee).is_some();
+        if compile_time_api && !self.in_compile_time_code() && !self.in_verbatim {
+            // Runtime code must reach the compiler API through `#(...)` or a
+            // `#if` condition (§11.2, §11.8); NOLAA markers stay usable as
+            // run-time statements (§11.8.4).
+            let nolaa = builtin_namespace_call(self.ast, call.callee, "NOLAA").is_some();
+            if !nolaa {
+                self.error(
+                    self.span_of(node),
+                    "runtime code must access the compiler API through '#(...)' or '#if' (§11.2, §11.8)",
+                );
+            }
+        }
         if !compile_time_api {
             // Only plain name callees can be linkable functions; probing other
             // callee forms would resolve monomorphizations prematurely.
@@ -10083,7 +10108,12 @@ impl<'a> Sema<'a> {
             let ty = self.resolve_type(type_argument)?;
             self.result.resolutions[node as usize] = Some(Resolution::SizeOf { ty });
             if call.arguments.is_empty() {
-                return Some(self.result.types.integer(false, 8));
+                // The value width equals the target pointer width (§11.8.1).
+                return Some(
+                    self.result
+                        .types
+                        .integer(false, self.result.types.pointer_size()),
+                );
             }
             self.error(self.span_of(node), "Type.SizeOf<T>() takes no arguments");
             return None;

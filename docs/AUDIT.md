@@ -332,3 +332,5 @@ report an error (§4.8).
 | 111 | MED | §2.4/§2.6 | Keyword spellings as names were only partially contextual | partial (all name positions accept keyword spellings; declaration shadowing that disables a keyword meaning is still resolved as a keyword) |
 | 112 | MED | §3.8.2 | Accessor block shorthand ignored the `this` reference/value rules | fixed (validated `this` type/number of `&` against the extension target; extension blocks require `this`; static/free accessors reject it; class and structure e2e) |
 | 113 | MED | §3.6.1/§8.2 | `array(Name: Type) T` expansion unsupported in function type constructors and literal parameters | fixed (parser/sema expansion for both; call sites pass pointer+length, e2e) |
+| 114 | MED | §11.2/§11.8 | Runtime code could call the compiler API directly | fixed (only `#{}`/`#(...)`/`#if` are compile-time contexts; Type/Compiler/Platform direct runtime calls diagnosed; NOLAA markers stay permitted) |
+| 115 | MED | §11.8.1 | `Type.SizeOf` always returned cardinal(8) | fixed (value width follows the target pointer width: cardinal(4) on i686, verified by an i686 CLI test) |

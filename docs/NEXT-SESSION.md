@@ -30,10 +30,10 @@
   deliberate deviations; `docs/AUDIT.md` tracks the 111 reproduced defects (all
   fixed or marked partial with the fixing commit). Draft 1.13 changes are covered:
   `@` markers, `for` without a binding, contextual keyword names.
-- Draft 1.13 remaining gaps: keyword shadowing that disables a keyword meaning;
-  separate compile-time/runtime scopes (runtime code may still call the compiler
-  API directly in places); compiler-defined platform extension names (only the
-  standard names are matched, which §11.8.3 permits). Accessor `this` rules and
+- Draft 1.13 remaining gaps: keyword shadowing that disables a keyword meaning
+  (§2.4/§6.4); compiler-defined platform extension names (§11.8.3 permits but
+  does not require them, so only the standard names are matched). Compile-time
+  API scoping, `Type.SizeOf` pointer width, accessor `this` rules and
   `array(Name: Type) T` expansion are implemented and tested.
 - Build flags (required on this host):
   `CARGO_HOME=/tmp/ainsc-cargo LLVM_SYS_181_PREFIX=/usr/lib/llvm-18`

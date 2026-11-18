@@ -1955,3 +1955,71 @@ fixed Main(): integer(4) { return 0; }",
         "{missing_this}"
     );
 }
+
+#[test]
+fn compiler_api_is_restricted_to_compile_time_contexts() {
+    let sizeof_direct = check_source(
+        "fixed Main(): integer(4)\n{\n    local size: cardinal(8) = Type.SizeOf<integer(4)>();\n    return Cast<integer(4)>(size);\n}",
+    );
+    assert!(
+        sizeof_direct.contains("through '#(...)' or '#if'"),
+        "{sizeof_direct}"
+    );
+    let platform_direct = check_source(
+        "fixed Main(): integer(4)\n{\n    if (Platform.Is(PlatformKind.Linux)) { return 1; }\n    return 0;\n}",
+    );
+    assert!(
+        platform_direct.contains("through '#(...)' or '#if'"),
+        "{platform_direct}"
+    );
+    let compiler_direct = check_source(
+        "fixed Main(): integer(4)\n{\n    Compiler.LogNote(\"runtime\");\n    return 0;\n}",
+    );
+    assert!(
+        compiler_direct.contains("through '#(...)' or '#if'"),
+        "{compiler_direct}"
+    );
+}
+
+#[test]
+fn i686_type_sizeof_uses_pointer_width() {
+    if std::env::consts::ARCH != "x86_64" || !std::path::Path::new("/usr/lib32/libc.so.6").exists()
+    {
+        return;
+    }
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-i686-sizeof-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let source_path = directory.join("program.ns");
+    std::fs::write(
+        &source_path,
+        "fixed Main(): integer(4)\n{\n    local size: cardinal(4) = #(Type.SizeOf<integer(4)>());\n    return Cast<integer(4)>(size);\n}",
+    )
+    .expect("write");
+    let executable = directory.join("program");
+    let output = ai_nsc()
+        .args([
+            "build",
+            "--target=i686-unknown-linux-gnu",
+            "-o",
+            executable.to_str().expect("utf-8 path"),
+            source_path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("run ai-nsc");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let status = std::process::Command::new(&executable)
+        .status()
+        .expect("run 32-bit program");
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(status.code(), Some(4));
+}

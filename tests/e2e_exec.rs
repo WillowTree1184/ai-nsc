@@ -1994,8 +1994,8 @@ structure Vector3
 
 fixed Main(): integer(4)
 {
-    local size: cardinal(8) = Type.SizeOf<Vector3>();
-    local int_size: cardinal(8) = Type.SizeOf<integer(4)>();
+    local size: cardinal(8) = #(Type.SizeOf<Vector3>());
+    local int_size: cardinal(8) = #(Type.SizeOf<integer(4)>());
     return Cast<integer(4)>(size) + Cast<integer(4)>(int_size);
 }";
     assert_eq!(run_program(source), 16);
@@ -2380,10 +2380,10 @@ fixed Main(): integer(4)
     if (value is Object) { score += 4; }
 
     local kinds: integer(4) = 0;
-    if (Platform.Is(PlatformKind.Windows)) { kinds += 1; }
-    if (Platform.Is(PlatformKind.Linux)) { kinds += 1; }
-    if (Platform.Is(PlatformKind.MacOS)) { kinds += 1; }
-    if (Platform.Is(PlatformKind.FreeBSD)) { kinds += 1; }
+    #if (Platform.Is(PlatformKind.Windows)) { kinds += 1; }
+    #if (Platform.Is(PlatformKind.Linux)) { kinds += 1; }
+    #if (Platform.Is(PlatformKind.MacOS)) { kinds += 1; }
+    #if (Platform.Is(PlatformKind.FreeBSD)) { kinds += 1; }
     if (kinds == 1) { score += 8; }
 
     #if (Platform.Is(PlatformKind.Other))
@@ -2667,9 +2667,9 @@ fixed Main(): integer(4)
     NOLAA.Abandon(cell);
     NOLAA.AssumeNoDemandNext(cell);
     NOLAA.Bind(cell, cell);
-    if (Platform.Is(\"Linux\")) { score += 4; }
-    if (!Platform.Is(\"linux\")) { score += 8; }
-    if (!Platform.Is(PlatformKind.Other)) { score += 16; }
+    #if (Platform.Is(\"Linux\")) { score += 4; }
+    #if (Platform.Is(\"linux\")) { } else { score += 8; }
+    #if (Platform.Is(PlatformKind.Other)) { } else { score += 16; }
     return score;
 }";
     assert_eq!(run_program(source), 31);
@@ -3219,8 +3219,8 @@ aligned(0) structure Packed
 
 fixed Main(): integer(4)
 {
-    local natural: cardinal(8) = Type.SizeOf<Natural>();
-    local packed: cardinal(8) = Type.SizeOf<Packed>();
+    local natural: cardinal(8) = #(Type.SizeOf<Natural>());
+    local packed: cardinal(8) = #(Type.SizeOf<Packed>());
     return Cast<integer(4)>(natural) * 10 + Cast<integer(4)>(packed);
 }";
     // natural: 8 bytes; packed: 5 bytes

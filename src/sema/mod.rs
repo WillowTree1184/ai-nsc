@@ -1214,6 +1214,7 @@ pub fn analyze_with_options(
         top_level_constants: HashMap::new(),
         in_verbatim: false,
         compile_time_depth: 0,
+        compile_time_expression_depth: 0,
         compile_time_local_ids: Vec::new(),
         in_constant_initializer: false,
         compile_call_depth: 0,
@@ -1306,6 +1307,8 @@ pub(crate) struct Sema<'a> {
     pub(crate) in_verbatim: bool,
     /// Nesting depth of `#{}` compile-time blocks (§11.7).
     pub(crate) compile_time_depth: usize,
+    /// Nesting depth of `#(...)`/`#if` compile-time expressions (§11.3).
+    pub(crate) compile_time_expression_depth: usize,
     /// Locals declared inside compile-time blocks, keyed by function.
     pub(crate) compile_time_local_ids: Vec<(u32, LocalId)>,
     /// Whether a constant initializer is being checked (§5.3).

@@ -153,6 +153,7 @@ impl<'a> Sema<'a> {
             is_virtual: false,
             is_override: false,
             is_sealed: false,
+            accessibility: crate::ast::Accessibility::Public,
             is_abstract: false,
             return_type: None,
             mangled: String::new(),
@@ -543,6 +544,7 @@ impl<'a> Sema<'a> {
             is_virtual: false,
             is_override: false,
             is_sealed: false,
+            accessibility: crate::ast::Accessibility::Public,
             is_abstract: false,
             return_type,
             mangled,
@@ -666,6 +668,7 @@ impl<'a> Sema<'a> {
             is_virtual,
             is_override,
             is_sealed,
+            accessibility: crate::ast::Accessibility::Public,
             is_abstract: false,
             return_type,
             mangled,
@@ -812,6 +815,7 @@ impl<'a> Sema<'a> {
                         self.result.type_defs[*instance_index as usize]
                             .accessors
                             .push(AccessorInfo {
+                                accessibility: crate::ast::Accessibility::Public,
                                 name: "Iterator".to_string(),
                                 ty: iterator,
                                 getter: Some(getter),

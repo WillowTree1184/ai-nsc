@@ -166,6 +166,8 @@ pub struct FieldInfo {
     pub ty: TypeId,
     /// Byte offset from the start of the instance.
     pub offset: u64,
+    /// Base accessibility of the field (§9.1); `Unspecified` is private.
+    pub accessibility: crate::ast::Accessibility,
 }
 
 /// One state of a variant (§3.7.5).
@@ -312,6 +314,8 @@ pub struct FunctionInfo {
     pub is_override: bool,
     /// Whether the method or class is sealed (§9.11).
     pub is_sealed: bool,
+    /// Base accessibility of the function (§9.1).
+    pub accessibility: crate::ast::Accessibility,
     /// Whether the method is abstract (an interface method without a body).
     pub is_abstract: bool,
     /// Return type; `None` is the empty type.
@@ -435,6 +439,8 @@ pub struct OperatorInfo {
 pub struct AccessorInfo {
     /// Accessor name.
     pub name: String,
+    /// Base accessibility of the accessor (§9.1).
+    pub accessibility: crate::ast::Accessibility,
     /// Value type.
     pub ty: TypeId,
     /// Getter method, if defined.
@@ -546,6 +552,8 @@ pub(crate) struct HeapUnit {
 pub struct GlobalInfo {
     /// Declared name.
     pub name: String,
+    /// Base accessibility of the storage (§9.1).
+    pub accessibility: crate::ast::Accessibility,
     /// Module path.
     pub scope: Vec<String>,
     /// Type of the storage.
@@ -990,6 +998,7 @@ pub fn analyze(
         heap_units: Vec::new(),
         heap_unit_locals: HashMap::new(),
         early_dispose_warned: std::collections::HashSet::new(),
+        current_owner: None,
     };
     sema.run();
     sema.result.error_count = sema.engine.error_count();
@@ -1044,6 +1053,8 @@ pub(crate) struct Sema<'a> {
     pub(crate) heap_unit_locals: HashMap<u32, usize>,
     /// Locals already reported for use-after-dispose (§12.2).
     pub(crate) early_dispose_warned: std::collections::HashSet<u32>,
+    /// Type whose body is currently being checked, for accessibility (§9.1).
+    pub(crate) current_owner: Option<TypeId>,
 }
 
 impl<'a> Sema<'a> {
@@ -1571,6 +1582,7 @@ impl<'a> Sema<'a> {
             is_virtual: false,
             is_override: false,
             is_sealed: false,
+            accessibility: crate::ast::Accessibility::Public,
             is_abstract: false,
             return_type,
             mangled,
@@ -1645,6 +1657,7 @@ impl<'a> Sema<'a> {
             is_virtual: false,
             is_override: false,
             is_sealed: false,
+            accessibility: crate::ast::Accessibility::Public,
             is_abstract: true,
             return_type,
             mangled,
@@ -1791,6 +1804,7 @@ impl<'a> Sema<'a> {
                         name: "InnerException".to_string(),
                         ty: optional_exception,
                         offset: 16,
+                        accessibility: crate::ast::Accessibility::Public,
                     }];
                     definition.field_initializers = vec![None];
                     definition.instance_size = 32;
@@ -1887,6 +1901,7 @@ impl<'a> Sema<'a> {
                 let mangled = mangle_function(&[], "DefaultAllocator", &[spelling]);
                 let global_index = self.result.globals.len() as u32;
                 self.result.globals.push(GlobalInfo {
+                    accessibility: crate::ast::Accessibility::Public,
                     name: "DefaultAllocator".to_string(),
                     scope: Vec::new(),
                     ty: allocator,

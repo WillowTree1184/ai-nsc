@@ -2187,7 +2187,7 @@ fn static_fields_and_methods_share_class_level_storage() {
     let source = "\
 class Counter
 {
-    private static Total: integer(4) = 10;
+    public static Total: integer(4) = 10;
 
     extension
     {
@@ -2247,7 +2247,7 @@ fn static_class_members_and_accessor_alias() {
     let source = "\
 static class Counter
 {
-    private static Total: integer(4) = 5;
+    public static Total: integer(4) = 5;
 
     extension
     {
@@ -2975,4 +2975,38 @@ fixed Main(): integer(4)
     return first + second;
 }";
     assert_eq!(run_program(source), 10);
+}
+
+#[test]
+fn protected_members_work_in_derived_types() {
+    let source = "\
+class Animal
+{
+    protected Name: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Animal, name: integer(4)) { this.Name = name; }
+    }
+}
+
+class Cat: Animal
+{
+    extension
+    {
+        public fixed Construct(this: &Cat, name: integer(4))
+        {
+            base.Construct(name);
+        }
+
+        public fixed Read(this: &Cat): integer(4) { return this.Name; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local cat: Cat = Cat(6);
+    return cat.Read();
+}";
+    assert_eq!(run_program(source), 6);
 }

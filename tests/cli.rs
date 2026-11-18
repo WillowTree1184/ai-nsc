@@ -870,3 +870,62 @@ fn use_after_dispose_warns_about_early_dispose() {
         "expected an early-dispose warning: {stderr}"
     );
 }
+
+#[test]
+fn private_members_are_not_accessible_outside_the_type() {
+    let stderr = check_source(
+        "\
+class Secret
+{
+    private Hidden: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Secret) { this.Hidden = 1; }
+        private fixed HiddenMethod(this: &Secret): integer(4) { return this.Hidden; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local secret: Secret = Secret();
+    local value: integer(4) = secret.Hidden;
+    return value + secret.HiddenMethod();
+}",
+    );
+    assert!(stderr.contains("'Hidden' is not accessible"), "{stderr}");
+    assert!(
+        stderr.contains("'HiddenMethod' is not accessible"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn protected_members_are_accessible_in_derived_types_only() {
+    let stderr = check_source(
+        "\
+class Animal
+{
+    protected Name: integer(4);
+}
+
+class Cat: Animal
+{
+    extension
+    {
+        public fixed Read(this: &Cat): integer(4) { return this.Name; }
+    }
+}
+
+class Stranger
+{
+    extension
+    {
+        public fixed Peek(this: &Stranger, target: Animal): integer(4) { return target.Name; }
+    }
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(stderr.contains("'Name' is not accessible"), "{stderr}");
+}

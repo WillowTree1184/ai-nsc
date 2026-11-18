@@ -1666,10 +1666,12 @@ impl<'a> Parser<'a> {
     fn parse_local(&mut self, modifiers: Modifiers) -> Option<NodeId> {
         let start_token = self.position;
         self.bump();
+        // `local @Name, Other` marks every item no-optimize (§14.3.1).
+        let leading_verbatim = self.eat(TokenKind::At);
         let mut items = Vec::new();
         loop {
             let item_start = self.position;
-            let verbatim = self.eat(TokenKind::At);
+            let verbatim = leading_verbatim || self.eat(TokenKind::At);
             let head = self.parse_definition_head(false)?;
             let init = if self.eat(TokenKind::Equals) {
                 self.parse_expression()
@@ -1902,15 +1904,19 @@ impl<'a> Parser<'a> {
         if let Some((binding_by_ref, head)) = binding {
             by_ref = binding_by_ref;
             name = Some(head.name);
-            let Some(binding_type) = head.ty else {
-                self.error_here("the for variable requires a type");
-                return None;
-            };
-            ty = Some(binding_type);
+            ty = head.ty;
             self.expect(TokenKind::In, "'in' in for statement");
         }
         let first = self.parse_expression()?;
-        let target = if self.at(TokenKind::DotDot) || self.at(TokenKind::DotDotBang) {
+        let target = if matches!(
+            self.peek_kind(),
+            TokenKind::DotDot
+                | TokenKind::DotDotBang
+                | TokenKind::DotDotLess
+                | TokenKind::DotDotLessEquals
+                | TokenKind::DotDotGreater
+                | TokenKind::DotDotGreaterEquals
+        ) {
             let range = self.parse_range_after_start(first)?;
             ForTarget::Range(range)
         } else {
@@ -1933,39 +1939,67 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses the rest of a range after its start expression.
+    /// Consumes the current token as a range operator, returning whether the end
+    /// is inclusive and the operator-imposed direction (§5.9.5).
+    fn range_operator(&mut self) -> Option<(bool, crate::ast::RangeDirection)> {
+        use crate::ast::RangeDirection;
+        let operator = match self.peek_kind() {
+            TokenKind::DotDot => (true, RangeDirection::Auto),
+            TokenKind::DotDotBang => (false, RangeDirection::Auto),
+            TokenKind::DotDotLess => (false, RangeDirection::Ascending),
+            TokenKind::DotDotLessEquals => (true, RangeDirection::Ascending),
+            TokenKind::DotDotGreater => (false, RangeDirection::Descending),
+            TokenKind::DotDotGreaterEquals => (true, RangeDirection::Descending),
+            _ => return None,
+        };
+        self.bump();
+        Some(operator)
+    }
+
     pub(crate) fn parse_range_after_start(&mut self, start: NodeId) -> Option<RangeExpr> {
-        if self.eat(TokenKind::DotDot) {
-            let second = self.parse_expression()?;
-            if self.at(TokenKind::DotDot) || self.at(TokenKind::DotDotBang) {
-                let inclusive = self.at(TokenKind::DotDot);
-                self.bump();
-                let end = self.parse_expression()?;
-                Some(RangeExpr {
-                    start,
-                    step: Some(second),
-                    end,
-                    inclusive,
-                })
+        // The range grammar is `Expression [ ".." Expression ] RangeOperator
+        // Expression`: `..` may be the step separator or the operator itself, so
+        // try the step form first and backtrack when no operator follows.
+        let step = {
+            let position = self.position;
+            let errors = self.errors.len();
+            if self.eat(TokenKind::DotDot) {
+                match self.parse_expression() {
+                    Some(expression) if self.range_operator().is_some() => {
+                        self.position = position;
+                        Some(expression)
+                    }
+                    _ => {
+                        self.position = position;
+                        self.errors.truncate(errors);
+                        None
+                    }
+                }
             } else {
-                Some(RangeExpr {
-                    start,
-                    step: None,
-                    end: second,
-                    inclusive: true,
-                })
+                None
             }
-        } else if self.eat(TokenKind::DotDotBang) {
-            let end = self.parse_expression()?;
-            Some(RangeExpr {
-                start,
-                step: None,
-                end,
-                inclusive: false,
-            })
-        } else {
-            self.error_here("expected '..' or '..!' in range");
-            None
+        };
+        if step.is_some() {
+            self.eat(TokenKind::DotDot);
+            let _ = self.parse_expression();
         }
+        let (inclusive, direction) = match self.range_operator() {
+            Some(operator) => operator,
+            None => {
+                self.error_here(
+                    "expected a range operator ('..', '..!', '..<', '..<=', '..>', '..>=')",
+                );
+                return None;
+            }
+        };
+        let end = self.parse_expression()?;
+        Some(RangeExpr {
+            start,
+            step,
+            end,
+            inclusive,
+            direction,
+        })
     }
 
     fn parse_optional_label(&mut self) -> Option<String> {
@@ -2312,6 +2346,8 @@ impl<'a> Parser<'a> {
             TokenKind::CaretEquals => BinaryOp::BitwiseXor,
             TokenKind::ShiftLeftEquals => BinaryOp::ShiftLeft,
             TokenKind::ShiftRightEquals => BinaryOp::ShiftRight,
+            TokenKind::CircularShiftLeftEquals => BinaryOp::CircularShiftLeft,
+            TokenKind::CircularShiftRightEquals => BinaryOp::CircularShiftRight,
             _ => return None,
         };
         Some(op)

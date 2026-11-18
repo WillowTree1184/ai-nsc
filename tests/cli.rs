@@ -2498,3 +2498,35 @@ fn uefi_has_no_platform_default_allocator() {
         "{stderr}"
     );
 }
+
+#[test]
+fn explicit_range_direction_rejects_contradictory_steps() {
+    let ascending = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    for index in 1..-2..<5
+    {
+    }
+    return 0;
+}",
+    );
+    assert!(
+        ascending.contains("ascending range requires a positive step"),
+        "{ascending}"
+    );
+    let descending = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    for index in 5..2..>1
+    {
+    }
+    return 0;
+}",
+    );
+    assert!(
+        descending.contains("descending range requires a negative step"),
+        "{descending}"
+    );
+}

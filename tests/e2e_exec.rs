@@ -4746,3 +4746,77 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 3);
 }
+
+#[test]
+fn as_conversions_and_circular_shifts_work() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local i: integer(4) = 100;
+    local f: float(8) = i as float(8);
+    local a: cardinal(1) = 0x81;
+    local b: cardinal(1) = 0x81;
+    local c: cardinal(1) = a <<< 1;
+    local d: cardinal(1) = b >>> 1;
+    a <<<= 1;
+    if (a != c) { return 1; }
+    if (f != 100.0) { return 2; }
+    return Cast<integer(4)>(c) * 10 + Cast<integer(4)>(d);
+}";
+    // c = 0b00000011 = 3, d = 0b11000000 = 192 -> 3*10 + 192 = 222.
+    assert_eq!(run_program(source), 222);
+}
+
+#[test]
+fn directional_ranges_and_inferred_for_bindings_work() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local values[4]: integer(4) = { 1, 2, 3, 4 };
+    local total: integer(4) = 0;
+    for value in values
+    {
+        total += value;
+    }
+    for &reference in values
+    {
+        reference = reference + 1;
+    }
+    for index: integer(4) in 1..<5
+    {
+        total += index;
+    }
+    for index: integer(4) in 5..>1
+    {
+        total += index;
+    }
+    for index: integer(4) in 1..<=3
+    {
+        total += index;
+    }
+    local inferred: integer(4) = 0;
+    for index in 1..<3
+    {
+        inferred += 1;
+    }
+    return (total + inferred) % 256;
+}";
+    // values sum 10; ascending 1+2+3+4 = 10; descending 5+4+3+2 = 14;
+    // ascending-inclusive 1+2+3 = 6; inferred loop runs 2 times -> 42.
+    assert_eq!(run_program(source), 42);
+}
+
+#[test]
+fn array_literal_range_expansion_honours_direction() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local ascending: array(3) integer(4) = {[1..<4]};
+    local descending: array(3) integer(4) = {[4..>1]};
+    local inclusive: array(3) integer(4) = {[1..<=3]};
+    return ascending[0] + ascending[2] + descending[0] + descending[2]
+         + inclusive[0] + inclusive[2];
+}";
+    // 1 + 3 + 4 + 2 + 1 + 3
+    assert_eq!(run_program(source), 14);
+}

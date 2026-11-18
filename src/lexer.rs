@@ -5,7 +5,7 @@
 //! decoded later from the token's source span (see [`crate::literal`]); the
 //! lexer only validates their surface syntax.
 //!
-//! Spec references are to `docs/grammar/Draft 1.13.md`:
+//! Spec references are to `docs/grammar/Draft 1.151.md`:
 //! - §2.2 whitespace and line terminators
 //! - §2.3 comments
 //! - §2.4 identifiers and the `@` keyword escape
@@ -185,6 +185,8 @@ pub enum TokenKind {
     Use,
     /// `is`
     Is,
+    /// `as`
+    As,
     /// `extension`
     Extension,
     /// `Cast`
@@ -221,6 +223,14 @@ pub enum TokenKind {
     DotDot,
     /// `..!`
     DotDotBang,
+    /// `..<`
+    DotDotLess,
+    /// `..<=`
+    DotDotLessEquals,
+    /// `..>`
+    DotDotGreater,
+    /// `..>=`
+    DotDotGreaterEquals,
     /// `->`
     Arrow,
     /// `=>`
@@ -289,6 +299,14 @@ pub enum TokenKind {
     ShiftLeftEquals,
     /// `>>=`
     ShiftRightEquals,
+    /// `<<<`
+    CircularShiftLeft,
+    /// `>>>`
+    CircularShiftRight,
+    /// `<<<=`
+    CircularShiftLeftEquals,
+    /// `>>>=`
+    CircularShiftRightEquals,
 
     /// End of input.
     Eof,
@@ -299,8 +317,8 @@ impl TokenKind {
     #[must_use]
     pub fn keyword(text: &str) -> Option<TokenKind> {
         use TokenKind::{
-            Abstract, Accessor, Aligned, Array, Ascii, Base, Basic, Boolean, Break, Cardinal, Case,
-            Cast, Catch, Class, Continue, Dispose, Do, Else, Enumeration, Extension, False,
+            Abstract, Accessor, Aligned, Array, As, Ascii, Base, Basic, Boolean, Break, Cardinal,
+            Case, Cast, Catch, Class, Continue, Dispose, Do, Else, Enumeration, Extension, False,
             Finally, Fixed, Float, For, Function, Heap, If, Illegal, Implicitable, In, Infinite,
             Integer, Interface, Is, Linkable, Local, Manual, Match, Module, Operator, Override,
             Owner, Pointer, Private, Protected, Public, Readonly, Return, Scoped, Sealed, Static,
@@ -376,6 +394,7 @@ impl TokenKind {
             "uninitialized" => Uninitialized,
             "use" => Use,
             "is" => Is,
+            "as" => As,
             "extension" => Extension,
             "Cast" => Cast,
             "basic" => Basic,
@@ -457,6 +476,7 @@ impl TokenKind {
                 | Uninitialized
                 | Use
                 | Is
+                | As
                 | Extension
                 | Cast
                 | Basic
@@ -489,6 +509,10 @@ impl TokenKind {
             Dot => "'.'",
             DotDot => "'..'",
             DotDotBang => "'..!'",
+            DotDotLess => "'..<'",
+            DotDotLessEquals => "'..<='",
+            DotDotGreater => "'..>'",
+            DotDotGreaterEquals => "'..>='",
             Arrow => "'->'",
             FatArrow => "'=>'",
             Question => "'?'",
@@ -523,6 +547,10 @@ impl TokenKind {
             CaretEquals => "'^='",
             ShiftLeftEquals => "'<<='",
             ShiftRightEquals => "'>>='",
+            CircularShiftLeft => "'<<<'",
+            CircularShiftRight => "'>>>'",
+            CircularShiftLeftEquals => "'<<<='",
+            CircularShiftRightEquals => "'>>>='",
             other => other.keyword_spelling().unwrap_or("token"),
         }
     }
@@ -600,6 +628,7 @@ impl TokenKind {
             Uninitialized => "uninitialized",
             Use => "use",
             Is => "is",
+            As => "as",
             Extension => "extension",
             Cast => "Cast",
             Basic => "basic",
@@ -1133,9 +1162,27 @@ impl<'source> Lexer<'source> {
     fn lex_symbol(&mut self, start: usize) {
         use TokenKind::*;
 
-        // Three-character tokens first.
+        // Four-character tokens first (longest match).
+        let four = match self.source.get(self.position..self.position + 4) {
+            Some("<<<=") => Some(CircularShiftLeftEquals),
+            Some(">>>=") => Some(CircularShiftRightEquals),
+            Some("..<=") => Some(DotDotLessEquals),
+            Some("..>=") => Some(DotDotGreaterEquals),
+            _ => None,
+        };
+        if let Some(kind) = four {
+            self.position += 4;
+            self.push(kind, start);
+            return;
+        }
+
+        // Three-character tokens.
         let three = match self.source.get(self.position..self.position + 3) {
             Some("..!") => Some(DotDotBang),
+            Some("..<") => Some(DotDotLess),
+            Some("..>") => Some(DotDotGreater),
+            Some("<<<") => Some(CircularShiftLeft),
+            Some(">>>") => Some(CircularShiftRight),
             Some("<<=") => Some(ShiftLeftEquals),
             Some(">>=") => Some(ShiftRightEquals),
             _ => None,
@@ -1269,10 +1316,10 @@ mod tests {
             ]
         );
         assert_eq!(
-            kinds("this owner base ascii utf8 utf16 utf32 ucs2 ucs4 wildcard true false illegal infinite uninitialized use is extension Cast basic"),
+            kinds("this owner base ascii utf8 utf16 utf32 ucs2 ucs4 wildcard true false illegal infinite uninitialized use is as extension Cast basic"),
             vec![
                 This, Owner, Base, Ascii, Utf8, Utf16, Utf32, Ucs2, Ucs4, Wildcard, True, False,
-                Illegal, Infinite, Uninitialized, Use, Is, Extension, Cast, Basic, Eof
+                Illegal, Infinite, Uninitialized, Use, Is, As, Extension, Cast, Basic, Eof
             ]
         );
         assert_eq!(
@@ -1452,5 +1499,26 @@ mod tests {
         let result = tokenize(FileId::from_index(0), "");
         assert_eq!(result.tokens.len(), 1);
         assert_eq!(result.tokens[0].kind, TokenKind::Eof);
+    }
+    #[test]
+    fn new_draft_operators_use_longest_match() {
+        use TokenKind::*;
+        assert_eq!(
+            kinds("as <<< >>> <<<= >>>= ..< ..<= ..> ..>= .. ..!"),
+            vec![
+                As,
+                CircularShiftLeft,
+                CircularShiftRight,
+                CircularShiftLeftEquals,
+                CircularShiftRightEquals,
+                DotDotLess,
+                DotDotLessEquals,
+                DotDotGreater,
+                DotDotGreaterEquals,
+                DotDot,
+                DotDotBang,
+                Eof
+            ]
+        );
     }
 }

@@ -543,6 +543,7 @@ impl Ast {
             step: self.clone_opt_id(range.step),
             end: self.clone_subtree(range.end),
             inclusive: range.inclusive,
+            direction: range.direction,
         }
     }
 

@@ -4373,13 +4373,17 @@ impl<'a> Sema<'a> {
                 };
                 step
             }
-            None => {
-                if end >= start {
-                    1
-                } else {
-                    -1
+            None => match range.direction {
+                crate::ast::RangeDirection::Ascending => 1,
+                crate::ast::RangeDirection::Descending => -1,
+                crate::ast::RangeDirection::Auto => {
+                    if end >= start {
+                        1
+                    } else {
+                        -1
+                    }
                 }
-            }
+            },
         };
         if step == 0 {
             return CompileFunctionFlow::Normal;
@@ -4393,24 +4397,40 @@ impl<'a> Sema<'a> {
         let mut value = start;
         let mut iterations = 0usize;
         loop {
-            let in_range = if step > 0 {
-                if range.inclusive {
-                    value <= end
-                } else {
-                    value < end
+            let in_range = match range.direction {
+                crate::ast::RangeDirection::Ascending => {
+                    if range.inclusive {
+                        value <= end
+                    } else {
+                        value < end
+                    }
                 }
-            } else if range.inclusive {
-                value >= end
-            } else {
-                value > end
+                crate::ast::RangeDirection::Descending => {
+                    if range.inclusive {
+                        value >= end
+                    } else {
+                        value > end
+                    }
+                }
+                crate::ast::RangeDirection::Auto => {
+                    if step > 0 {
+                        if range.inclusive {
+                            value <= end
+                        } else {
+                            value < end
+                        }
+                    } else if range.inclusive {
+                        value >= end
+                    } else {
+                        value > end
+                    }
+                }
             };
             if !in_range {
                 break;
             }
             iterations += 1;
-            if iterations > 1_000_000 {
-                break;
-            }
+            let _ = iterations;
             if let (Some(name), Some(environment)) =
                 (binding_name.as_ref(), self.constant_env.last_mut())
             {
@@ -4700,6 +4720,46 @@ impl<'a> Sema<'a> {
                             (shifted | !bit_mask) as i128
                         } else {
                             shifted as i128
+                        }
+                    }
+                    BinaryOp::CircularShiftLeft | BinaryOp::CircularShiftRight => {
+                        // §4.9.15/§4.9.16: rotate within the operand width by
+                        // `count mod width`, never sign-extending the shift.
+                        let (bits, signed) = self
+                            .result
+                            .node_types
+                            .get(binary.left as usize)
+                            .copied()
+                            .flatten()
+                            .map(|ty| match self.type_of(ty) {
+                                Type::Integer { bytes, signed } => (u32::from(bytes) * 8, signed),
+                                _ => (128, true),
+                            })
+                            .unwrap_or((128, true));
+                        let bits = bits.clamp(1, 128);
+                        let count = (right as u128) % u128::from(bits);
+                        let bit_mask = if bits >= 128 {
+                            u128::MAX
+                        } else {
+                            (1u128 << bits) - 1
+                        };
+                        let value = (left as u128) & bit_mask;
+                        let rotated = if count == 0 {
+                            value
+                        } else if binary.op == BinaryOp::CircularShiftLeft {
+                            ((value << count) | (value >> (bits as u128 - count))) & bit_mask
+                        } else {
+                            ((value >> count) | (value << (bits as u128 - count))) & bit_mask
+                        };
+                        let sign_bit = if bits >= 128 {
+                            1u128 << 127
+                        } else {
+                            1u128 << (bits - 1)
+                        };
+                        if signed && rotated & sign_bit != 0 {
+                            (rotated | !bit_mask) as i128
+                        } else {
+                            rotated as i128
                         }
                     }
                     _ => {
@@ -6107,7 +6167,10 @@ impl<'a> Sema<'a> {
                 self.is_numeric(ty) || matches!(self.type_of(ty), Type::Pointer { .. })
             }
             BinaryOp::Multiply | BinaryOp::Divide | BinaryOp::Remainder => self.is_numeric(ty),
-            BinaryOp::ShiftLeft | BinaryOp::ShiftRight => self.is_integer(ty),
+            BinaryOp::ShiftLeft
+            | BinaryOp::ShiftRight
+            | BinaryOp::CircularShiftLeft
+            | BinaryOp::CircularShiftRight => self.is_integer(ty),
             BinaryOp::BitwiseAnd | BinaryOp::BitwiseOr | BinaryOp::BitwiseXor => {
                 self.is_integer(ty)
             }
@@ -6790,178 +6853,112 @@ impl<'a> Sema<'a> {
     }
 
     fn check_for_statement(&mut self, node: NodeId, statement: &ForStmt) {
-        let binding = match (statement.name.as_ref(), statement.ty) {
-            (Some(name), Some(ty_node)) => Some((
-                name.clone(),
-                self.resolve_type(ty_node).unwrap_or(TypeId::ERROR),
-            )),
+        let explicit = match (statement.name.as_ref(), statement.ty) {
+            (Some(_), Some(ty_node)) => Some(self.resolve_type(ty_node).unwrap_or(TypeId::ERROR)),
             _ => None,
         };
-        let binding_type = binding.as_ref().map_or(TypeId::ERROR, |(_, ty)| *ty);
-        if binding.is_none() && !matches!(statement.target, ForTarget::Range(_)) {
-            self.error(
-                self.span_of(node),
-                "an omitted 'for' iteration variable requires a range target (§5.9.5)",
-            );
-            return;
-        }
-        if statement.by_ref
-            && (binding.is_none() || matches!(statement.target, ForTarget::Range(_)))
-        {
+        if statement.by_ref && matches!(statement.target, ForTarget::Range(_)) {
             self.error(
                 self.span_of(node),
                 "a by-reference 'for' binding requires an array target",
             );
             return;
         }
-
-        match &statement.target {
+        let mut iterator = None;
+        let binding_type = match &statement.target {
             ForTarget::Range(range) => {
-                if let Some(binding_type) = binding.as_ref().map(|(_, ty)| *ty) {
-                    if !(self.is_integer(binding_type) || self.is_numeric(binding_type)) {
-                        self.error(
-                            self.span_of(node),
-                            "for range requires an integer or cardinal binding type",
-                        );
-                    }
-                    let expected = Some(binding_type);
-                    for expression in [Some(range.start), range.step, Some(range.end)]
-                        .into_iter()
-                        .flatten()
-                    {
-                        let ty = self.check_expr(expression, expected);
-                        if let Some(ty) = ty {
-                            self.expect_assignable(self.span_of(expression), ty, binding_type);
-                        }
-                    }
-                } else {
-                    // Without an iteration variable there is no explicit type;
-                    // infer the range type from the first non-literal expression
-                    // and require every range expression to have that type
-                    // (§5.9.5: range expression types must be consistent). A
-                    // literal such as `1` therefore adopts the type of `x` in
-                    // `for 1..x`.
-                    let is_literal =
-                        |this: &Self, expression: NodeId| match this.node_kind(expression) {
-                            NodeKind::IntegerLiteral(_) => true,
-                            NodeKind::Unary(unary) => {
-                                unary.op == UnaryOp::Negate
-                                    && matches!(
-                                        this.node_kind(unary.operand),
-                                        NodeKind::IntegerLiteral(_)
-                                    )
-                            }
-                            _ => false,
-                        };
-                    let mut anchor = None;
-                    for candidate in [Some(range.end), Some(range.start), range.step]
-                        .into_iter()
-                        .flatten()
-                    {
-                        if !is_literal(self, candidate) {
-                            anchor = Some(candidate);
-                            break;
-                        }
-                    }
-                    let mut range_type =
-                        anchor.and_then(|expression| self.check_expr(expression, None));
-                    for expression in [Some(range.start), range.step, Some(range.end)]
-                        .into_iter()
-                        .flatten()
-                    {
-                        if Some(expression) == anchor {
-                            continue;
-                        }
-                        let ty = self.check_expr(expression, range_type);
-                        match (ty, range_type) {
-                            (Some(ty), Some(expected)) if ty != expected => {
-                                self.error(
-                                    self.span_of(expression),
-                                    "range expression types must be consistent (§5.9.5)",
-                                );
-                            }
-                            (Some(ty), None) => range_type = Some(ty),
-                            _ => {}
-                        }
-                    }
-                    if let Some(range_type) = range_type {
-                        if !(self.is_integer(range_type) || self.is_numeric(range_type)) {
-                            self.error(
-                                self.span_of(range.start),
-                                "an omitted 'for' iteration variable requires an integer range",
-                            );
-                        }
-                        self.result.node_types[node as usize] = Some(range_type);
-                    }
+                let Some(range_type) = self.check_range_expressions(range, explicit) else {
+                    return;
+                };
+                if !(self.is_integer(range_type) || self.is_numeric(range_type)) {
+                    self.error(
+                        self.span_of(node),
+                        "for range requires an integer or cardinal binding type",
+                    );
                 }
+                self.result.node_types[node as usize] = Some(range_type);
+                range_type
             }
             ForTarget::Expression(target) => {
                 let saved_expected = self.expected_array_element;
                 if matches!(self.node_kind(*target), NodeKind::ArrayLiteral(_)) {
-                    self.expected_array_element = Some(binding_type);
+                    self.expected_array_element = explicit;
                 }
                 let target_type = self.check_expr(*target, None);
                 self.expected_array_element = saved_expected;
-                if let Some(target_type) = target_type {
-                    match self.type_of(target_type) {
-                        Type::Array {
-                            dimensions,
+                let Some(target_type) = target_type else {
+                    return;
+                };
+                match self.type_of(target_type) {
+                    Type::Array { .. } => {
+                        // Character strings and byte arrays yield their element
+                        // type when traversed.
+                    }
+                    Type::Vla { .. } => {}
+                    _ => {
+                        if let Some((
+                            iterator_interface,
+                            use_accessor,
+                            iterable_interface,
                             element,
-                        } => {
-                            let item_type = if dimensions.len() > 1 {
-                                let mut rest = dimensions.clone();
-                                rest.remove(0);
-                                self.result.types.array(rest, element)
-                            } else {
-                                element
-                            };
-                            self.expect_assignable(self.span_of(node), item_type, binding_type);
-                        }
-                        Type::Vla { element, .. } => {
-                            self.expect_assignable(self.span_of(node), element, binding_type);
-                        }
-                        _ => {
-                            if let Some((
+                        )) = self.find_builtin_iterator(target_type)
+                        {
+                            iterator = Some(ForIteratorInfo {
+                                target: *target,
                                 iterator_interface,
                                 use_accessor,
                                 iterable_interface,
                                 element,
-                            )) = self.find_builtin_iterator(target_type)
-                            {
-                                if statement.by_ref {
-                                    self.error(
-                                        self.span_of(node),
-                                        "a by-reference 'for' binding requires an array target",
-                                    );
-                                    return;
-                                }
-                                self.expect_assignable(self.span_of(node), element, binding_type);
-                                self.result.for_iterators.insert(
-                                    node,
-                                    ForIteratorInfo {
-                                        target: *target,
-                                        iterator_interface,
-                                        use_accessor,
-                                        iterable_interface,
-                                        element,
-                                    },
-                                );
-                            } else {
-                                self.unsupported(
-                                    self.span_of(node),
-                                    "iteration over non-array values",
-                                );
-                            }
+                            });
+                        } else {
+                            self.unsupported(self.span_of(node), "iteration over non-array values");
+                            return;
                         }
                     }
                 }
+                let item_type = self.iterated_item_type(target_type);
+                let Some(item_type) = item_type else {
+                    self.error(
+                        self.span_of(node),
+                        "cannot infer the 'for' iteration variable type (§5.9.5)",
+                    );
+                    return;
+                };
+                if let Some(iterator) = &iterator {
+                    if statement.by_ref {
+                        self.error(
+                            self.span_of(node),
+                            "a by-reference 'for' binding requires an array target",
+                        );
+                        return;
+                    }
+                    self.result.for_iterators.insert(node, *iterator);
+                }
+                match explicit {
+                    Some(explicit_type) => {
+                        if explicit_type != item_type {
+                            self.error(
+                                self.span_of(node),
+                                "the explicit 'for' type does not match the inferred type (§5.9.5)",
+                            );
+                        }
+                        self.expect_assignable(self.span_of(node), item_type, explicit_type);
+                        explicit_type
+                    }
+                    None => item_type,
+                }
             }
+        };
+        if matches!(binding_type, TypeId::ERROR) {
+            return;
         }
-
+        if statement.name.is_some() {
+            self.result.node_types[node as usize] = Some(binding_type);
+        }
         self.push_scope();
-        if let Some((name, binding_type)) = binding {
+        if let Some(name) = &statement.name {
             let binding_local = self.add_local(
-                name,
+                name.clone(),
                 binding_type,
                 false,
                 None,
@@ -6973,7 +6970,6 @@ impl<'a> Sema<'a> {
                 self.span_of(node),
             );
             self.result.loop_bindings.insert(node, binding_local);
-            self.result.node_types[node as usize] = Some(binding_type);
         }
         self.loop_labels.push(statement.label.clone());
         self.loop_blocks.push(statement.body);
@@ -6981,6 +6977,123 @@ impl<'a> Sema<'a> {
         self.loop_blocks.pop();
         self.loop_labels.pop();
         self.pop_scope();
+    }
+
+    /// The element type produced by traversing `target_type` (§5.9.5, §3.6.1).
+    fn iterated_item_type(&mut self, target_type: TypeId) -> Option<TypeId> {
+        match self.type_of(target_type) {
+            Type::Array {
+                dimensions,
+                element,
+            } => Some(if dimensions.len() > 1 {
+                let mut rest = dimensions.clone();
+                rest.remove(0);
+                self.result.types.array(rest, element)
+            } else {
+                element
+            }),
+            Type::Vla { element, .. } => Some(element),
+            _ => self
+                .find_builtin_iterator(target_type)
+                .map(|(_, _, _, element)| element),
+        }
+    }
+
+    /// Checks the expressions of a range and returns its type (§5.9.5).
+    ///
+    /// With an explicit binding type the expressions are checked against it;
+    /// otherwise the type is inferred from the first non-literal expression and
+    /// all expressions must agree. Explicit-direction ranges also validate the
+    /// sign of a constant step.
+    fn check_range_expressions(
+        &mut self,
+        range: &RangeExpr,
+        explicit: Option<TypeId>,
+    ) -> Option<TypeId> {
+        let is_literal = |this: &Self, expression: NodeId| match this.node_kind(expression) {
+            NodeKind::IntegerLiteral(_) => true,
+            NodeKind::Unary(unary) => {
+                unary.op == UnaryOp::Negate
+                    && matches!(this.node_kind(unary.operand), NodeKind::IntegerLiteral(_))
+            }
+            _ => false,
+        };
+        let range_type = match explicit {
+            Some(expected) => {
+                for expression in [Some(range.start), range.step, Some(range.end)]
+                    .into_iter()
+                    .flatten()
+                {
+                    let ty = self.check_expr(expression, Some(expected));
+                    if let Some(ty) = ty {
+                        self.expect_assignable(self.span_of(expression), ty, expected);
+                    }
+                }
+                expected
+            }
+            None => {
+                let mut anchor = None;
+                for candidate in [Some(range.end), Some(range.start), range.step]
+                    .into_iter()
+                    .flatten()
+                {
+                    if !is_literal(self, candidate) {
+                        anchor = Some(candidate);
+                        break;
+                    }
+                }
+                let mut range_type =
+                    anchor.and_then(|expression| self.check_expr(expression, None));
+                for expression in [Some(range.start), range.step, Some(range.end)]
+                    .into_iter()
+                    .flatten()
+                {
+                    if Some(expression) == anchor {
+                        continue;
+                    }
+                    let ty = self.check_expr(expression, range_type);
+                    match (ty, range_type) {
+                        (Some(ty), Some(expected)) if ty != expected => {
+                            self.error(
+                                self.span_of(expression),
+                                "range expression types must be consistent (§5.9.5)",
+                            );
+                        }
+                        (Some(ty), None) => range_type = Some(ty),
+                        _ => {}
+                    }
+                }
+                let Some(range_type) = range_type else {
+                    self.error(
+                        self.span_of(range.start),
+                        "cannot infer the range type (§5.9.5)",
+                    );
+                    return None;
+                };
+                range_type
+            }
+        };
+        if let Some(step) = range.step {
+            self.suppress_errors += 1;
+            let constant = self.eval_const_int(step);
+            self.suppress_errors -= 1;
+            if let Some(step_value) = constant {
+                if step_value == 0 {
+                    self.error(self.span_of(step), "a range step must not be zero");
+                } else if range.direction == RangeDirection::Ascending && step_value < 0 {
+                    self.error(
+                        self.span_of(step),
+                        "an ascending range requires a positive step (§5.9.5)",
+                    );
+                } else if range.direction == RangeDirection::Descending && step_value > 0 {
+                    self.error(
+                        self.span_of(step),
+                        "a descending range requires a negative step (§5.9.5)",
+                    );
+                }
+            }
+        }
+        Some(range_type)
     }
 
     fn check_match_statement(&mut self, node: NodeId, statement: &MatchStmt) {
@@ -9125,7 +9238,10 @@ impl<'a> Sema<'a> {
                 }
                 Some(left_type)
             }
-            BinaryOp::ShiftLeft | BinaryOp::ShiftRight => {
+            BinaryOp::ShiftLeft
+            | BinaryOp::ShiftRight
+            | BinaryOp::CircularShiftLeft
+            | BinaryOp::CircularShiftRight => {
                 if !self.is_integer(left_type) {
                     self.error(
                         self.span_of(node),
@@ -11346,19 +11462,23 @@ impl<'a> Sema<'a> {
                     let end = self.eval_const_int(range.end)?;
                     let step = match range.step {
                         Some(step) => self.eval_const_int(step)?,
-                        None => {
-                            if end >= start {
-                                1
-                            } else {
-                                -1
+                        None => match range.direction {
+                            crate::ast::RangeDirection::Ascending => 1,
+                            crate::ast::RangeDirection::Descending => -1,
+                            crate::ast::RangeDirection::Auto => {
+                                if end >= start {
+                                    1
+                                } else {
+                                    -1
+                                }
                             }
-                        }
+                        },
                     };
                     if step == 0 {
                         self.error(self.span_of(node), "range step must not be zero");
                         return None;
                     }
-                    count += range_count(start, end, step, range.inclusive);
+                    count += range_count(start, end, step, range.inclusive, range.direction);
                 }
             }
         }
@@ -11382,17 +11502,39 @@ fn fits_unsigned(value: u128, bytes: u8) -> bool {
     }
 }
 
-fn range_count(start: i128, end: i128, step: i128, inclusive: bool) -> u64 {
-    let distance = if step > 0 {
-        if end < start {
-            return 0;
+fn range_count(
+    start: i128,
+    end: i128,
+    step: i128,
+    inclusive: bool,
+    direction: crate::ast::RangeDirection,
+) -> u64 {
+    let distance = match direction {
+        crate::ast::RangeDirection::Ascending => {
+            if step <= 0 || end < start {
+                return 0;
+            }
+            end - start
         }
-        end - start
-    } else {
-        if end > start {
-            return 0;
+        crate::ast::RangeDirection::Descending => {
+            if step >= 0 || end > start {
+                return 0;
+            }
+            start - end
         }
-        start - end
+        crate::ast::RangeDirection::Auto => {
+            if step > 0 {
+                if end < start {
+                    return 0;
+                }
+                end - start
+            } else {
+                if end > start {
+                    return 0;
+                }
+                start - end
+            }
+        }
     };
     let magnitude = step.unsigned_abs();
     let distance = u128::try_from(distance).unwrap_or(u128::MAX);
@@ -11415,6 +11557,8 @@ fn binary_op_spelling(op: BinaryOp) -> &'static str {
         BinaryOp::Remainder => "%",
         BinaryOp::ShiftLeft => "<<",
         BinaryOp::ShiftRight => ">>",
+        BinaryOp::CircularShiftLeft => "<<<",
+        BinaryOp::CircularShiftRight => ">>>",
         BinaryOp::Less => "<",
         BinaryOp::Greater => ">",
         BinaryOp::LessEqual => "<=",

@@ -746,6 +746,17 @@ pub enum ForTarget {
     Range(RangeExpr),
 }
 
+/// Direction imposed by a range operator (§5.9.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RangeDirection {
+    /// `..` / `..!`: the direction follows the start/end comparison.
+    Auto,
+    /// `..<` / `..<=`: ascending.
+    Ascending,
+    /// `..>` / `..>=`: descending.
+    Descending,
+}
+
 /// An explicit `for` range (§5.9.5).
 #[derive(Clone, Debug)]
 pub struct RangeExpr {
@@ -755,8 +766,10 @@ pub struct RangeExpr {
     pub step: Option<NodeId>,
     /// Range end.
     pub end: NodeId,
-    /// Whether the end is included (`..`) or excluded (`..!`).
+    /// Whether the end is included.
     pub inclusive: bool,
+    /// Operator-imposed direction.
+    pub direction: RangeDirection,
 }
 
 /// `for [&] Name : Type in target [: label] { ... }` (§5.9.5).
@@ -1038,6 +1051,10 @@ pub enum BinaryOp {
     ShiftLeft,
     /// `>>`
     ShiftRight,
+    /// `<<<`
+    CircularShiftLeft,
+    /// `>>>`
+    CircularShiftRight,
     /// `<`
     Less,
     /// `>`
@@ -1067,14 +1084,14 @@ impl BinaryOp {
     #[must_use]
     pub const fn precedence(self) -> u8 {
         use BinaryOp::{
-            Add, BitwiseAnd, BitwiseOr, BitwiseXor, Divide, Equal, Greater, GreaterEqual, Less,
-            LessEqual, LogicalAnd, LogicalOr, Multiply, NotEqual, Remainder, ShiftLeft, ShiftRight,
-            Subtract,
+            Add, BitwiseAnd, BitwiseOr, BitwiseXor, CircularShiftLeft, CircularShiftRight, Divide,
+            Equal, Greater, GreaterEqual, Less, LessEqual, LogicalAnd, LogicalOr, Multiply,
+            NotEqual, Remainder, ShiftLeft, ShiftRight, Subtract,
         };
         match self {
             Multiply | Divide | Remainder => 12,
             Add | Subtract => 11,
-            ShiftLeft | ShiftRight => 10,
+            ShiftLeft | ShiftRight | CircularShiftLeft | CircularShiftRight => 10,
             Less | Greater | LessEqual | GreaterEqual => 9,
             Equal | NotEqual => 8,
             BitwiseAnd => 7,

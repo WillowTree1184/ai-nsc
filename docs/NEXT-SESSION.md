@@ -30,9 +30,11 @@
   are intentionally not provided (§15.2 does not define them).
 - Docs: `docs/COVERAGE.md` maps every spec section to ✅/🟡/⛔ with evidence and
   deliberate deviations; `docs/AUDIT.md` tracks the 111 reproduced defects (all
-  fixed or marked partial with the fixing commit). Draft 1.13 changes are covered:
-  `@` markers, `for` without a binding, contextual keyword names.
-- Draft 1.13 remaining gaps: keyword shadowing that disables a keyword meaning
+  fixed or marked partial with the fixing commit). Draft 1.151 changes are covered:
+  `as` conversions, circular shifts, directional ranges, inferred `for` binding
+  types, `@` markers, `for` without a binding, contextual keyword names.
+- Draft 1.151 remaining gaps: two-phase conditional compilation (§11.7 candidate
+  rounds/fixed point) is not implemented; keyword shadowing that disables a keyword meaning
   (§2.4/§6.4); compiler-defined platform extension names (§11.8.3 permits but
   does not require them, so only the standard names are matched). Compile-time
   API scoping, `Type.SizeOf` pointer width, accessor `this` rules and

@@ -3197,13 +3197,17 @@ impl<'a> Sema<'a> {
                 }
                 return CompileTimeFlow::Normal;
             }
-            None => {
-                if end >= start {
-                    1
-                } else {
-                    -1
+            None => match range.direction {
+                crate::ast::RangeDirection::Ascending => 1,
+                crate::ast::RangeDirection::Descending => -1,
+                crate::ast::RangeDirection::Auto => {
+                    if end >= start {
+                        1
+                    } else {
+                        -1
+                    }
                 }
-            }
+            },
         };
         if step == 0 {
             if self.compile_time_phase_b {
@@ -3217,16 +3221,34 @@ impl<'a> Sema<'a> {
         let mut value = start;
         let mut iterations = 0usize;
         loop {
-            let in_range = if range.inclusive == (step > 0) {
-                if step > 0 {
-                    value <= end
-                } else {
-                    value >= end
+            let in_range = match range.direction {
+                crate::ast::RangeDirection::Ascending => {
+                    if range.inclusive {
+                        value <= end
+                    } else {
+                        value < end
+                    }
                 }
-            } else if step > 0 {
-                value < end
-            } else {
-                value > end
+                crate::ast::RangeDirection::Descending => {
+                    if range.inclusive {
+                        value >= end
+                    } else {
+                        value > end
+                    }
+                }
+                crate::ast::RangeDirection::Auto => {
+                    if range.inclusive == (step > 0) {
+                        if step > 0 {
+                            value <= end
+                        } else {
+                            value >= end
+                        }
+                    } else if step > 0 {
+                        value < end
+                    } else {
+                        value > end
+                    }
+                }
             };
             if !in_range {
                 break;

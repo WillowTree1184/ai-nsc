@@ -85,6 +85,20 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
+            if self.at(TokenKind::As) {
+                let precedence = 9;
+                if precedence < minimum_precedence {
+                    break;
+                }
+                self.bump();
+                let type_ = self.parse_type()?;
+                let span = self.span_between(start_token, self.position);
+                left = self
+                    .ast
+                    .push(span, NodeKind::Cast(CastExpr { type_, value: left }));
+                continue;
+            }
+
             let Some(operator) = self.peek_binary_operator() else {
                 break;
             };
@@ -117,6 +131,8 @@ impl<'a> Parser<'a> {
             TokenKind::Minus => BinaryOp::Subtract,
             TokenKind::ShiftLeft => BinaryOp::ShiftLeft,
             TokenKind::ShiftRight => BinaryOp::ShiftRight,
+            TokenKind::CircularShiftLeft => BinaryOp::CircularShiftLeft,
+            TokenKind::CircularShiftRight => BinaryOp::CircularShiftRight,
             TokenKind::Less => BinaryOp::Less,
             TokenKind::Greater => BinaryOp::Greater,
             TokenKind::LessEquals => BinaryOp::LessEqual,

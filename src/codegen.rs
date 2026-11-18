@@ -3371,7 +3371,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 | BinaryOp::BitwiseOr
                 | BinaryOp::BitwiseXor
                 | BinaryOp::ShiftLeft
-                | BinaryOp::ShiftRight => self.build_arithmetic(
+                | BinaryOp::ShiftRight
+                | BinaryOp::CircularShiftLeft
+                | BinaryOp::CircularShiftRight => self.build_arithmetic(
                     statement.op,
                     current,
                     value,
@@ -3693,8 +3695,14 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 let end_value = self.gen_expr(range.end)?.into_int_value();
                 let step_value = match range.step {
                     Some(step) => self.gen_expr(step)?.into_int_value(),
+                    None if range.direction == crate::ast::RangeDirection::Ascending => {
+                        llvm_type.into_int_type().const_int(1, false)
+                    }
+                    None if range.direction == crate::ast::RangeDirection::Descending => {
+                        llvm_type.into_int_type().const_int(u64::MAX, true)
+                    }
                     None => {
-                        // Default step: +1 for ascending ranges, -1 otherwise.
+                        // Auto direction: +1 when start <= end, -1 otherwise.
                         let current = self
                             .builder
                             .build_load(llvm_type, binding_slot, "current")
@@ -3781,11 +3789,16 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                         "descending_test",
                     )
                     .map_err(|error| format!("cannot compare: {error}"))?;
-                let condition = self
-                    .builder
-                    .build_select(positive, ascending_test, descending_test, "for_condition")
-                    .map_err(|error| format!("cannot select condition: {error}"))?;
-                let condition = self.as_boolean_i1(condition.into_int_value());
+                let condition = match range.direction {
+                    crate::ast::RangeDirection::Ascending => ascending_test,
+                    crate::ast::RangeDirection::Descending => descending_test,
+                    crate::ast::RangeDirection::Auto => self
+                        .builder
+                        .build_select(positive, ascending_test, descending_test, "for_condition")
+                        .map_err(|error| format!("cannot select condition: {error}"))?
+                        .into_int_value(),
+                };
+                let condition = self.as_boolean_i1(condition);
                 self.builder
                     .build_conditional_branch(condition, body_block, end_block)
                     .map_err(|error| format!("cannot branch: {error}"))?;
@@ -5870,21 +5883,36 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     let end = self.const_integer(range.end)?;
                     let step = match range.step {
                         Some(step) => self.const_integer(step)?,
-                        None => {
-                            if end >= start {
-                                1
-                            } else {
-                                -1
+                        None => match range.direction {
+                            crate::ast::RangeDirection::Ascending => 1,
+                            crate::ast::RangeDirection::Descending => -1,
+                            crate::ast::RangeDirection::Auto => {
+                                if end >= start {
+                                    1
+                                } else {
+                                    -1
+                                }
                             }
-                        }
+                        },
                     };
                     let mut current = start;
                     loop {
-                        if step > 0 {
-                            if current > end || (!range.inclusive && current == end) {
-                                break;
+                        let in_range = match range.direction {
+                            crate::ast::RangeDirection::Ascending => {
+                                current < end || (range.inclusive && current == end)
                             }
-                        } else if current < end || (!range.inclusive && current == end) {
+                            crate::ast::RangeDirection::Descending => {
+                                current > end || (range.inclusive && current == end)
+                            }
+                            crate::ast::RangeDirection::Auto => {
+                                if step > 0 {
+                                    current < end || (range.inclusive && current == end)
+                                } else {
+                                    current > end || (range.inclusive && current == end)
+                                }
+                            }
+                        };
+                        if !in_range {
                             break;
                         }
                         let value = element_type.into_int_type().const_int(current as u64, true);
@@ -6988,7 +7016,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     | BinaryOp::BitwiseOr
                     | BinaryOp::BitwiseXor
                     | BinaryOp::ShiftLeft
-                    | BinaryOp::ShiftRight => {
+                    | BinaryOp::ShiftRight
+                    | BinaryOp::CircularShiftLeft
+                    | BinaryOp::CircularShiftRight => {
                         self.build_arithmetic(binary.op, left, right, operand_type, binary.left)
                     }
                     _ => Ok(self
@@ -7192,6 +7222,52 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                             let _ = signed;
                             self.builder.build_right_shift(left, masked, false, "shift")
                         }
+                    }
+                    BinaryOp::CircularShiftLeft | BinaryOp::CircularShiftRight => {
+                        // §4.9.15/§4.9.16: rotate by `count mod width`, filling
+                        // with the shifted-out bits and never sign-extending.
+                        let bits = int_type.get_bit_width();
+                        let mask = int_type.const_int(u64::from(bits - 1), false);
+                        let count = self
+                            .builder
+                            .build_and(right, mask, "rotate_count")
+                            .map_err(|error| format!("cannot mask rotate count: {error}"))?;
+                        let width = int_type.const_int(u64::from(bits), false);
+                        let complement = self
+                            .builder
+                            .build_int_sub(width, count, "rotate_complement")
+                            .map_err(|error| format!("cannot compute rotate count: {error}"))?;
+                        let complement = self
+                            .builder
+                            .build_and(complement, mask, "rotate_complement_mod")
+                            .map_err(|error| format!("cannot mask rotate count: {error}"))?;
+                        let first = if op == BinaryOp::CircularShiftLeft {
+                            self.builder.build_left_shift(left, count, "rotate_left")
+                        } else {
+                            self.builder
+                                .build_right_shift(left, count, false, "rotate_right")
+                        }
+                        .map_err(|error| format!("cannot rotate: {error}"))?;
+                        let second = if op == BinaryOp::CircularShiftLeft {
+                            self.builder
+                                .build_right_shift(left, complement, false, "rotate_wrap")
+                        } else {
+                            self.builder
+                                .build_left_shift(left, complement, "rotate_wrap")
+                        }
+                        .map_err(|error| format!("cannot rotate: {error}"))?;
+                        let combined = self
+                            .builder
+                            .build_or(first, second, "rotate")
+                            .map_err(|error| format!("cannot rotate: {error}"))?;
+                        let zero = int_type.const_zero();
+                        let is_zero = self
+                            .builder
+                            .build_int_compare(IntPredicate::EQ, count, zero, "rotate_zero")
+                            .map_err(|error| format!("cannot compare rotate count: {error}"))?;
+                        self.builder
+                            .build_select(is_zero, left, combined, "rotate_select")
+                            .map(|value| value.into_int_value())
                     }
                     _ => return Err("unsupported integer operator".to_string()),
                 };

@@ -15,7 +15,7 @@ fn spec_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("docs")
         .join("grammar")
-        .join("Draft 1.13.md")
+        .join("Draft 1.151.md")
 }
 
 /// Returns the contents of every ```novasharp fenced block, with its 1-based
@@ -51,7 +51,7 @@ fn every_spec_example_parses() {
     );
 
     // Examples that are syntax fragments rather than whole programs.
-    const NON_PROGRAM_FRAGMENTS: &[usize] = &[9220, 9278];
+    const NON_PROGRAM_FRAGMENTS: &[usize] = &[9220, 9278, 9441];
 
     let mut failures = Vec::new();
     for (line, source) in &examples {

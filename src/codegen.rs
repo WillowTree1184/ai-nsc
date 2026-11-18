@@ -3433,16 +3433,19 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         }
         let function = self.current_llvm_function()?;
         let binding_type = self.type_of(node);
-        let binding_local = *self
-            .sema
-            .loop_bindings
-            .get(&node)
-            .ok_or_else(|| "missing for binding".to_string())?;
-        let binding_slot = *self
-            .local_slots
-            .get(&binding_local)
-            .ok_or_else(|| "missing for binding slot".to_string())?;
         let llvm_type = self.llvm_type(binding_type)?;
+        // An omitted iteration variable still needs a private counter slot, but
+        // the body cannot refer to it (§5.9.5).
+        let binding_slot = match self.sema.loop_bindings.get(&node) {
+            Some(binding_local) => *self
+                .local_slots
+                .get(binding_local)
+                .ok_or_else(|| "missing for binding slot".to_string())?,
+            None => self
+                .builder
+                .build_alloca(llvm_type, "for_counter")
+                .map_err(|error| format!("cannot allocate loop counter: {error}"))?,
+        };
         let condition_block = self.context.append_basic_block(function, "for_condition");
         let body_block = self.context.append_basic_block(function, "for_body");
         let increment_block = self.context.append_basic_block(function, "for_increment");
@@ -4623,6 +4626,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 Ok(self.literal_closure(index)?.into())
             }
             NodeKind::ArrayLiteral(literal_value) => self.gen_array_literal(node, &literal_value),
+            NodeKind::VerbatimExpression(inner) => self.gen_expr(inner),
             NodeKind::CompileTimeExpr(inner) => {
                 // Compile-time expressions are emitted as their end product
                 // (§11.4); only non-integer results fall back to the inner

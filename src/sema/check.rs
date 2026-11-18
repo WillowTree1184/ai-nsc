@@ -3898,10 +3898,13 @@ impl<'a> Sema<'a> {
                     Some(value) => Some(value != 0),
                     None => match self.lookup(&name.name).cloned() {
                         Some(Symbol::Global(global)) => {
-                            let (fixed, init) = {
+                            let (fixed, init, verbatim) = {
                                 let info = &self.result.globals[global as usize];
-                                (info.fixed, info.init)
+                                (info.fixed, info.init, info.verbatim)
                             };
+                            if verbatim {
+                                return None;
+                            }
                             if !fixed {
                                 return None;
                             }
@@ -4234,10 +4237,12 @@ impl<'a> Sema<'a> {
         if step == 0 {
             return CompileFunctionFlow::Normal;
         }
-        let previous = self
-            .constant_env
-            .last()
-            .and_then(|environment| environment.get(&statement.name).copied());
+        let binding_name = statement.name.clone();
+        let previous = binding_name.as_ref().and_then(|name| {
+            self.constant_env
+                .last()
+                .and_then(|environment| environment.get(name).copied())
+        });
         let mut value = start;
         let mut iterations = 0usize;
         loop {
@@ -4259,8 +4264,10 @@ impl<'a> Sema<'a> {
             if iterations > 1_000_000 {
                 break;
             }
-            if let Some(environment) = self.constant_env.last_mut() {
-                environment.insert(statement.name.clone(), value);
+            if let (Some(name), Some(environment)) =
+                (binding_name.as_ref(), self.constant_env.last_mut())
+            {
+                environment.insert(name.clone(), value);
             }
             let statements = match self.node_kind(statement.body) {
                 NodeKind::Block(statements) => statements.clone(),
@@ -4275,13 +4282,15 @@ impl<'a> Sema<'a> {
             }
             value = value.wrapping_add(step);
         }
-        if let Some(environment) = self.constant_env.last_mut() {
+        if let (Some(name), Some(environment)) =
+            (binding_name.as_ref(), self.constant_env.last_mut())
+        {
             match previous {
                 Some(previous) => {
-                    environment.insert(statement.name.clone(), previous);
+                    environment.insert(name.clone(), previous);
                 }
                 None => {
-                    environment.remove(&statement.name);
+                    environment.remove(name);
                 }
             }
         }
@@ -4343,6 +4352,7 @@ impl<'a> Sema<'a> {
                     && self.is_compile_time_evaluable(conditional.else_value)
             }
             NodeKind::CompileTimeExpr(inner) => self.is_compile_time_evaluable(inner),
+            NodeKind::VerbatimExpression(_) => false,
             NodeKind::Call(call) => {
                 if !call
                     .arguments
@@ -4394,6 +4404,7 @@ impl<'a> Sema<'a> {
                 })
             }
             NodeKind::CompileTimeExpr(inner) => self.eval_const_float(inner),
+            NodeKind::VerbatimExpression(_) => None,
             NodeKind::Cast(cast) => self.eval_const_float(cast.value),
             NodeKind::Name(name) => match self.lookup(&name.name).cloned() {
                 Some(Symbol::Global(global)) => {
@@ -4425,6 +4436,7 @@ impl<'a> Sema<'a> {
                 self.eval_const_int(unary.operand).map(i128::wrapping_neg)
             }
             NodeKind::CompileTimeExpr(inner) => self.eval_const_int(inner),
+            NodeKind::VerbatimExpression(_) => None,
             NodeKind::Cast(cast) => {
                 let target = self.result.node_types.get(node as usize).copied().flatten();
                 let Some(Type::Integer { bytes, signed }) = target.map(|ty| self.type_of(ty))
@@ -4584,6 +4596,9 @@ impl<'a> Sema<'a> {
                     }
                     Some(Symbol::Global(global)) => {
                         let info = &self.result.globals[global as usize];
+                        if info.verbatim {
+                            return None;
+                        }
                         match info.init {
                             Some(initializer) => self.eval_const_int(initializer),
                             None => {
@@ -5194,7 +5209,16 @@ impl<'a> Sema<'a> {
         let statements = match self.node_kind(node) {
             NodeKind::Block(statements) => statements,
             NodeKind::VerbatimBlock(block) => {
+                if self.in_verbatim {
+                    self.error(
+                        self.span_of(node),
+                        "no-optimize blocks must not nest (§14.3.1)",
+                    );
+                }
+                let previous = self.in_verbatim;
+                self.in_verbatim = true;
                 self.check_block(block);
+                self.in_verbatim = previous;
                 return;
             }
             _ => {
@@ -5525,7 +5549,10 @@ impl<'a> Sema<'a> {
         let statements = match self.node_kind(block) {
             NodeKind::Block(statements) => statements,
             NodeKind::VerbatimBlock(inner) => {
+                let previous = self.in_verbatim;
+                self.in_verbatim = true;
                 self.check_body_block(inner);
+                self.in_verbatim = previous;
                 return;
             }
             _ => {
@@ -5558,6 +5585,12 @@ impl<'a> Sema<'a> {
         match self.node_kind(node).clone() {
             NodeKind::Block(_) => self.check_block(node),
             NodeKind::VerbatimBlock(inner) => {
+                if self.in_verbatim {
+                    self.error(
+                        self.span_of(node),
+                        "no-optimize blocks must not nest (§14.3.1)",
+                    );
+                }
                 let previous = self.in_verbatim;
                 self.in_verbatim = true;
                 self.check_block(inner);
@@ -5826,7 +5859,7 @@ impl<'a> Sema<'a> {
                 if self.in_verbatim {
                     self.error(
                         self.span_of(node),
-                        "verbatim forbids compile-time evaluation (§9.8)",
+                        "the no-optimize marker forbids compile-time evaluation (§14.3.1)",
                     );
                     return;
                 }
@@ -5864,7 +5897,7 @@ impl<'a> Sema<'a> {
                 if self.in_verbatim {
                     self.error(
                         self.span_of(node),
-                        "verbatim forbids compile-time evaluation (§9.8)",
+                        "the no-optimize marker forbids compile-time evaluation (§14.3.1)",
                     );
                     return;
                 }
@@ -5977,10 +6010,21 @@ impl<'a> Sema<'a> {
                     self.note_heap_escape(initializer);
                 }
             }
+            // `local @Name` forbids compile-time evaluation and folding
+            // (§14.3.1); reject it directly in compile-time contexts.
+            if item.verbatim && !self.compile_time_constants.is_empty() {
+                self.error(
+                    item.span,
+                    "the no-optimize marker forbids compile-time evaluation (§14.3.1)",
+                );
+            }
             // Inside a compile-time block the declared value is a compile-time
             // constant usable by later constant expressions (§11.4).
-            if !self.compile_time_constants.is_empty() && self.in_verbatim {
-                self.error(item.span, "verbatim forbids compile-time evaluation (§9.8)");
+            if !self.compile_time_constants.is_empty() && (self.in_verbatim || item.verbatim) {
+                self.error(
+                    item.span,
+                    "the no-optimize marker forbids compile-time evaluation (§14.3.1)",
+                );
             } else if !self.compile_time_constants.is_empty() {
                 if let Some(initializer) = item.init {
                     self.suppress_errors += 1;
@@ -6596,8 +6640,24 @@ impl<'a> Sema<'a> {
     }
 
     fn check_for_statement(&mut self, node: NodeId, statement: &ForStmt) {
-        let binding_type = self.resolve_type(statement.ty).unwrap_or(TypeId::ERROR);
-        if statement.by_ref && matches!(statement.target, ForTarget::Range(_)) {
+        let binding = match (statement.name.as_ref(), statement.ty) {
+            (Some(name), Some(ty_node)) => Some((
+                name.clone(),
+                self.resolve_type(ty_node).unwrap_or(TypeId::ERROR),
+            )),
+            _ => None,
+        };
+        let binding_type = binding.as_ref().map_or(TypeId::ERROR, |(_, ty)| *ty);
+        if binding.is_none() && !matches!(statement.target, ForTarget::Range(_)) {
+            self.error(
+                self.span_of(node),
+                "an omitted 'for' iteration variable requires a range target (§5.9.5)",
+            );
+            return;
+        }
+        if statement.by_ref
+            && (binding.is_none() || matches!(statement.target, ForTarget::Range(_)))
+        {
             self.error(
                 self.span_of(node),
                 "a by-reference 'for' binding requires an array target",
@@ -6607,19 +6667,33 @@ impl<'a> Sema<'a> {
 
         match &statement.target {
             ForTarget::Range(range) => {
-                if !(self.is_integer(binding_type) || self.is_numeric(binding_type)) {
-                    self.error(
-                        self.span_of(node),
-                        "for range requires an integer or cardinal binding type",
-                    );
+                if let Some(binding_type) = binding.as_ref().map(|(_, ty)| *ty) {
+                    if !(self.is_integer(binding_type) || self.is_numeric(binding_type)) {
+                        self.error(
+                            self.span_of(node),
+                            "for range requires an integer or cardinal binding type",
+                        );
+                    }
                 }
+                let expected = binding.as_ref().map(|(_, ty)| *ty);
                 for expression in [Some(range.start), range.step, Some(range.end)]
                     .into_iter()
                     .flatten()
                 {
-                    let ty = self.check_expr(expression, Some(binding_type));
-                    if let Some(ty) = ty {
+                    let ty = self.check_expr(expression, expected);
+                    if let (Some(ty), Some(binding_type)) = (ty, expected) {
                         self.expect_assignable(self.span_of(expression), ty, binding_type);
+                    }
+                }
+                if binding.is_none() {
+                    if let Some(start_type) = self.result.node_types[range.start as usize] {
+                        if !self.is_integer(start_type) {
+                            self.error(
+                                self.span_of(range.start),
+                                "an omitted 'for' iteration variable requires an integer range",
+                            );
+                        }
+                        self.result.node_types[node as usize] = Some(start_type);
                     }
                 }
             }
@@ -6687,20 +6761,22 @@ impl<'a> Sema<'a> {
         }
 
         self.push_scope();
-        let binding_local = self.add_local(
-            statement.name.clone(),
-            binding_type,
-            false,
-            None,
-            if statement.by_ref {
-                Storage::Reference
-            } else {
-                Storage::Value
-            },
-            self.span_of(node),
-        );
-        self.result.loop_bindings.insert(node, binding_local);
-        self.result.node_types[node as usize] = Some(binding_type);
+        if let Some((name, binding_type)) = binding {
+            let binding_local = self.add_local(
+                name,
+                binding_type,
+                false,
+                None,
+                if statement.by_ref {
+                    Storage::Reference
+                } else {
+                    Storage::Value
+                },
+                self.span_of(node),
+            );
+            self.result.loop_bindings.insert(node, binding_local);
+            self.result.node_types[node as usize] = Some(binding_type);
+        }
         self.loop_labels.push(statement.label.clone());
         self.loop_blocks.push(statement.body);
         self.check_block(statement.body);
@@ -7144,11 +7220,30 @@ impl<'a> Sema<'a> {
                 }
             }
             NodeKind::ArrayLiteral(literal) => self.check_array_literal(node, &literal, expected),
+            NodeKind::VerbatimExpression(inner) => {
+                if self.compile_time_depth > 0 || !self.compile_time_constants.is_empty() {
+                    self.error(
+                        self.span_of(node),
+                        "no-optimize markers must not appear in compile-time code (§14.3.1)",
+                    );
+                }
+                if self.in_verbatim {
+                    self.error(
+                        self.span_of(node),
+                        "no-optimize markers must not nest (§14.3.1)",
+                    );
+                }
+                let previous = self.in_verbatim;
+                self.in_verbatim = true;
+                let ty = self.check_expr(inner, expected);
+                self.in_verbatim = previous;
+                ty
+            }
             NodeKind::CompileTimeExpr(inner) => {
                 if self.in_verbatim {
                     self.error(
                         self.span_of(node),
-                        "verbatim forbids compile-time evaluation (§9.8)",
+                        "the no-optimize marker forbids compile-time evaluation (§14.3.1)",
                     );
                     return None;
                 }
@@ -8054,6 +8149,7 @@ impl<'a> Sema<'a> {
             }
             NodeKind::Cast(cast) => self.is_compile_time_constant(cast.value),
             NodeKind::CompileTimeExpr(inner) => self.is_compile_time_constant(inner),
+            NodeKind::VerbatimExpression(_) => false,
             NodeKind::Call(call) => {
                 builtin_size_of_type_argument(self.ast, call.callee).is_some()
                     || builtin_namespace_call(self.ast, call.callee, "Platform")
@@ -8062,7 +8158,7 @@ impl<'a> Sema<'a> {
             NodeKind::Name(name) => match self.lookup(&name.name) {
                 Some(Symbol::Global(global)) => {
                     let info = &self.result.globals[*global as usize];
-                    info.fixed && info.init.is_some()
+                    info.fixed && info.init.is_some() && !info.verbatim
                 }
                 _ => false,
             },
@@ -9785,14 +9881,14 @@ impl<'a> Sema<'a> {
                 if builtin_namespace_call(self.ast, call.callee, namespace).is_some() {
                     self.error(
                         self.span_of(node),
-                        "verbatim forbids compile-time evaluation (§9.8)",
+                        "the no-optimize marker forbids compile-time evaluation (§14.3.1)",
                     );
                 }
             }
             if builtin_size_of_type_argument(self.ast, call.callee).is_some() {
                 self.error(
                     self.span_of(node),
-                    "verbatim forbids compile-time evaluation (§9.8)",
+                    "the no-optimize marker forbids compile-time evaluation (§14.3.1)",
                 );
             }
         }

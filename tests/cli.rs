@@ -1151,7 +1151,7 @@ fn verbatim_functions_are_not_optimized() {
     let path = directory.join("program.ns");
     std::fs::write(
         &path,
-        "fixed Main(): integer(4)\n{\n    verbatim\n    {\n        local sum: integer(4) = 1 + 2;\n        return sum;\n    }\n}",
+        "fixed Main(): integer(4)\n@{\n    local sum: integer(4) = 1 + 2;\n    return sum;\n}",
     )
     .expect("write program");
     let output = ai_nsc()
@@ -1172,16 +1172,13 @@ fn verbatim_forbids_compile_time_evaluation() {
     let stderr = check_source(
         "\
 fixed Main(): integer(4)
-{
-    verbatim
-    {
-        local value: integer(4) = #(1 + 2);
-    }
+@{
+    local value: integer(4) = #(1 + 2);
     return 0;
 }",
     );
     assert!(
-        stderr.contains("verbatim forbids compile-time evaluation"),
+        stderr.contains("no-optimize marker forbids compile-time evaluation"),
         "{stderr}"
     );
 }
@@ -1854,4 +1851,36 @@ fixed Main(): integer(4)
         .expect("run arm program");
     let _ = std::fs::remove_dir_all(&directory);
     assert_eq!(status.code(), Some(42));
+}
+
+#[test]
+fn no_optimize_markers_are_rejected_in_compile_time_code() {
+    let nested = check_source(
+        "\
+fixed Main(): integer(4)
+@{
+    @{
+    }
+    return 0;
+}",
+    );
+    assert!(
+        nested.contains("no-optimize blocks must not nest"),
+        "{nested}"
+    );
+    let in_compile_time = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    local x: integer(4) = 0;
+    #{
+        local value: integer(4) = @(1 + 2);
+    }
+    return x;
+}",
+    );
+    assert!(
+        in_compile_time.contains("compile-time"),
+        "{in_compile_time}"
+    );
 }

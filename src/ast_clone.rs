@@ -41,6 +41,9 @@ impl Ast {
             // -- Structure -------------------------------------------------
             NodeKind::Block(statements) => NodeKind::Block(self.clone_ids(statements)),
             NodeKind::VerbatimBlock(block) => NodeKind::VerbatimBlock(self.clone_subtree(*block)),
+            NodeKind::VerbatimExpression(inner) => {
+                NodeKind::VerbatimExpression(self.clone_subtree(*inner))
+            }
 
             // -- Declarations ----------------------------------------------
             NodeKind::Class(decl) => NodeKind::Class(self.clone_class_decl(decl)),
@@ -312,6 +315,7 @@ impl Ast {
             ty: self.clone_opt_id(member.ty),
             expression: self.clone_opt_id(member.expression),
             this_type: self.clone_opt_id(member.this_type),
+            this_by_ref: member.this_by_ref,
             value_type: self.clone_opt_id(member.value_type),
             body: self.clone_opt_id(member.body),
             span: member.span,
@@ -403,6 +407,7 @@ impl Ast {
                 .items
                 .iter()
                 .map(|item| LocalItem {
+                    verbatim: item.verbatim,
                     name: item.name.clone(),
                     ty: self.clone_opt_id(item.ty),
                     init: self.clone_opt_id(item.init),
@@ -516,7 +521,7 @@ impl Ast {
         ForStmt {
             by_ref: stmt.by_ref,
             name: stmt.name.clone(),
-            ty: self.clone_subtree(stmt.ty),
+            ty: self.clone_opt_id(stmt.ty),
             target: self.clone_for_target(&stmt.target),
             label: stmt.label.clone(),
             body: self.clone_subtree(stmt.body),

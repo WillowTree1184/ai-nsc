@@ -1,6 +1,6 @@
 # Spec coverage matrix
 
-Status against `docs/grammar/Draft 1.12.md` (draft). The specification is the
+Status against `docs/grammar/Draft 1.13.md` (draft). The specification is the
 source of truth and evolves; the matrix records what the compiler implements and
 what it diagnoses instead of miscompiling.
 
@@ -24,7 +24,7 @@ cargo test
 `cargo test` currently runs **234 tests**: 40 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
-that read `docs/grammar/Draft 1.12.md` directly:
+that read `docs/grammar/Draft 1.13.md` directly:
 
 1. every `novasharp` fence in the specification parses (80+ examples);
 2. every whole-program example that passes semantic analysis is compiled end to
@@ -42,7 +42,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 
 | Spec area | Status | Notes / evidence |
 |---|---|---|
-| §2 lexical: tokens, comments, `@` forced keywords, verbatim strings, encoding tags, `..`/`..!` | ✅ | lexer unit tests |
+| §2 lexical: tokens, comments, `@` forced keywords, verbatim strings, encoding tags, contextual keywords, `..`/`..!` | 🟡 | lexer unit tests; keyword spellings are accepted as names, but full keyword-shadowing resolution (a same-named declaration disabling the keyword meaning) is not enforced yet |
 | Literal decoding: integer/float/character/string, encodings, raw `\x` bytes | ✅ | `src/literal.rs` unit tests |
 | §3.1–3.2 type constructors, basic types, no implicit basic conversions | ✅ | e2e arithmetic, casts, comparison tests |
 | §3.3–3.5 value/reference semantics, `&` by-reference parameters, scoped storage | ✅ | by-ref parameter and alias e2e tests |
@@ -75,7 +75,11 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §6 names/scopes: modules, shadowing, `owner` chains, imports | ✅ | scope/owner/use tests |
 | §7 modules (including nested modules and modules inside type bodies) | ✅ | module e2e tests |
 | §8 functions: parameters, defaults, by-ref, array parameter sugar, `#` compile-time constants, nested functions | ✅ | parameter/call tests; `#` on functions, methods and operators |
-| §9 modifiers: accessibility, `scoped`, `readonly`, `implicitable`, `manual`, `abstract`/`sealed`/`virtual`/`override`, `aligned`, `static`, `verbatim` | 🟡 | all enforced, including `verbatim` (optnone functions, runtime-evaluated storages, compile-time evaluation rejected inside verbatim) |
+| §9 modifiers: accessibility, `scoped`, `readonly`, `implicitable`, `manual`, `abstract`/`sealed`/`virtual`/`override`, `aligned`, `static` | ✅ | all enforced; `verbatim` was removed in Draft 1.13 in favour of the `@` marker (see §14.3.1) |
+| §14.3.1 no-optimize marker: `@(expr)`, `@{ block }`, `local @Name`, `fixed @Name`, verbatim bodies | ✅ | parsed and enforced (nested markers, `#` inside markers and constant folding of marked storages rejected; `optnone` for marked bodies; e2e tests) |
+| §5.9.5 `for` without an iteration variable (range only) | ✅ | parser/sema/codegen plus e2e (ascending/descending/labelled break) |
+| §3.8.2 accessor `this` without `&` for reference targets | 🟡 | grammar parsed and stored; reference/value target validation and block-shorthand binding are limited |
+| §8.2 `array(Name: Type) T` parameter expansion in literal parameter lists | 🟡 | supported in function type constructors; function-literal parameter lists still require the `Name[dims]: T` shorthand |
 | §10 generics / monomorphization | 🟡 | types/functions/constraints/extension-for-generic/caching/mangling; including methods that declare their own type parameters and array extension targets (methods); remaining: array extension indexers and monomorphization-volume optimization (§14.3.2, not implemented) |
 | §11.1–11.7 compile-time: `#(...)`, `#if`/`#else`, `#{}` blocks (incl. top-level and cross-file order), `#` constant parameters, compile-time boundary | ✅ | compile-time e2e tests; blocks are lowered as runtime equivalents of compile-time results (semantics-preserving approximation) |
 | §11.8 compiler API: `Type.SizeOf<T>`, `Compiler.LogNote/LogWarning/LogError/Assert`, `Platform.Is`, `NOLAA.Abandon/Bind/AssumeNoDemandNext` | ✅ | compiler API tests |
@@ -95,8 +99,9 @@ These are deliberate, documented limitations rather than silent miscompiles:
    (§11.4 exact wording).
 2. **Non-leading runtime array dimensions** are diagnosed (multi-dimensional
    VLAs with a leading runtime dimension are supported).
-5. **`verbatim`** bodies are emitted with `optnone`/no compile-time evaluation;
-   the run-time semantics are the same as ordinary code (§11.7).
+5. **`@` no-optimize markers** mirror the old `verbatim` behaviour (optnone
+   bodies, no compile-time evaluation). Marked constant subexpressions are still
+   represented as LLVM constants (canonical IR, not an optimisation pass).
 6. **NOLAA** is a conservative approximation: warnings (including Early-Dispose),
    block-end/return/break/continue auto-dispose, alias/store demand tracking,
    `NOLAA.Bind` groups and `NOLAA.AssumeNoDemandNext`; general CFG safe-point

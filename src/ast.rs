@@ -91,6 +91,8 @@ pub enum NodeKind {
     Block(Vec<NodeId>),
     /// A `verbatim { ... }` block (§9.8): same statements, optimization disabled.
     VerbatimBlock(NodeId),
+    /// A no-optimize expression (`@(Expression)`, §14.3.1).
+    VerbatimExpression(NodeId),
 
     // ------------------------------------------------------------------
     // Declarations (§3, §5.2-§5.5, §7, §8.1, §3.8)
@@ -496,6 +498,8 @@ pub struct AccessorMember {
     pub expression: Option<NodeId>,
     /// Block form with explicit `this` parameter.
     pub this_type: Option<NodeId>,
+    /// Whether the explicit `this` parameter was written with `&`.
+    pub this_by_ref: bool,
     /// Block form's value parameter type (setter only).
     pub value_type: Option<NodeId>,
     /// Block form body.
@@ -577,6 +581,8 @@ pub struct LocalDecl {
 /// One item of a `local` definition.
 #[derive(Clone, Debug)]
 pub struct LocalItem {
+    /// Whether the storage is marked no-optimize (`local @Name`, §14.3.1).
+    pub verbatim: bool,
     /// Name.
     pub name: String,
     /// Type, if written.
@@ -758,10 +764,10 @@ pub struct RangeExpr {
 pub struct ForStmt {
     /// Whether the iteration variable is taken by reference.
     pub by_ref: bool,
-    /// Iteration variable name.
-    pub name: String,
-    /// Iteration variable type.
-    pub ty: NodeId,
+    /// Iteration variable name (`None` when the binding is omitted).
+    pub name: Option<String>,
+    /// Iteration variable type (`None` when omitted).
+    pub ty: Option<NodeId>,
     /// Traversed target.
     pub target: ForTarget,
     /// Loop label.

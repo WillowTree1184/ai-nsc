@@ -2937,9 +2937,14 @@ impl<'a> Sema<'a> {
             }
             return CompileTimeFlow::Normal;
         }
-        let Some(binding_type) = self.resolve_type(statement.ty) else {
-            return CompileTimeFlow::Normal;
+        let binding_type = match statement.ty {
+            Some(ty_node) => match self.resolve_type(ty_node) {
+                Some(ty) => Some(ty),
+                None => return CompileTimeFlow::Normal,
+            },
+            None => self.result.node_types[range.start as usize],
         };
+        let binding_name = statement.name.clone();
         self.suppress_errors += 1;
         let start = self.eval_const_int(range.start);
         let end = self.eval_const_int(range.end);
@@ -2979,7 +2984,9 @@ impl<'a> Sema<'a> {
             }
             return CompileTimeFlow::Normal;
         }
-        let previous = self.top_level_constants.get(&statement.name).copied();
+        let previous = binding_name
+            .as_ref()
+            .and_then(|name| self.top_level_constants.get(name).copied());
         let mut value = start;
         let mut iterations = 0usize;
         loop {
@@ -3005,8 +3012,10 @@ impl<'a> Sema<'a> {
                 );
                 break;
             }
-            self.top_level_constants
-                .insert(statement.name.clone(), (value, binding_type));
+            if let (Some(name), Some(binding_type)) = (binding_name.as_ref(), binding_type) {
+                self.top_level_constants
+                    .insert(name.clone(), (value, binding_type));
+            }
             let statements = self.block_statements(statement.body);
             match self.execute_compile_time_statements(&statements, true) {
                 CompileTimeFlow::Break => break,
@@ -3014,11 +3023,12 @@ impl<'a> Sema<'a> {
             }
             value = value.wrapping_add(step);
         }
-        if let Some(previous) = previous {
-            self.top_level_constants
-                .insert(statement.name.clone(), previous);
-        } else {
-            self.top_level_constants.remove(&statement.name);
+        if let Some(name) = binding_name {
+            if let Some(previous) = previous {
+                self.top_level_constants.insert(name, previous);
+            } else {
+                self.top_level_constants.remove(&name);
+            }
         }
         CompileTimeFlow::Normal
     }

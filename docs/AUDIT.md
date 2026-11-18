@@ -1,7 +1,7 @@
 # Spec conformance audit — defect register
 
 Working list of reproduced conformance defects against
-`docs/grammar/Draft 1.12.md`. The audit was a read-only review of the compiler at
+`docs/grammar/Draft 1.13.md`. The audit was a read-only review of the compiler at
 commit `51bd259` (the commit before generics landed): each item was found by reading
 the implementation against the specification and then reproducing it by compiling
 small `.ns` programs. Rows marked `fixed (a5cc9cf)` were re-checked against their
@@ -327,3 +327,6 @@ report an error (§4.8).
 | 106 | HIGH | §13 | i686 interface dispatch used 8-byte vtable slot stride (segfault/typeinfo jump) | fixed (ae98012: slot addressing scales by pointer_byte_offset(1); i686 build/run enabled and tested with heap classes) |
 | 107 | HIGH | §13 | armv7 build/link unsupported and 32-bit trap payload used an 8-byte offset | fixed (78d33eb: --sysroot + lld for ARM links, ARM32 layout, pointer-sized exception payload; qemu-arm heap-class and i686 trap tests) |
 | 108 | HIGH | §3.7.1 | Heap-constructed class instances had no vtable/typeinfo header (interface dispatch crash) | fixed (7c3ab3f: emit_instance_header used by heap and stack construction; host/i686/armv7 verified, regression test) |
+| 109 | HIGH | §14.3.1 | Draft 1.13 replaced `verbatim` with `@` no-optimize markers | fixed (parser/AST/sema/codegen for `@(expr)`, `@{ block }`, `local @Name`, `fixed @Name`, verbatim function bodies; nested/compile-time uses diagnosed) |
+| 110 | MED | §5.9.5 | `for` did not accept an omitted iteration variable | fixed (range-only `for target` parsed/sema-checked/code-generated; e2e ascending/descending/labelled-break) |
+| 111 | MED | §2.4/§2.6 | Keyword spellings as names were only partially contextual | partial (all name positions accept keyword spellings; declaration shadowing that disables a keyword meaning is still resolved as a keyword) |

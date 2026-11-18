@@ -27,8 +27,14 @@
   (`Type.SizeOf`, `Compiler.Log*`/`Assert`, `Platform.Is`, `NOLAA.*`). Containers
   are intentionally not provided (§15.2 does not define them).
 - Docs: `docs/COVERAGE.md` maps every spec section to ✅/🟡/⛔ with evidence and
-  deliberate deviations; `docs/AUDIT.md` tracks the 108 reproduced defects (all
-  fixed or marked partial with the fixing commit).
+  deliberate deviations; `docs/AUDIT.md` tracks the 111 reproduced defects (all
+  fixed or marked partial with the fixing commit). Draft 1.13 changes are covered:
+  `@` markers, `for` without a binding, contextual keyword names.
+- Draft 1.13 remaining gaps: keyword shadowing that disables a keyword meaning;
+  accessor block shorthand `this` reference/value validation; `array(Name: Type) T`
+  in literal parameter lists; separate compile-time/runtime scopes (runtime code
+  may still call the compiler API directly in places); compiler-defined platform
+  extension names.
 - Build flags (required on this host):
   `CARGO_HOME=/tmp/ainsc-cargo LLVM_SYS_181_PREFIX=/usr/lib/llvm-18`
 - CLI: `target/debug/ai-nsc check|emit-ir|emit-obj|build|run [--target=<triple>]

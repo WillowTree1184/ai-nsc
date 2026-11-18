@@ -5,7 +5,7 @@
 //! decoded later from the token's source span (see [`crate::literal`]); the
 //! lexer only validates their surface syntax.
 //!
-//! Spec references are to `docs/grammar/Draft 1.1.md`:
+//! Spec references are to `docs/grammar/Draft 1.13.md`:
 //! - §2.2 whitespace and line terminators
 //! - §2.3 comments
 //! - §2.4 identifiers and the `@` keyword escape
@@ -305,7 +305,7 @@ impl TokenKind {
             Integer, Interface, Is, Linkable, Local, Manual, Match, Module, Operator, Override,
             Owner, Pointer, Private, Protected, Public, Readonly, Return, Scoped, Sealed, Static,
             Structure, This, Throw, Trap, True, Ucs2, Ucs4, Uninitialized, Union, Use, Utf16,
-            Utf32, Utf8, Variant, Verbatim, Virtual, When, While, Wildcard,
+            Utf32, Utf8, Variant, Virtual, When, While, Wildcard,
         };
         Some(match text {
             "class" => Class,
@@ -334,7 +334,7 @@ impl TokenKind {
             "scoped" => Scoped,
             "readonly" => Readonly,
             "implicitable" => Implicitable,
-            "verbatim" => Verbatim,
+
             "manual" => Manual,
             "abstract" => Abstract,
             "virtual" => Virtual,
@@ -1255,9 +1255,9 @@ mod tests {
             vec![Array, Function, Pointer, Integer, Cardinal, Float, Boolean, Eof]
         );
         assert_eq!(
-            kinds("public private protected scoped readonly implicitable verbatim manual abstract virtual override sealed aligned static"),
+            kinds("public private protected scoped readonly implicitable manual abstract virtual override sealed aligned static"),
             vec![
-                Public, Private, Protected, Scoped, Readonly, Implicitable, Verbatim, Manual,
+                Public, Private, Protected, Scoped, Readonly, Implicitable, Manual,
                 Abstract, Virtual, Override, Sealed, Aligned, Static, Eof
             ]
         );

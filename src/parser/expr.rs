@@ -236,6 +236,16 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_primary(&mut self) -> Option<NodeId> {
+        // `@(Expression)` is a no-optimize expression (§14.3.1).
+        if self.at(TokenKind::At) && self.peek_at(1) == TokenKind::LeftParen {
+            let start_token = self.position;
+            self.bump();
+            self.expect(TokenKind::LeftParen, "'(' after '@'")?;
+            let inner = self.parse_expression()?;
+            self.expect(TokenKind::RightParen, "')' after no-optimize expression");
+            let span = self.span_between(start_token, self.position);
+            return Some(self.ast.push(span, NodeKind::VerbatimExpression(inner)));
+        }
         let start_token = self.position;
         let token = self.peek();
         let span = token.span;
@@ -395,9 +405,12 @@ impl<'a> Parser<'a> {
         let start_token = self.position;
         let header = self.try_parse(Self::parse_function_literal_header);
         if let Some((parameters, calling_convention, return_type)) = header {
-            // The grammar says Block, but single-expression bodies appear in
-            // the spec's own examples; sema treats those as implicit returns.
-            let body = if self.at(TokenKind::LeftBrace) {
+            // The grammar says Block or VerbatimBlock, but single-expression
+            // bodies appear in the spec's own examples; sema treats those as
+            // implicit returns.
+            let body = if self.at(TokenKind::At) && self.peek_at(1) == TokenKind::LeftBrace {
+                self.parse_verbatim_block()?
+            } else if self.at(TokenKind::LeftBrace) {
                 self.parse_block()?
             } else {
                 self.parse_expression()?

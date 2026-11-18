@@ -27,10 +27,10 @@ Acceptance: `cargo test` and `scripts/lint.sh` are green on a clean checkout.
 
 ## Phase 1 — grammar intake and AST design (in progress)
 
-Depends on: the NovaSharp grammar specification (Draft 1.12 available).
+Depends on: the NovaSharp grammar specification (Draft 1.13 available).
 
 - [x] Exhaustive per-section extraction of the spec into `docs/spec-notes/` (all EBNF blocks
-      verbatim, line-anchored semantic rules, open questions)
+      `@` no-optimize markers, contextual keywords, line-anchored semantic rules, open questions)
 - [x] Token inventory, precedence table and lexical corner cases (implemented in the lexer)
 - [x] Design the AST node set and the arena layout (`src/ast.rs`)
 - [ ] Write `docs/GRAMMAR.md` as the single source of truth derived from the spec

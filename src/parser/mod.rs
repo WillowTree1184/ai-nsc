@@ -375,10 +375,6 @@ impl<'a> Parser<'a> {
                     self.bump();
                     modifiers.implicitable = true;
                 }
-                TokenKind::Verbatim => {
-                    self.bump();
-                    modifiers.verbatim = true;
-                }
                 TokenKind::Manual => {
                     self.bump();
                     modifiers.manual = true;
@@ -941,6 +937,10 @@ impl<'a> Parser<'a> {
     /// Parses one statement (or block-level declaration).
     pub(crate) fn parse_statement(&mut self) -> Option<NodeId> {
         let start_token = self.position;
+        // `@{ ... }` is a no-optimize block (§14.3.1).
+        if self.at(TokenKind::At) && self.peek_at(1) == TokenKind::LeftBrace {
+            return self.parse_verbatim_block();
+        }
         // `@class Name { }` forces the keyword meaning even when an identifier
         // of that name shadows it (§2.4).
         if self.at(TokenKind::At)
@@ -1032,8 +1032,10 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_verbatim_block(&mut self) -> Option<NodeId> {
+    pub(crate) fn parse_verbatim_block(&mut self) -> Option<NodeId> {
         let start_token = self.position;
+        // `@{ ... }` or, after modifiers, a bare `{ ... }` block body.
+        self.eat(TokenKind::At);
         let block = self.parse_block()?;
         let span = self.span_between(start_token, self.position);
         Some(self.ast.push(span, NodeKind::VerbatimBlock(block)))
@@ -1436,6 +1438,7 @@ impl<'a> Parser<'a> {
             ty: None,
             expression: None,
             this_type: None,
+            this_by_ref: false,
             value_type: None,
             body: None,
             span,
@@ -1456,7 +1459,7 @@ impl<'a> Parser<'a> {
                 };
                 if parameter_name == "this" {
                     self.expect(TokenKind::Colon, "':' after 'this'");
-                    self.eat(TokenKind::Ampersand);
+                    member.this_by_ref = self.eat(TokenKind::Ampersand);
                     member.this_type = self.parse_type();
                 } else if parameter_name == "value" {
                     if self.eat(TokenKind::Colon) {
@@ -1661,6 +1664,7 @@ impl<'a> Parser<'a> {
         let mut items = Vec::new();
         loop {
             let item_start = self.position;
+            let verbatim = self.eat(TokenKind::At);
             let head = self.parse_definition_head(false)?;
             let init = if self.eat(TokenKind::Equals) {
                 self.parse_expression()
@@ -1668,6 +1672,7 @@ impl<'a> Parser<'a> {
                 None
             };
             items.push(LocalItem {
+                verbatim,
                 name: head.name,
                 ty: head.ty,
                 init,
@@ -1716,11 +1721,17 @@ impl<'a> Parser<'a> {
     fn parse_fixed(&mut self, modifiers: Modifiers) -> Option<NodeId> {
         let start_token = self.position;
         self.bump();
+        let mut modifiers = modifiers;
+        if self.eat(TokenKind::At) {
+            modifiers.verbatim = true;
+        }
         let head = self.parse_definition_head(true)?;
         let init = if self.eat(TokenKind::Equals) {
             self.parse_expression().map(Initializer::Expression)
         } else if self.at(TokenKind::LeftBrace) {
             self.parse_block().map(Initializer::Block)
+        } else if self.at(TokenKind::At) && self.peek_at(1) == TokenKind::LeftBrace {
+            self.parse_verbatim_block().map(Initializer::Block)
         } else {
             None
         };
@@ -1870,13 +1881,29 @@ impl<'a> Parser<'a> {
     fn parse_for(&mut self) -> Option<NodeId> {
         let start_token = self.position;
         self.bump();
-        let by_ref = self.eat(TokenKind::Ampersand);
-        let head = self.parse_definition_head(false)?;
-        let Some(ty) = head.ty else {
-            self.error_here("the for variable requires a type");
-            return None;
-        };
-        self.expect(TokenKind::In, "'in' in for statement");
+        // Either `[&] Name : Type in target` or, when the iteration variable is
+        // omitted, `target` (which must be a range, §5.9.5).
+        let mut by_ref = false;
+        let mut name = None;
+        let mut ty = None;
+        let binding = self.try_parse(|parser| {
+            let by_ref = parser.eat(TokenKind::Ampersand);
+            let head = parser.parse_definition_head(false)?;
+            if !parser.at(TokenKind::In) {
+                return None;
+            }
+            Some((by_ref, head))
+        });
+        if let Some((binding_by_ref, head)) = binding {
+            by_ref = binding_by_ref;
+            name = Some(head.name);
+            let Some(binding_type) = head.ty else {
+                self.error_here("the for variable requires a type");
+                return None;
+            };
+            ty = Some(binding_type);
+            self.expect(TokenKind::In, "'in' in for statement");
+        }
         let first = self.parse_expression()?;
         let target = if self.at(TokenKind::DotDot) || self.at(TokenKind::DotDotBang) {
             let range = self.parse_range_after_start(first)?;
@@ -1891,7 +1918,7 @@ impl<'a> Parser<'a> {
             span,
             NodeKind::For(ForStmt {
                 by_ref,
-                name: head.name,
+                name,
                 ty,
                 target,
                 label,

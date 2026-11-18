@@ -3435,16 +3435,13 @@ fixed Main(): integer(4)
 #[test]
 fn verbatim_targets_keep_their_semantics() {
     let source = "\
-verbatim fixed GlobalValue: integer(4) = 1 + 2;
+fixed @GlobalValue: integer(4) = 1 + 2;
 
 fixed Main(): integer(4)
-{
-    verbatim
-    {
-        local sum: integer(4) = 1 + 2;
-        local product: integer(4) = sum * 3;
-        return product + GlobalValue;
-    }
+@{
+    local sum: integer(4) = 1 + 2;
+    local product: integer(4) = sum * 3;
+    return product + GlobalValue;
 }";
     // (1+2)*3 + (1+2)
     assert_eq!(run_program(source), 12);
@@ -4544,4 +4541,43 @@ fixed Main(): integer(4)
     return values[0] + values[1] + values[2];
 }";
     assert_eq!(run_program(source), 42);
+}
+
+#[test]
+fn for_statements_may_omit_the_iteration_variable() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local count: integer(4) = 0;
+    for 0..!5
+    {
+        count += 1;
+    }
+    for 3..!0
+    {
+        count += 1;
+    }
+    for 1..10 : outer
+    {
+        count += 1;
+        if (count > 7) { break outer; }
+    }
+    return count;
+}";
+    // 5 ascending + 3 descending + one increment before the labelled break.
+    assert_eq!(run_program(source), 9);
+}
+
+#[test]
+fn no_optimize_markers_and_keyword_names_keep_their_values() {
+    // `@( ... )`, `local @Name` and keyword spellings as names (§2.4, §14.3.1).
+    let source = "\
+fixed Main(): integer(4)
+{
+    local integer: integer(4) = 4;
+    local @marked: integer(4) = 1 + 2;
+    local folded: integer(4) = @(1 + 2);
+    return marked + folded + integer;
+}";
+    assert_eq!(run_program(source), 10);
 }

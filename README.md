@@ -14,7 +14,7 @@ input files form one program (§11.2).
 
 Implemented and tested today:
 
-- **Front end**: complete lexical grammar (including `@` forced keywords, verbatim
+- **Front end**: complete lexical grammar (including `@` forced keywords, `@` no-optimize markers, verbatim
   strings and encoding tags), literal decoder, recursive-descent parser validated
   against every code example in the specification, and a negative-diagnostics
   semantic analysis (scopes, modules, `use`, `owner`, shadowing, accessibility,
@@ -55,7 +55,7 @@ each one.
 Known deliberate limitations (all diagnosed rather than silently miscompiled):
 compile-time blocks are lowered as runtime equivalents of their compile-time
 results; multi-dimensional VLAs, generic methods with their own type parameters,
-array extension targets and some `scoped`/`verbatim` nuances are reported as not
+array extension targets and some `scoped`/context-keyword nuances are reported as not
 implemented; NOLAA analysis is a conservative subset; monomorphization-volume
 optimization (§14.3.2) is not implemented; code generation targets the host ABI
 and diagnoses calling conventions the host backend cannot represent. The
@@ -106,7 +106,7 @@ src/lib.rs           crate root and toolchain constants
 src/main.rs          thin binary entry point
 tests/               CLI and LLVM codegen integration tests
 docs/                architecture, roadmap, toolchain notes
-docs/grammar/        the language specification (Draft 1.12 is current)
+docs/grammar/        the language specification (Draft 1.13 is current)
 docs/spec-notes/     exhaustive per-section extraction of the spec + open questions
 runtime/             NovaSharp runtime support library (planned)
 examples/            example programs (added with the language)

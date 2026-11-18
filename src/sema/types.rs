@@ -65,6 +65,13 @@ pub enum Type {
         /// Return type; `None` is the empty type.
         return_type: Option<TypeId>,
     },
+    /// A variable-length array: `{ pointer, length }` (§3.6.1).
+    Vla {
+        /// Element type.
+        element: TypeId,
+        /// Type of the runtime length value.
+        length: TypeId,
+    },
     /// A declared type: index into the semantic analysis' type definitions.
     Named(u32),
 }
@@ -191,6 +198,10 @@ impl TypeStore {
                     let _ = write!(out, "{dimension}");
                 }
                 out.push(')');
+                self.write_spelling(*element, out);
+            }
+            Type::Vla { element, .. } => {
+                out.push_str("array(runtime)");
                 self.write_spelling(*element, out);
             }
             Type::Pointer { target } => {

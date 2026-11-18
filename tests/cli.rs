@@ -987,3 +987,20 @@ fixed Main(): integer(4) { return 0; }",
     );
     assert!(!stderr.is_empty(), "expected a diagnostic");
 }
+
+#[test]
+fn variable_length_arrays_cannot_be_initialized() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    local count: integer(4) = 3;
+    local values: array(count) integer(4) = 0;
+    return values[0];
+}",
+    );
+    assert!(
+        stderr.contains("variable-length array") || stderr.contains("initializer"),
+        "{stderr}"
+    );
+}

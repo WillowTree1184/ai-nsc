@@ -15,9 +15,23 @@ impl<'a> Sema<'a> {
             NodeKind::BasicType(basic) => self.resolve_basic_type(&basic),
             NodeKind::ArrayType(array) => {
                 let mut dimensions = Vec::new();
+                let mut runtime: Option<NodeId> = None;
                 for dimension in &array.dimensions {
                     match dimension {
                         ArrayDimension::Size(expression) => {
+                            if !self.is_compile_time_constant(*expression) {
+                                // Runtime dimensions are only allowed inside a
+                                // function body (§3.6.1).
+                                if self.in_function_body && runtime.is_none() {
+                                    runtime = Some(*expression);
+                                    continue;
+                                }
+                                self.error(
+                                    self.span_of(*expression),
+                                    "array size must be compile-time constant here",
+                                );
+                                return None;
+                            }
                             let value = self.eval_const_int(*expression)?;
                             match u64::try_from(value) {
                                 Ok(size) => dimensions.push(size),
@@ -40,6 +54,27 @@ impl<'a> Sema<'a> {
                     }
                 }
                 let element = self.resolve_type(array.element)?;
+                if let Some(length_expression) = runtime {
+                    if !dimensions.is_empty() || array.dimensions.len() > 1 {
+                        self.unsupported(
+                            self.span_of(node),
+                            "multi-dimensional variable-length arrays",
+                        );
+                        return None;
+                    }
+                    let length_type = self.check_expr(length_expression, None)?;
+                    if !self.is_integer(length_type) {
+                        self.error(
+                            self.span_of(length_expression),
+                            "array length must be an integer or cardinal",
+                        );
+                        return None;
+                    }
+                    return Some(self.result.types.intern(Type::Vla {
+                        element,
+                        length: length_type,
+                    }));
+                }
                 // Nested fixed arrays are one array with combined dimensions
                 // (`array(3) array(4) T` == `array(3,4) T`, §3.6.1).
                 match self.result.types.get(element).clone() {
@@ -2844,6 +2879,8 @@ impl<'a> Sema<'a> {
                 );
                 llvm_parameter_index += 1;
             }
+            let previous_in_body = self.in_function_body;
+            self.in_function_body = true;
             match body {
                 FunctionBody::Block(block) => self.check_body_block(block),
                 FunctionBody::Expression(expression) => {
@@ -2852,6 +2889,7 @@ impl<'a> Sema<'a> {
                 FunctionBody::BackingGet { .. } | FunctionBody::BackingSet { .. } => {}
                 FunctionBody::BuiltinAllocate | FunctionBody::BuiltinDeallocate => {}
             }
+            self.in_function_body = previous_in_body;
             // NOLAA never-disposed warning (§12.2): conservative — units that
             // escaped the function (returned, passed on or stored) are exempt.
             let pending: Vec<(Span, String)> = self
@@ -3657,10 +3695,39 @@ impl<'a> Sema<'a> {
             );
             locals.push(local);
         }
+        // Variable-length arrays cannot be initialized (§3.6.1).
+        for (local, item) in locals.iter().zip(declaration.items.iter()) {
+            if item.init.is_some() {
+                if let Some(info) = self.local_info(*local) {
+                    if matches!(self.types_of(info.ty), Type::Vla { .. }) {
+                        self.error(
+                            item.span,
+                            "a variable-length array cannot have an initializer",
+                        );
+                    }
+                }
+            }
+        }
         self.result.local_declarations.insert(node, locals);
     }
 
     fn check_fixed_statement(&mut self, node: NodeId, declaration: &FixedDecl) {
+        if let Some(ty_node) = declaration.ty {
+            if let Some(ty) = self
+                .result
+                .node_types
+                .get(ty_node as usize)
+                .copied()
+                .flatten()
+            {
+                if matches!(self.types_of(ty), Type::Vla { .. }) {
+                    self.error(
+                        self.span_of(node),
+                        "a variable-length array cannot be a constant",
+                    );
+                }
+            }
+        }
         let declared_type = declaration.ty.and_then(|ty| self.resolve_type(ty));
         if let Some(ty) = declared_type {
             if matches!(self.type_of(ty), Type::Function { .. }) {
@@ -4171,6 +4238,9 @@ impl<'a> Sema<'a> {
                                 element
                             };
                             self.expect_assignable(self.span_of(node), item_type, binding_type);
+                        }
+                        Type::Vla { element, .. } => {
+                            self.expect_assignable(self.span_of(node), element, binding_type);
                         }
                         _ => {
                             if let Some((
@@ -5411,6 +5481,7 @@ impl<'a> Sema<'a> {
             Type::Pointer {
                 target: Some(target),
             } => Some(target),
+            Type::Vla { element, .. } => Some(element),
             Type::Pointer { target: None } => {
                 self.error(self.span_of(node), "cannot index a target-less pointer");
                 None
@@ -6094,6 +6165,8 @@ impl<'a> Sema<'a> {
         expected: Option<TypeId>,
     ) -> Option<TypeId> {
         let span = self.span_of(node);
+        let previous_in_body = self.in_function_body;
+        self.in_function_body = false;
         let expected_parameters = expected.and_then(|expected| match self.types_of(expected) {
             Type::Function {
                 parameters,
@@ -6139,6 +6212,7 @@ impl<'a> Sema<'a> {
             None,
             return_type,
         );
+        self.in_function_body = previous_in_body;
         let body = match self.node_kind(literal.body) {
             NodeKind::Block(_) => FunctionBody::Block(literal.body),
             NodeKind::VerbatimBlock(inner) => FunctionBody::Block(inner),

@@ -223,6 +223,14 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 }
                 current
             }
+            Type::Vla { element, length } => {
+                let pointer = self.context.ptr_type(AddressSpace::default());
+                let length_type = self.llvm_type(length)?;
+                let _ = element;
+                self.context
+                    .struct_type(&[pointer.into(), length_type], false)
+                    .into()
+            }
             Type::Pointer { .. } | Type::Function { .. } => {
                 self.context.ptr_type(AddressSpace::default()).into()
             }
@@ -2458,23 +2466,100 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         }
     }
 
+    /// Allocates the runtime buffer of a VLA local and stores `{pointer, length}`
+    /// (§3.6.1).
+    fn gen_vla_allocation(
+        &mut self,
+        type_node: NodeId,
+        local: u32,
+        element: TypeId,
+        length_type: TypeId,
+    ) -> Result<(), String> {
+        let length_expression = match self.ast.node(type_node).kind.clone() {
+            NodeKind::ArrayType(array) => match array.dimensions.first() {
+                Some(crate::ast::ArrayDimension::Size(expression)) => *expression,
+                _ => return Err("VLA type has no size expression".to_string()),
+            },
+            _ => return Err("VLA declaration has no array type".to_string()),
+        };
+        let length_value = self.gen_expr(length_expression)?;
+        let length_i64 = self.as_i64(length_value.into_int_value())?;
+        let (element_size, _) = self.sema.size_align(element);
+        let bytes = self
+            .builder
+            .build_int_mul(
+                length_i64,
+                self.context.i64_type().const_int(element_size, false),
+                "vla_bytes",
+            )
+            .map_err(|error| format!("cannot compute VLA size: {error}"))?;
+        let buffer = self
+            .builder
+            .build_array_alloca(self.context.i8_type(), bytes, "vla_buffer")
+            .map_err(|error| format!("cannot allocate VLA: {error}"))?;
+        let slot = *self
+            .local_slots
+            .get(&local)
+            .ok_or_else(|| "missing VLA slot".to_string())?;
+        let local_ty = self.result_local_type(local)?;
+        let struct_type = self.llvm_type(local_ty)?.into_struct_type();
+        let pointer_field = self
+            .builder
+            .build_struct_gep(struct_type, slot, 0, "vla_data")
+            .map_err(|error| format!("cannot store VLA pointer: {error}"))?;
+        self.builder
+            .build_store(pointer_field, buffer)
+            .map_err(|error| format!("cannot store VLA pointer: {error}"))?;
+        let length_field = self
+            .builder
+            .build_struct_gep(struct_type, slot, 1, "vla_length")
+            .map_err(|error| format!("cannot store VLA length: {error}"))?;
+        let _ = length_type;
+        self.builder
+            .build_store(length_field, length_value)
+            .map_err(|error| format!("cannot store VLA length: {error}"))?;
+        Ok(())
+    }
+
+    /// The declared type of a local of the current function.
+    fn result_local_type(&self, local: u32) -> Result<TypeId, String> {
+        self.local_info(local)
+            .map(|info| info.ty)
+            .ok_or_else(|| "missing local information".to_string())
+    }
+
     fn gen_local_declaration(&mut self, node: NodeId) -> Result<(), String> {
         let Some(locals) = self.sema.local_declarations.get(&node).cloned() else {
             return Ok(());
         };
-        let initializers: Vec<Option<NodeId>> = match self.ast.node(node).kind.clone() {
-            NodeKind::Local(declaration) => declaration
-                .items
-                .into_iter()
-                .map(|item| item.init)
-                .collect(),
-            NodeKind::Fixed(declaration) => vec![match declaration.init {
-                Some(Initializer::Expression(expression)) => Some(expression),
-                _ => None,
-            }],
-            _ => return Ok(()),
-        };
-        for (local, initializer) in locals.iter().zip(initializers.iter()) {
+        let (initializers, type_nodes): (Vec<Option<NodeId>>, Vec<Option<NodeId>>) =
+            match self.ast.node(node).kind.clone() {
+                NodeKind::Local(declaration) => (
+                    declaration.items.iter().map(|item| item.init).collect(),
+                    declaration.items.iter().map(|item| item.ty).collect(),
+                ),
+                NodeKind::Fixed(declaration) => (
+                    vec![match declaration.init {
+                        Some(Initializer::Expression(expression)) => Some(expression),
+                        _ => None,
+                    }],
+                    vec![declaration.ty],
+                ),
+                _ => return Ok(()),
+            };
+        for ((local, initializer), type_node) in locals
+            .iter()
+            .zip(initializers.iter())
+            .zip(type_nodes.iter())
+        {
+            // Variable-length arrays allocate their buffer at declaration time
+            // (§3.6.1).
+            if let (Some(type_node), Some(info)) = (type_node, self.local_info(*local)) {
+                if let Type::Vla { element, length } = self.sema.types.get(info.ty).clone() {
+                    self.gen_vla_allocation(*type_node, *local, element, length)?;
+                    continue;
+                }
+            }
             let Some(initializer) = initializer else {
                 continue;
             };
@@ -3067,13 +3152,10 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             }
             ForTarget::Expression(target) => {
                 let target_type = self.type_of(*target);
-                let dimensions = match self.sema.types.get(target_type).clone() {
-                    Type::Array { dimensions, .. } => dimensions,
-                    _ => return Err("for iteration requires an array".to_string()),
-                };
+                let is_fixed_array = matches!(self.sema.types.get(target_type), Type::Array { .. });
                 let array_llvm = self.llvm_type(target_type)?;
                 let element_llvm = self.llvm_type(binding_type)?;
-                let pointer = match self.gen_lvalue(*target)? {
+                let base_pointer = match self.gen_lvalue(*target)? {
                     Some(pointer) => pointer,
                     None => {
                         let value = self.gen_expr(*target)?;
@@ -3087,6 +3169,44 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                         slot
                     }
                 };
+                // Fixed arrays have a constant length; variable-length arrays
+                // carry `{pointer, length}` (§3.6.1).
+                let vla = match self.sema.types.get(target_type).clone() {
+                    Type::Array { dimensions, .. } => Some((
+                        base_pointer,
+                        self.context.i64_type().const_int(dimensions[0], false),
+                    )),
+                    Type::Vla { length, .. } => {
+                        let struct_type = array_llvm.into_struct_type();
+                        let data_field = self
+                            .builder
+                            .build_struct_gep(struct_type, base_pointer, 0, "for_vla_data")
+                            .map_err(|error| format!("cannot load VLA data: {error}"))?;
+                        let pointer_type = self.context.ptr_type(AddressSpace::default());
+                        let data = self
+                            .builder
+                            .build_load(pointer_type, data_field, "for_vla_buffer")
+                            .map_err(|error| format!("cannot load VLA buffer: {error}"))?
+                            .into_pointer_value();
+                        let length_field = self
+                            .builder
+                            .build_struct_gep(struct_type, base_pointer, 1, "for_vla_length")
+                            .map_err(|error| format!("cannot load VLA length: {error}"))?;
+                        let length_llvm = self.llvm_type(length)?;
+                        let length_value = self
+                            .builder
+                            .build_load(length_llvm, length_field, "for_vla_len")
+                            .map_err(|error| format!("cannot load VLA length: {error}"))?
+                            .into_int_value();
+                        let length_i64 = self.as_i64(length_value)?;
+                        Some((data, length_i64))
+                    }
+                    _ => None,
+                };
+                let Some((pointer, length)) = vla else {
+                    return Err("for iteration requires an array".to_string());
+                };
+                let _ = is_fixed_array;
                 let index_slot = self
                     .builder
                     .build_alloca(self.context.i64_type(), "for_index")
@@ -3106,12 +3226,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .into_int_value();
                 let condition = self
                     .builder
-                    .build_int_compare(
-                        IntPredicate::ULT,
-                        index,
-                        self.context.i64_type().const_int(dimensions[0], false),
-                        "for_test",
-                    )
+                    .build_int_compare(IntPredicate::ULT, index, length, "for_test")
                     .map_err(|error| format!("cannot compare: {error}"))?;
                 self.builder
                     .build_conditional_branch(condition, body_block, end_block)
@@ -4380,6 +4495,74 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                         let element_type = self.type_of(node);
                         let pointer =
                             self.element_address(base_pointer, element_type, index_value)?;
+                        Ok(Some(pointer))
+                    }
+                    Type::Vla { element, length } => {
+                        let base_pointer = match self.gen_lvalue(index.base)? {
+                            Some(pointer) => pointer,
+                            None => {
+                                let value = self.gen_expr(index.base)?;
+                                let llvm_type = self.llvm_type(base_type)?;
+                                let slot =
+                                    self.builder.build_alloca(llvm_type, "vla_spill").map_err(
+                                        |error| format!("cannot allocate VLA value: {error}"),
+                                    )?;
+                                self.builder
+                                    .build_store(slot, value)
+                                    .map_err(|error| format!("cannot store VLA value: {error}"))?;
+                                slot
+                            }
+                        };
+                        let struct_type = self.llvm_type(base_type)?.into_struct_type();
+                        let data_field = self
+                            .builder
+                            .build_struct_gep(struct_type, base_pointer, 0, "vla_data")
+                            .map_err(|error| format!("cannot load VLA data: {error}"))?;
+                        let pointer_type = self.context.ptr_type(AddressSpace::default());
+                        let data = self
+                            .builder
+                            .build_load(pointer_type, data_field, "vla_buffer")
+                            .map_err(|error| format!("cannot load VLA buffer: {error}"))?
+                            .into_pointer_value();
+                        let length_field = self
+                            .builder
+                            .build_struct_gep(struct_type, base_pointer, 1, "vla_length")
+                            .map_err(|error| format!("cannot load VLA length: {error}"))?;
+                        let length_llvm = self.llvm_type(length)?;
+                        let length_value = self
+                            .builder
+                            .build_load(length_llvm, length_field, "vla_len")
+                            .map_err(|error| format!("cannot load VLA length: {error}"))?
+                            .into_int_value();
+                        let length_i64 = self.as_i64(length_value)?;
+                        let index_value = self.gen_expr(index.index)?.into_int_value();
+                        let index_i64 = self.as_i64(index_value)?;
+                        let in_bounds = self
+                            .builder
+                            .build_int_compare(
+                                IntPredicate::ULT,
+                                index_i64,
+                                length_i64,
+                                "vla_in_bounds",
+                            )
+                            .map_err(|error| format!("cannot check bounds: {error}"))?;
+                        let function = self.current_llvm_function()?;
+                        let ok_block = self.context.append_basic_block(function, "vla_index_ok");
+                        let fail_block =
+                            self.context.append_basic_block(function, "vla_index_fail");
+                        self.builder
+                            .build_conditional_branch(in_bounds, ok_block, fail_block)
+                            .map_err(|error| format!("cannot check bounds: {error}"))?;
+                        self.builder.position_at_end(fail_block);
+                        self.gen_runtime_throw("OutOfRangeException")?;
+                        if !self.builder_terminated() {
+                            self.builder
+                                .build_unreachable()
+                                .map_err(|error| format!("cannot trap: {error}"))?;
+                        }
+                        self.builder.position_at_end(ok_block);
+                        let element_type = element;
+                        let pointer = self.element_address(data, element_type, index_value)?;
                         Ok(Some(pointer))
                     }
                     Type::Pointer {

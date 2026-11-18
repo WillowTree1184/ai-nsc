@@ -3091,3 +3091,45 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 6);
 }
+
+#[test]
+fn variable_length_arrays_allocate_and_iterate() {
+    let source = "\
+fixed Fill(count: integer(4)): integer(4)
+{
+    local values: array(count) integer(4);
+    local next: integer(4) = 1;
+    for &value: integer(4) in values
+    {
+        value = next;
+        next += 1;
+    }
+    local total: integer(4) = 0;
+    for value: integer(4) in values
+    {
+        total += value;
+    }
+    return total;
+}
+
+fixed Probe(count: integer(4)): integer(4)
+{
+    local values: array(count) integer(4);
+    trap
+    {
+        local out: integer(4) = values[count];
+        return out;
+    }
+    catch error: OutOfRangeException
+    {
+        return 1;
+    }
+}
+
+fixed Main(): integer(4)
+{
+    return Fill(4) + Probe(3);
+}";
+    // 1+2+3+4 plus the caught out-of-range probe
+    assert_eq!(run_program(source), 11);
+}

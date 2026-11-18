@@ -848,6 +848,12 @@ impl SemaResult {
                 let count: u64 = dimensions.iter().product();
                 (element_size * count, element_align)
             }
+            Type::Vla { length, .. } => {
+                let (length_size, length_align) = self.size_align(*length);
+                let align = 8.max(length_align);
+                let size = round_up_size(8 + length_size, align);
+                (size, align)
+            }
             Type::Pointer { .. } | Type::Function { .. } => (8, 8),
             Type::Named(index) => {
                 let definition = &self.type_defs[*index as usize];
@@ -889,6 +895,10 @@ impl SemaResult {
                     let _ = write!(out, "{dimension}");
                 }
                 out.push(')');
+                self.write_spelling(*element, out);
+            }
+            Type::Vla { element, .. } => {
+                out.push_str("array(runtime)");
                 self.write_spelling(*element, out);
             }
             Type::Pointer { target } => {
@@ -1008,6 +1018,7 @@ pub fn analyze(
         early_dispose_warned: std::collections::HashSet::new(),
         current_owner: None,
         current_block: NodeId::default(),
+        in_function_body: false,
     };
     sema.run();
     sema.result.error_count = sema.engine.error_count();
@@ -1066,6 +1077,9 @@ pub(crate) struct Sema<'a> {
     pub(crate) current_owner: Option<TypeId>,
     /// Block whose statements are currently being checked (§12.2).
     pub(crate) current_block: NodeId,
+    /// Whether an array type construct is inside a function body, where runtime
+    /// dimensions are allowed (VLA, §3.6.1).
+    pub(crate) in_function_body: bool,
 }
 
 impl<'a> Sema<'a> {
@@ -2305,4 +2319,12 @@ impl<'a> Sema<'a> {
         self.scope_stack.pop();
         self.scope_path.pop();
     }
+}
+
+/// Rounds `value` up to a multiple of `alignment`.
+fn round_up_size(value: u64, alignment: u64) -> u64 {
+    if alignment <= 1 {
+        return value;
+    }
+    value.div_ceil(alignment) * alignment
 }

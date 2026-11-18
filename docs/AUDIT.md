@@ -331,3 +331,4 @@ report an error (§4.8).
 | 110 | MED | §5.9.5 | `for` did not accept an omitted iteration variable | fixed (range-only `for target` parsed/sema-checked/code-generated; e2e ascending/descending/labelled-break) |
 | 111 | MED | §2.4/§2.6 | Keyword spellings as names were only partially contextual | partial (all name positions accept keyword spellings; declaration shadowing that disables a keyword meaning is still resolved as a keyword) |
 | 112 | MED | §3.8.2 | Accessor block shorthand ignored the `this` reference/value rules | fixed (validated `this` type/number of `&` against the extension target; extension blocks require `this`; static/free accessors reject it; class and structure e2e) |
+| 113 | MED | §3.6.1/§8.2 | `array(Name: Type) T` expansion unsupported in function type constructors and literal parameters | fixed (parser/sema expansion for both; call sites pass pointer+length, e2e) |

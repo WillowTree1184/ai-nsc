@@ -4581,3 +4581,25 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 10);
 }
+
+#[test]
+fn array_parameter_expansion_works_in_function_types_and_literals() {
+    // §3.6.1/§8.2: `array(Name: Type) T` expands to a pointer plus the binding
+    // parameters in function type constructors and function literals.
+    let source = "\
+fixed Apply(handler: function(message[length: cardinal(4)]: cardinal(1)) integer(4)): integer(4)
+{
+    local bytes: array(3) cardinal(1) = \"\\x01\\x02\\x03\";
+    return handler(Cast<pointer cardinal(1)>(bytes), 3);
+}
+
+fixed Main(): integer(4)
+{
+    return Apply(
+        (array(length: cardinal(4)) cardinal(1)) integer(4) =>
+        {
+            return Cast<integer(4)>(length);
+        });
+}";
+    assert_eq!(run_program(source), 3);
+}

@@ -468,6 +468,26 @@ impl<'a> Parser<'a> {
         loop {
             let span = self.peek().span;
             let compile_time = self.eat(TokenKind::Hash);
+            // `array(Name: Type) T` parameter expansion (§3.6.1): the expanded
+            // pointer parameter has no name in the source; the length binding is
+            // named by the expansion itself.
+            if self.at(TokenKind::Array) && self.peek_at(1) == TokenKind::LeftParen {
+                let ty = self.parse_type();
+                parameters.push(LiteralParameter {
+                    compile_time,
+                    name: format!("message{}", parameters.len()),
+                    by_ref: false,
+                    ty,
+                    span,
+                });
+                if !self.eat(TokenKind::Comma) {
+                    break;
+                }
+                if self.at(TokenKind::RightParen) || self.at(TokenKind::Semicolon) {
+                    break;
+                }
+                continue;
+            }
             let (name, _) = self.parse_name()?;
             let mut by_ref = false;
             let mut ty = None;

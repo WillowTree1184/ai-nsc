@@ -148,6 +148,28 @@ impl<'a> Sema<'a> {
             NodeKind::FunctionType(function) => {
                 let mut parameters = Vec::new();
                 for parameter in &function.parameters {
+                    // `array(Name: Type) T` expands to a pointer parameter and the
+                    // binding types in a function type (§3.6.1, §8.2).
+                    if let Some(ty_node) = parameter.ty {
+                        if let NodeKind::ArrayType(array) = self.node_kind(ty_node).clone() {
+                            if !array.dimensions.is_empty()
+                                && array.dimensions.iter().all(|dimension| {
+                                    matches!(dimension, crate::ast::ArrayDimension::Binding { .. })
+                                })
+                            {
+                                let element = self.resolve_type(array.element)?;
+                                parameters.push(self.result.types.pointer(Some(element)));
+                                for dimension in &array.dimensions {
+                                    let crate::ast::ArrayDimension::Binding { ty, .. } = dimension
+                                    else {
+                                        continue;
+                                    };
+                                    parameters.push(self.resolve_type(*ty)?);
+                                }
+                                continue;
+                            }
+                        }
+                    }
                     match parameter.ty {
                         Some(ty) => parameters.push(self.resolve_type(ty)?),
                         None => {
@@ -9073,6 +9095,39 @@ impl<'a> Sema<'a> {
             if parameter.compile_time {
                 self.unsupported(parameter.span, "compile-time ('#') parameters");
                 return None;
+            }
+            // `array(Name: Type) T` expands to a pointer parameter followed by
+            // the name/type bindings (§3.6.1, §8.2).
+            if let Some(ty_node) = parameter.ty {
+                if let NodeKind::ArrayType(array) = self.node_kind(ty_node).clone() {
+                    if array.dimensions.iter().all(|dimension| {
+                        matches!(dimension, crate::ast::ArrayDimension::Binding { .. })
+                    }) && !array.dimensions.is_empty()
+                    {
+                        let element = self.resolve_type(array.element)?;
+                        parameters.push(ParameterInfo {
+                            name: parameter.name.clone(),
+                            ty: self.result.types.pointer(Some(element)),
+                            by_ref: false,
+                            default: None,
+                            compile_time: false,
+                        });
+                        for dimension in &array.dimensions {
+                            let crate::ast::ArrayDimension::Binding { name, ty } = dimension else {
+                                continue;
+                            };
+                            let binding_type = self.resolve_type(*ty)?;
+                            parameters.push(ParameterInfo {
+                                name: name.clone(),
+                                ty: binding_type,
+                                by_ref: false,
+                                default: None,
+                                compile_time: false,
+                            });
+                        }
+                        continue;
+                    }
+                }
             }
             let ty = match parameter.ty {
                 Some(ty_node) => self.resolve_type(ty_node)?,

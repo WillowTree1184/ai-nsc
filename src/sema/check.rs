@@ -4398,9 +4398,13 @@ impl<'a> Sema<'a> {
                 if ty == TypeId::ERROR {
                     continue;
                 }
+                let fixed = self.result.globals[index].fixed;
+                let previous_constant = self.in_constant_initializer;
+                self.in_constant_initializer = fixed;
                 self.initializer_depth += 1;
                 let inferred = self.check_expr(initializer, Some(ty));
                 self.initializer_depth -= 1;
+                self.in_constant_initializer = previous_constant;
                 if let Some(inferred) = inferred {
                     if !self.is_assignable(inferred, ty) {
                         self.error(
@@ -5472,7 +5476,10 @@ impl<'a> Sema<'a> {
             if let Some(initializer) = declaration.init {
                 match initializer {
                     Initializer::Expression(expression) => {
+                        let previous_constant = self.in_constant_initializer;
+                        self.in_constant_initializer = true;
                         let inferred = self.check_expr(expression, Some(ty));
+                        self.in_constant_initializer = previous_constant;
                         if let Some(inferred) = inferred {
                             self.expect_assignable(self.span_of(node), inferred, ty);
                         }
@@ -6467,6 +6474,13 @@ impl<'a> Sema<'a> {
                 }
             },
             NodeKind::UninitializedLiteral => match expected {
+                Some(_) if self.in_constant_initializer => {
+                    self.error(
+                        self.span_of(node),
+                        "a constant must not be initialized with 'uninitialized' (§5.3)",
+                    );
+                    None
+                }
                 Some(ty) if self.initializer_depth > 0 => Some(ty),
                 Some(_) => {
                     self.error(

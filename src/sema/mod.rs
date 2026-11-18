@@ -1157,6 +1157,7 @@ pub fn analyze(
         in_verbatim: false,
         compile_time_depth: 0,
         compile_time_local_ids: Vec::new(),
+        in_constant_initializer: false,
         array_binding_lengths: Vec::new(),
         heap_groups: Vec::new(),
         pending_assume_no_demand: None,
@@ -1236,6 +1237,8 @@ pub(crate) struct Sema<'a> {
     pub(crate) compile_time_depth: usize,
     /// Locals declared inside compile-time blocks, keyed by function.
     pub(crate) compile_time_local_ids: Vec<(u32, LocalId)>,
+    /// Whether a constant initializer is being checked (§5.3).
+    pub(crate) in_constant_initializer: bool,
     /// Bound array dimension values while instantiating an array extension
     /// (§3.8.3).
     pub(crate) array_binding_lengths: Vec<HashMap<String, u64>>,

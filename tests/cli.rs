@@ -1616,3 +1616,20 @@ fixed Main(): integer(4)
         "{stderr}"
     );
 }
+
+#[test]
+fn constants_must_not_be_initialized_with_uninitialized() {
+    let stderr = check_source(
+        "\
+fixed Value: integer(4) = uninitialized;
+
+fixed Main(): integer(4)
+{
+    return 0;
+}",
+    );
+    assert!(
+        stderr.contains("a constant must not be initialized with 'uninitialized'"),
+        "{stderr}"
+    );
+}

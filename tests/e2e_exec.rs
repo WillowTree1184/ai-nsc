@@ -3474,3 +3474,32 @@ fixed Main(): integer(4)
     // rows 0,1,2 → 0 + 6 + 12
     assert_eq!(run_program(source), 18);
 }
+
+#[test]
+fn generic_methods_instantiate_per_type_arguments() {
+    let source = "\
+structure Wrap
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Echo<T>(this: &Wrap, value: T): T
+        {
+            return value;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local wrap: Wrap;
+    wrap.Value = 7;
+    local number: integer(4) = wrap.Echo<integer(4)>(5);
+    local flag: boolean = wrap.Echo<boolean>(true);
+    if (flag) { number += 10; }
+    return number + wrap.Echo<integer(4)>(2);
+}";
+    // 5 + 10 + 2
+    assert_eq!(run_program(source), 17);
+}

@@ -796,6 +796,69 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Registers a generic method as a template (§10.1): its body and signature
+    /// are resolved only when an instantiation is created for a call.
+    fn create_generic_method_template(
+        &mut self,
+        node: NodeId,
+        declaration: &FixedDecl,
+        owner: TypeId,
+    ) {
+        let Some(Initializer::Block(_)) = declaration.init else {
+            self.error(self.span_of(node), "a generic method requires a body");
+            return;
+        };
+        let Type::Named(owner_index) = self.types_of(owner) else {
+            return;
+        };
+        let owner_name = self.result.type_defs[owner_index as usize]
+            .qualified_name
+            .clone();
+        let scope: Vec<String> = owner_name.split('.').map(str::to_string).collect();
+        let generic_parameters: Vec<GenericParameterInfo> = declaration
+            .generics
+            .iter()
+            .map(GenericParameterInfo::from_ast)
+            .collect();
+        let index = self.result.functions.len() as u32;
+        self.result.functions.push(FunctionInfo {
+            name: declaration.name.clone(),
+            scope,
+            node,
+            body: None,
+            parameters: Vec::new(),
+            method_of: Some(owner),
+            static_owner: None,
+            is_virtual: false,
+            is_override: false,
+            is_sealed: false,
+            accessibility: declaration.modifiers.accessibility,
+            calling_convention: None,
+            scoped: Vec::new(),
+            is_abstract: false,
+            return_type: None,
+            mangled: String::new(),
+            exposed_symbol: None,
+            generic_parameters,
+            generic_arguments: Vec::new(),
+            template: None,
+            decl_scope: self.current_scope(),
+            generic_env: self.captured_generic_env(),
+            environment: false,
+            captures: Vec::new(),
+            constant_values: HashMap::new(),
+            locals: Vec::new(),
+            span: self.span_of(node),
+        });
+        let definition = &mut self.result.type_defs[owner_index as usize];
+        definition
+            .methods
+            .entry(declaration.name.clone())
+            .or_default()
+            .push(index);
+        definition.method_list.push(index);
+    }
+
     /// Registers a method declared in an extension block (§8.4).
     fn create_method(
         &mut self,
@@ -811,6 +874,12 @@ impl<'a> Sema<'a> {
             );
             return None;
         };
+        if !declaration.generics.is_empty() {
+            // Generic methods are templates instantiated by Monomorphization
+            // expressions at call sites (§10.1, §10.2).
+            self.create_generic_method_template(node, declaration, owner);
+            return None;
+        }
         let (body, is_abstract) = match declaration.init {
             Some(Initializer::Block(block)) => (Some(FunctionBody::Block(block)), false),
             None => (None, true),
@@ -7485,6 +7554,62 @@ impl<'a> Sema<'a> {
         Some(Some(expected))
     }
 
+    /// Resolves a generic method call `receiver.Method<TypeArgs>(args)` by
+    /// instantiating the method template (§10.1, §10.2).
+    fn check_generic_method_call(
+        &mut self,
+        node: NodeId,
+        call: &CallExpr,
+        monomorphization: &MonomorphizationExpr,
+        access: &MemberAccess,
+    ) -> Option<TypeId> {
+        let span = self.span_of(node);
+        let base_type = self.check_expr(access.base, None)?;
+        let Type::Named(index) = self.types_of(base_type) else {
+            self.error(span, "a generic method call requires a named receiver");
+            return None;
+        };
+        let name = access.name.clone();
+        let template = self.result.type_defs[index as usize]
+            .methods
+            .get(&name)
+            .and_then(|overloads| {
+                overloads.iter().copied().find(|candidate| {
+                    !self.result.functions[*candidate as usize]
+                        .generic_parameters
+                        .is_empty()
+                })
+            });
+        let Some(template) = template else {
+            self.error(span, format!("'{name}' has no generic form"));
+            return None;
+        };
+        let mut arguments = Vec::new();
+        for argument in &monomorphization.arguments {
+            let Some(argument) = argument else {
+                self.error(span, "generic method calls require explicit type arguments");
+                return None;
+            };
+            arguments.push(self.resolve_type(*argument)?);
+        }
+        let instance = self.instantiate_function(template, arguments, span)?;
+        let parameters = self.result.functions[instance as usize].parameters.clone();
+        if parameters.is_empty() || !self.is_this_compatible(base_type, parameters[0].ty) {
+            self.error(span, "the receiver type does not match the generic method");
+            return None;
+        }
+        let mapped = self.match_call_arguments(&parameters[1..], &call.arguments, span)?;
+        for (value, parameter) in mapped.iter().zip(parameters.iter().skip(1)) {
+            let ty = self.check_expr(*value, Some(parameter.ty));
+            if let Some(ty) = ty {
+                self.expect_assignable(self.span_of(*value), ty, parameter.ty);
+            }
+        }
+        self.result.call_arguments.insert(node, mapped);
+        self.result.resolutions[node as usize] = Some(Resolution::Function(instance));
+        self.result.functions[instance as usize].return_type
+    }
+
     fn check_call(&mut self, node: NodeId, call: &CallExpr) -> Option<TypeId> {
         if self.in_verbatim {
             for namespace in ["Platform", "Compiler", "NOLAA"] {
@@ -7504,6 +7629,18 @@ impl<'a> Sema<'a> {
         }
         for argument in &call.arguments {
             self.note_heap_escape(argument.value);
+        }
+        // Generic method calls: `receiver.Method<TypeArgs>(...)` (§10.2).
+        if builtin_size_of_type_argument(self.ast, call.callee).is_none() {
+            if let NodeKind::Monomorphization(monomorphization) =
+                self.node_kind(call.callee).clone()
+            {
+                if let NodeKind::MemberAccess(access) =
+                    self.node_kind(monomorphization.base).clone()
+                {
+                    return self.check_generic_method_call(node, call, &monomorphization, &access);
+                }
+            }
         }
         // Compiler API: `Platform.Is(PlatformKind)` / `Platform.Is("name")`
         // evaluates against the compilation target (§15.3).
@@ -7703,6 +7840,21 @@ impl<'a> Sema<'a> {
         let all_candidates = self.collect_methods(base_type, name);
         if all_candidates.is_empty() {
             return None;
+        }
+        let all_candidates: Vec<u32> = all_candidates
+            .into_iter()
+            .filter(|candidate| {
+                self.result.functions[*candidate as usize]
+                    .generic_parameters
+                    .is_empty()
+            })
+            .collect();
+        if all_candidates.is_empty() {
+            self.error(
+                self.span_of(node),
+                format!("a generic method requires type arguments: '{name}'"),
+            );
+            return Some(None);
         }
         let candidates: Vec<u32> = all_candidates
             .iter()

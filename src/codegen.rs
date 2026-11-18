@@ -2238,6 +2238,21 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         None
     }
 
+    /// Returns the member access of a method callee, unwrapping a generic
+    /// monomorphization (`receiver.Method<...>`) when present.
+    fn callee_member_access(&self, callee: NodeId) -> Option<crate::ast::MemberAccess> {
+        match self.ast.node(callee).kind.clone() {
+            NodeKind::MemberAccess(access) => Some(access),
+            NodeKind::Monomorphization(monomorphization) => {
+                match self.ast.node(monomorphization.base).kind.clone() {
+                    NodeKind::MemberAccess(access) => Some(access),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// Generates `node` and applies its implicit conversion operator, if one was
     /// recorded by semantic analysis (§9.7).
     /// Allocates `size` bytes with `malloc`.
@@ -5025,8 +5040,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 let mut receiver = None;
                 let mut base_call = false;
                 if is_method {
-                    let NodeKind::MemberAccess(access) = self.ast.node(call.callee).kind.clone()
-                    else {
+                    let Some(access) = self.callee_member_access(call.callee) else {
                         return Err("method call requires a receiver".to_string());
                     };
                     base_call = matches!(self.ast.node(access.base).kind, NodeKind::Base);
@@ -5059,10 +5073,8 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 }
                 let call_site = if let Some(receiver_pointer) = receiver {
                     let receiver_type = if is_method {
-                        match self.ast.node(call.callee).kind.clone() {
-                            NodeKind::MemberAccess(access) => self.type_of(access.base),
-                            _ => TypeId::ERROR,
-                        }
+                        self.callee_member_access(call.callee)
+                            .map_or(TypeId::ERROR, |access| self.type_of(access.base))
                     } else {
                         TypeId::ERROR
                     };

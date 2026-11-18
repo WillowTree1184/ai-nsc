@@ -462,7 +462,21 @@ impl<'a> Sema<'a> {
         arguments: Vec<TypeId>,
         span: Span,
     ) -> Option<u32> {
-        let (parameters, node, scope, decl_scope, name, exposed_symbol) = {
+        let (
+            parameters,
+            node,
+            scope,
+            decl_scope,
+            name,
+            exposed_symbol,
+            method_of,
+            is_virtual,
+            is_override,
+            is_sealed,
+            accessibility,
+            calling_convention,
+            scoped,
+        ) = {
             let template = &self.result.functions[template_index as usize];
             (
                 template.generic_parameters.clone(),
@@ -471,6 +485,13 @@ impl<'a> Sema<'a> {
                 template.decl_scope,
                 template.name.clone(),
                 template.exposed_symbol.clone(),
+                template.method_of,
+                template.is_virtual,
+                template.is_override,
+                template.is_sealed,
+                template.accessibility,
+                template.calling_convention,
+                template.scoped.clone(),
             )
         };
         if parameters.len() != arguments.len() {
@@ -541,14 +562,14 @@ impl<'a> Sema<'a> {
             node: cloned,
             body: Some(FunctionBody::Block(body)),
             parameters: resolved_parameters,
-            method_of: None,
+            method_of,
             static_owner: None,
-            is_virtual: false,
-            is_override: false,
-            is_sealed: false,
-            accessibility: crate::ast::Accessibility::Public,
-            calling_convention: None,
-            scoped: Vec::new(),
+            is_virtual,
+            is_override,
+            is_sealed,
+            accessibility,
+            calling_convention,
+            scoped,
             is_abstract: false,
             return_type,
             mangled,

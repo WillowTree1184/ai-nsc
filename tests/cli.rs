@@ -1184,3 +1184,24 @@ fixed Main(): integer(4)
         "{stderr}"
     );
 }
+
+#[test]
+fn generic_methods_require_type_arguments() {
+    let stderr = check_source(
+        "\
+structure Wrap
+{
+    extension
+    {
+        public fixed Echo<T>(this: &Wrap, value: T): T { return value; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local wrap: Wrap;
+    return wrap.Echo(5);
+}",
+    );
+    assert!(stderr.contains("requires type arguments"), "{stderr}");
+}

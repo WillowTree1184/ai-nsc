@@ -144,17 +144,13 @@ impl TypeStore {
         // spellings as the same type.
         let mut dimensions = dimensions;
         let mut element = element;
-        loop {
-            match self.get(element).clone() {
-                Type::Array {
-                    dimensions: inner,
-                    element: inner_element,
-                } => {
-                    dimensions.extend(inner);
-                    element = inner_element;
-                }
-                _ => break,
-            }
+        while let Type::Array {
+            dimensions: inner,
+            element: inner_element,
+        } = self.get(element).clone()
+        {
+            dimensions.extend(inner);
+            element = inner_element;
         }
         self.intern(Type::Array {
             dimensions,

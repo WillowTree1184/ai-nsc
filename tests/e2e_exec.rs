@@ -2603,3 +2603,41 @@ fixed Main(): integer(4)
     // 16 * 10 + 11 + 12
     assert_eq!(run_program(source), 183);
 }
+
+#[test]
+fn builtin_exceptions_expose_inner_exception() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local score: integer(4) = 0;
+    local inner: Exception = Exception(Optional<Exception>.Null);
+    local outer: Exception = Exception();
+    trap
+    {
+        throw inner;
+    }
+    catch error: Exception
+    {
+        if (error.InnerException is Optional<Exception>.Null) { score += 1; }
+    }
+    trap
+    {
+        throw outer;
+    }
+    catch error: Exception
+    {
+        if (error.InnerException is Optional<Exception>.Null) { score += 2; }
+    }
+    trap
+    {
+        local zero: integer(4) = 0;
+        local bad: integer(4) = 5 / zero;
+    }
+    catch error: DivideByZeroException
+    {
+        if (error.InnerException is Optional<Exception>.Null) { score += 4; }
+    }
+    return score;
+}";
+    assert_eq!(run_program(source), 7);
+}

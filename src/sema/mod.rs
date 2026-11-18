@@ -418,6 +418,16 @@ pub struct AccessorInfo {
     pub setter: Option<u32>,
 }
 
+/// Names of the Built-In Library exception classes (§15.2).
+pub(crate) const BUILTIN_EXCEPTION_NAMES: [&str; 6] = [
+    "Exception",
+    "NotImplementedException",
+    "DivideByZeroException",
+    "OutOfRangeException",
+    "AllocateFailedException",
+    "DeallocateFailedException",
+];
+
 /// How a local's storage is allocated (§12.1).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Storage {
@@ -1174,8 +1184,8 @@ impl<'a> Sema<'a> {
     // -- passes ------------------------------------------------------------
 
     fn run(&mut self) {
-        self.declare_builtin_exceptions();
         self.declare_builtin_variants();
+        self.declare_builtin_exceptions();
         // Pass 1: declare modules and named types so that signatures can refer
         // to them regardless of declaration order (§6.3).
         let roots = self.ast.roots.clone();
@@ -1354,7 +1364,7 @@ impl<'a> Sema<'a> {
                 kind: TypeDefKind::Class,
                 // Synthetic declaration: must not collide with a real AST node
                 // (which `type_id_for_node` matches on).
-                node: NodeId::MAX,
+                node: NodeId::MAX - 300 - index,
                 generic_parameters: Vec::new(),
                 generic_arguments: Vec::new(),
                 template: None,
@@ -1401,6 +1411,40 @@ impl<'a> Sema<'a> {
                     if let Type::Named(index) = self.result.types.get(type_id) {
                         self.result.type_defs[*index as usize].base = Some(exception);
                     }
+                }
+            }
+            // Exception.InnerException: Optional<Exception> (§15.2), inherited by
+            // every built-in exception class (fields are flattened per class).
+            let optional_exception = self
+                .lookup("Optional")
+                .cloned()
+                .and_then(|symbol| match symbol {
+                    Symbol::Type(ty) => match self.result.types.get(ty) {
+                        Type::Named(index) => Some(self.result.type_defs[*index as usize].node),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .and_then(|template_node| {
+                    self.instantiate_type(template_node, vec![exception], Span::default())
+                });
+            if let Some(optional_exception) = optional_exception {
+                for name in NAMES {
+                    let Some(Symbol::Type(type_id)) = self.lookup(name).cloned() else {
+                        continue;
+                    };
+                    let Type::Named(index) = self.result.types.get(type_id) else {
+                        continue;
+                    };
+                    let definition = &mut self.result.type_defs[*index as usize];
+                    definition.fields = vec![FieldInfo {
+                        name: "InnerException".to_string(),
+                        ty: optional_exception,
+                        offset: 16,
+                    }];
+                    definition.field_initializers = vec![None];
+                    definition.instance_size = 32;
+                    definition.instance_align = 8;
                 }
             }
         }

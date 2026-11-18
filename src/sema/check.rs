@@ -6488,6 +6488,43 @@ impl<'a> Sema<'a> {
                 });
                 return Some(type_id);
             }
+            // The Built-In Library exception classes declare
+            // `Construct(this, innerException: Optional<Exception> = Null)` (§15.2).
+            let class_name = self.result.type_defs[index as usize].name.clone();
+            let field_type = self.result.type_defs[index as usize]
+                .fields
+                .first()
+                .map(|field| field.ty);
+            if BUILTIN_EXCEPTION_NAMES.contains(&class_name.as_str()) {
+                if let Some(field_type) = field_type {
+                    if arguments.len() != 1 {
+                        self.error(
+                            self.span_of(node),
+                            "this exception constructor takes one InnerException argument",
+                        );
+                        return None;
+                    }
+                    let argument = &arguments[0];
+                    if let Some(name) = &argument.name {
+                        if name != "innerException" {
+                            self.error(argument.span, "unknown parameter name");
+                            return None;
+                        }
+                    }
+                    let ty = self.check_expr(argument.value, Some(field_type));
+                    if let Some(ty) = ty {
+                        self.expect_assignable(argument.span, ty, field_type);
+                    }
+                    self.result
+                        .call_arguments
+                        .insert(node, vec![argument.value]);
+                    self.result.resolutions[node as usize] = Some(Resolution::Construct {
+                        type_id,
+                        method: None,
+                    });
+                    return Some(type_id);
+                }
+            }
             self.error(
                 self.span_of(node),
                 "this type declares no constructor that accepts arguments",

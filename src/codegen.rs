@@ -518,7 +518,35 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             let global =
                 self.module
                     .add_global(instance_type, None, &format!("nsc.exception.{index}"));
-            global.set_initializer(&instance_type.const_zero());
+            // InnerException defaults to Optional.Null (tag 1) rather than the
+            // zero-initialized Optional.Value(null) (§15.2).
+            let pointer_type = self.context.ptr_type(AddressSpace::default());
+            let initializer = match definition.fields.first() {
+                Some(field) => {
+                    let field_type = self.llvm_type(field.ty)?;
+                    let BasicTypeEnum::ArrayType(array_type) = field_type else {
+                        return Err("exception field must be a variant".to_string());
+                    };
+                    let mut bytes: Vec<inkwell::values::IntValue<'ctx>> =
+                        Vec::with_capacity(array_type.len() as usize);
+                    for position in 0..array_type.len() {
+                        let value = if position == 0 {
+                            self.context.i8_type().const_int(1, false)
+                        } else {
+                            self.context.i8_type().const_zero()
+                        };
+                        bytes.push(value);
+                    }
+                    let field_value = self.context.i8_type().const_array(&bytes);
+                    instance_type.const_named_struct(&[
+                        pointer_type.const_null().into(),
+                        pointer_type.const_null().into(),
+                        field_value.into(),
+                    ])
+                }
+                None => instance_type.const_zero(),
+            };
+            global.set_initializer(&initializer);
             self.builtin_exceptions.insert(index as u32, global);
         }
 
@@ -4532,6 +4560,38 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 .map_err(|error| format!("cannot initialize field: {error}"))?;
         }
         let _ = fields;
+        if method.is_none() {
+            // Built-in exceptions default InnerException to Optional.Null and
+            // accept an explicit inner exception at construction (§15.2).
+            if crate::sema::BUILTIN_EXCEPTION_NAMES
+                .contains(&self.sema.type_defs[index as usize].name.as_str())
+                && !self.sema.type_defs[index as usize].fields.is_empty()
+            {
+                let pointer = self
+                    .struct_field_pointer(storage, type_id, 0)?
+                    .ok_or_else(|| "missing InnerException field".to_string())?;
+                match self.sema.call_arguments.get(&node).cloned() {
+                    Some(mapped) if !mapped.is_empty() => {
+                        let value = self.gen_coerced_expr(mapped[0])?;
+                        self.builder.build_store(pointer, value).map_err(|error| {
+                            format!("cannot initialize InnerException: {error}")
+                        })?;
+                    }
+                    _ => {
+                        // Optional.Null tag byte.
+                        let tag =
+                            self.builder
+                                .build_load(self.context.i8_type(), pointer, "inner_tag");
+                        let _ = tag;
+                        self.builder
+                            .build_store(pointer, self.context.i8_type().const_int(1, false))
+                            .map_err(|error| {
+                                format!("cannot initialize InnerException: {error}")
+                            })?;
+                    }
+                }
+            }
+        }
         if let Some(method) = method {
             let function = *self
                 .functions

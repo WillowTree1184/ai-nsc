@@ -356,6 +356,15 @@ impl<'a> Sema<'a> {
                 span,
             );
         }
+        if let Some(kind) = self.result.type_defs[template_index as usize].builtin_interface {
+            return self.instantiate_builtin_interface(
+                template_index,
+                kind,
+                &parameters,
+                arguments,
+                span,
+            );
+        }
 
         let spelled: Vec<String> = arguments
             .iter()
@@ -374,6 +383,7 @@ impl<'a> Sema<'a> {
             decl_scope,
             static_fields: HashMap::new(),
             builtin_variant: None,
+            builtin_interface: None,
             static_methods: HashMap::new(),
             fields: Vec::new(),
             field_initializers: Vec::new(),
@@ -675,6 +685,145 @@ impl<'a> Sema<'a> {
         Some(index)
     }
 
+    /// Instantiates one of the built-in generic interfaces (`IIterator<T>`,
+    /// `IIterable<T>`) with concrete type arguments (§15.2).
+    fn instantiate_builtin_interface(
+        &mut self,
+        template_index: TypeDefId,
+        kind: BuiltinInterfaceKind,
+        parameters: &[GenericParameterInfo],
+        arguments: Vec<TypeId>,
+        span: Span,
+    ) -> Option<TypeId> {
+        let (name, template_name, template_node) = {
+            let definition = &self.result.type_defs[template_index as usize];
+            (
+                definition.name.clone(),
+                definition.qualified_name.clone(),
+                definition.node,
+            )
+        };
+        if parameters.len() != arguments.len() {
+            self.error(
+                span,
+                format!(
+                    "generic type '{template_name}' expects {} type argument(s), found {}",
+                    parameters.len(),
+                    arguments.len()
+                ),
+            );
+            return None;
+        }
+        let key = (template_node, arguments.clone());
+        if let Some(existing) = self.type_instantiations.get(&key) {
+            return Some(*existing);
+        }
+        let spelled: Vec<String> = arguments
+            .iter()
+            .map(|argument| self.spelling(*argument))
+            .collect();
+        let qualified_name = format!("{template_name}<{}>", spelled.join(";"));
+        let index = self.result.type_defs.len() as TypeDefId;
+        let synthetic_node = NodeId::MAX - 600 - index;
+        self.result.type_defs.push(TypeDef {
+            name,
+            qualified_name,
+            kind: TypeDefKind::Interface,
+            node: synthetic_node,
+            generic_parameters: Vec::new(),
+            generic_arguments: arguments.clone(),
+            template: Some(template_index),
+            decl_scope: 0,
+            static_fields: HashMap::new(),
+            static_methods: HashMap::new(),
+            builtin_variant: None,
+            builtin_interface: None,
+            fields: Vec::new(),
+            field_initializers: Vec::new(),
+            methods: HashMap::new(),
+            method_list: Vec::new(),
+            accessors: Vec::new(),
+            operators: Vec::new(),
+            interfaces: Vec::new(),
+            interface_dispatch: Vec::new(),
+            sealed: false,
+            is_abstract: true,
+            is_static: false,
+            vtable: Vec::new(),
+            vtable_ready: false,
+            base: None,
+            variant_states: Vec::new(),
+            union_members: Vec::new(),
+            tag_type: None,
+            payload_offset: 0,
+            payload_size: 0,
+            instance_size: 0,
+            instance_align: 1,
+            enum_members: Vec::new(),
+            underlying: None,
+            size: 8,
+            align: 8,
+        });
+        let instance_type = self.result.types.intern(Type::Named(index));
+        self.type_instantiations.insert(key, instance_type);
+        let element = arguments[0];
+        match kind {
+            BuiltinInterfaceKind::Iterator => {
+                let optional_template =
+                    self.lookup("Optional")
+                        .cloned()
+                        .and_then(|symbol| match symbol {
+                            Symbol::Type(ty) => match self.result.types.get(ty) {
+                                Type::Named(template) => {
+                                    Some(self.result.type_defs[*template as usize].node)
+                                }
+                                _ => None,
+                            },
+                            _ => None,
+                        });
+                if let Some(node) = optional_template {
+                    let optional = self.instantiate_type(node, vec![element], span);
+                    self.push_builtin_interface_method(instance_type, "Next", &[], optional);
+                }
+                self.push_builtin_interface_method(instance_type, "Reset", &[], None);
+            }
+            BuiltinInterfaceKind::Iterable => {
+                let iterator_template =
+                    self.lookup("IIterator")
+                        .cloned()
+                        .and_then(|symbol| match symbol {
+                            Symbol::Type(ty) => match self.result.types.get(ty) {
+                                Type::Named(template) => {
+                                    Some(self.result.type_defs[*template as usize].node)
+                                }
+                                _ => None,
+                            },
+                            _ => None,
+                        });
+                if let Some(node) = iterator_template {
+                    let iterator = self.instantiate_type(node, vec![element], span)?;
+                    let getter = self.push_builtin_interface_method(
+                        instance_type,
+                        "Iterator@get",
+                        &[],
+                        Some(iterator),
+                    );
+                    if let Type::Named(instance_index) = self.result.types.get(instance_type) {
+                        self.result.type_defs[*instance_index as usize]
+                            .accessors
+                            .push(AccessorInfo {
+                                name: "Iterator".to_string(),
+                                ty: iterator,
+                                getter: Some(getter),
+                                setter: None,
+                            });
+                    }
+                }
+            }
+        }
+        Some(instance_type)
+    }
+
     // ------------------------------------------------------------------
     // Module-level generic extensions (§3.8.3)
     // ------------------------------------------------------------------
@@ -856,6 +1005,7 @@ impl<'a> Sema<'a> {
             static_fields: HashMap::new(),
             static_methods: HashMap::new(),
             builtin_variant: None,
+            builtin_interface: None,
             fields: Vec::new(),
             field_initializers: Vec::new(),
             methods: HashMap::new(),

@@ -6852,6 +6852,29 @@ impl<'a> Sema<'a> {
                 exact.push(candidate);
             }
         }
+        if exact.is_empty() {
+            // Second phase: implicit and interface conversions.
+            for &candidate in &candidates {
+                let parameters = self.result.functions[candidate as usize].parameters.clone();
+                if !self.is_this_compatible(type_id, parameters[0].ty) {
+                    continue;
+                }
+                self.suppress_errors += 1;
+                let mapped = self.match_call_arguments(&parameters[1..], arguments, span);
+                let matches = mapped.is_some_and(|mapped| {
+                    mapped.iter().zip(parameters.iter().skip(1)).all(
+                        |(value, parameter)| match self.check_expr(*value, Some(parameter.ty)) {
+                            Some(ty) => self.is_assignable(ty, parameter.ty),
+                            None => false,
+                        },
+                    )
+                });
+                self.suppress_errors -= 1;
+                if matches {
+                    exact.push(candidate);
+                }
+            }
+        }
         if exact.len() != 1 {
             if candidates.len() == 1 {
                 let parameters = self.result.functions[candidates[0] as usize]

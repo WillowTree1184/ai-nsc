@@ -124,6 +124,15 @@ pub(crate) struct PendingAccessor {
     pub(crate) generic_env: HashMap<String, TypeId>,
 }
 
+/// Kind of built-in generic interface (§15.2).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BuiltinInterfaceKind {
+    /// `interface IIterator<T>` with `Next` and `Reset`.
+    Iterator,
+    /// `interface IIterable<T>` with an `Iterator` getter.
+    Iterable,
+}
+
 /// A built-in generic variant type (§15.2).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BuiltinVariantKind {
@@ -207,6 +216,8 @@ pub struct TypeDef {
     pub static_methods: std::collections::HashMap<String, Vec<u32>>,
     /// Built-in variant kind, for `Optional`/`Result` (§15.2).
     pub builtin_variant: Option<BuiltinVariantKind>,
+    /// Built-in generic interface kind, for `IIterator`/`IIterable` (§15.2).
+    pub builtin_interface: Option<BuiltinInterfaceKind>,
     /// Fields, in declaration order (structures/classes).
     pub fields: Vec<FieldInfo>,
     /// Field initializers, parallel to `fields` (§3.8.1).
@@ -1281,6 +1292,7 @@ impl<'a> Sema<'a> {
             static_fields: std::collections::HashMap::new(),
             static_methods: std::collections::HashMap::new(),
             builtin_variant: None,
+            builtin_interface: None,
             fields: Vec::new(),
             field_initializers: Vec::new(),
             methods: std::collections::HashMap::new(),
@@ -1336,6 +1348,7 @@ impl<'a> Sema<'a> {
             static_fields: std::collections::HashMap::new(),
             static_methods: std::collections::HashMap::new(),
             builtin_variant: None,
+            builtin_interface: None,
             fields: Vec::new(),
             field_initializers: Vec::new(),
             methods: std::collections::HashMap::new(),
@@ -1387,6 +1400,67 @@ impl<'a> Sema<'a> {
             static_fields: std::collections::HashMap::new(),
             static_methods: std::collections::HashMap::new(),
             builtin_variant: None,
+            builtin_interface: None,
+            fields: Vec::new(),
+            field_initializers: Vec::new(),
+            methods: std::collections::HashMap::new(),
+            method_list: Vec::new(),
+            accessors: Vec::new(),
+            operators: Vec::new(),
+            interfaces: Vec::new(),
+            interface_dispatch: Vec::new(),
+            sealed: false,
+            is_abstract: true,
+            is_static: false,
+            vtable: Vec::new(),
+            vtable_ready: true,
+            base: None,
+            variant_states: Vec::new(),
+            union_members: Vec::new(),
+            tag_type: None,
+            payload_offset: 0,
+            payload_size: 0,
+            instance_size: 0,
+            instance_align: 1,
+            enum_members: Vec::new(),
+            underlying: None,
+            size: 8,
+            align: 8,
+        });
+        let type_id = self.result.types.intern(Type::Named(index));
+        self.declare(name.to_string(), Symbol::Type(type_id), Span::default());
+        type_id
+    }
+
+    /// Pushes a synthetic generic interface template (Built-In Library, §15.2).
+    fn push_builtin_interface_template(
+        &mut self,
+        name: &str,
+        kind: BuiltinInterfaceKind,
+        parameters: &[&str],
+    ) -> TypeId {
+        let index = self.result.type_defs.len() as TypeDefId;
+        let node = NodeId::MAX - 500 - index;
+        self.result.type_defs.push(TypeDef {
+            name: name.to_string(),
+            qualified_name: name.to_string(),
+            kind: TypeDefKind::Interface,
+            node,
+            generic_parameters: parameters
+                .iter()
+                .map(|parameter| GenericParameterInfo {
+                    name: (*parameter).to_string(),
+                    constraints: Vec::new(),
+                    span: Span::default(),
+                })
+                .collect(),
+            generic_arguments: Vec::new(),
+            template: None,
+            decl_scope: 0,
+            static_fields: std::collections::HashMap::new(),
+            static_methods: std::collections::HashMap::new(),
+            builtin_variant: None,
+            builtin_interface: Some(kind),
             fields: Vec::new(),
             field_initializers: Vec::new(),
             methods: std::collections::HashMap::new(),
@@ -1543,6 +1617,7 @@ impl<'a> Sema<'a> {
                 static_fields: std::collections::HashMap::new(),
                 static_methods: std::collections::HashMap::new(),
                 builtin_variant: None,
+                builtin_interface: None,
                 fields: Vec::new(),
                 field_initializers: Vec::new(),
                 methods: std::collections::HashMap::new(),
@@ -1668,6 +1743,17 @@ impl<'a> Sema<'a> {
                     );
                 }
             }
+            // Generic iterator interfaces (§15.2).
+            self.push_builtin_interface_template(
+                "IIterator",
+                BuiltinInterfaceKind::Iterator,
+                &["T"],
+            );
+            self.push_builtin_interface_template(
+                "IIterable",
+                BuiltinInterfaceKind::Iterable,
+                &["T"],
+            );
         }
     }
 
@@ -1816,6 +1902,7 @@ impl<'a> Sema<'a> {
                 static_fields: std::collections::HashMap::new(),
                 static_methods: std::collections::HashMap::new(),
                 builtin_variant: Some(kind),
+                builtin_interface: None,
                 fields: Vec::new(),
                 field_initializers: Vec::new(),
                 methods: std::collections::HashMap::new(),
@@ -1930,6 +2017,7 @@ impl<'a> Sema<'a> {
             static_fields: std::collections::HashMap::new(),
             static_methods: std::collections::HashMap::new(),
             builtin_variant: None,
+            builtin_interface: None,
             fields: Vec::new(),
             field_initializers: Vec::new(),
             methods: std::collections::HashMap::new(),

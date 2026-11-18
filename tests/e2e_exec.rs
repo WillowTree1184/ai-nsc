@@ -2836,3 +2836,66 @@ fixed Main(): integer(4)
     // 7 + 4 + two 4-byte node allocations + the caught failure path
     assert_eq!(run_program(source), 21);
 }
+
+#[test]
+fn builtin_iterator_interfaces_drive_manual_iteration() {
+    let source = "\
+class CounterIterator : IIterator<integer(4)>
+{
+    public Current: integer(4);
+
+    extension
+    {
+        public fixed Next(this: &CounterIterator): Optional<integer(4)>
+        {
+            if (this.Current >= 3) { return Optional<integer(4)>.Null; }
+            this.Current += 1;
+            return Optional<integer(4)>.Value(this.Current);
+        }
+
+        public fixed Reset(this: &CounterIterator) { this.Current = 0; }
+    }
+}
+
+class Counter : IIterable<integer(4)>
+{
+    private IteratorValue: IIterator<integer(4)>;
+
+    extension
+    {
+        public fixed Construct(this: &Counter, iterator: IIterator<integer(4)>)
+        {
+            this.IteratorValue = iterator;
+        }
+
+        public accessor Iterator: IIterator<integer(4)> => IteratorValue { get; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local object: CounterIterator = CounterIterator();
+    local counter: Counter = Counter(object);
+    local iterator: IIterator<integer(4)> = counter.Iterator;
+    local score: integer(4) = 0;
+    local running: boolean = true;
+    while (running)
+    {
+        local next: Optional<integer(4)> = iterator.Next();
+        if (next is Optional<integer(4)>.Null)
+        {
+            running = false;
+        }
+        else
+        {
+            match next
+            {
+                case is payload: Optional<integer(4)>.Value { score += payload; }
+                case wildcard { }
+            }
+        }
+    }
+    return score;
+}";
+    assert_eq!(run_program(source), 6);
+}

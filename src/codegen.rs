@@ -1730,6 +1730,16 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         None
     }
 
+    /// Generates `node` and applies its implicit conversion operator, if one was
+    /// recorded by semantic analysis (§9.7).
+    fn gen_coerced_expr(&mut self, node: NodeId) -> Result<BasicValueEnum<'ctx>, String> {
+        let value = self.gen_expr(node)?;
+        match self.sema.implicit_conversions.get(&node).copied() {
+            Some(method) => self.gen_operator_call(method, vec![value]),
+            None => Ok(value),
+        }
+    }
+
     fn gen_local_declaration(&mut self, node: NodeId) -> Result<(), String> {
         let Some(locals) = self.sema.local_declarations.get(&node).cloned() else {
             return Ok(());
@@ -1756,7 +1766,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             ) {
                 continue;
             }
-            let value = self.gen_expr(*initializer)?;
+            let value = self.gen_coerced_expr(*initializer)?;
             let slot = *self
                 .local_slots
                 .get(local)
@@ -1807,7 +1817,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         let pointer = self
             .gen_lvalue(statement.target)?
             .ok_or_else(|| "assignment target is not addressable".to_string())?;
-        let value = self.gen_expr(statement.value)?;
+        let value = self.gen_coerced_expr(statement.value)?;
         self.builder
             .build_store(pointer, value)
             .map_err(|error| format!("cannot assign: {error}"))?;
@@ -1850,7 +1860,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         let target_type = self.type_of(statement.target);
         let llvm_type = self.llvm_type(target_type)?;
         // The RHS is evaluated before the current value is read (§5.7).
-        let value = self.gen_expr(statement.value)?;
+        let value = self.gen_coerced_expr(statement.value)?;
         let current = self
             .builder
             .build_load(llvm_type, pointer, "compound_current")
@@ -2311,7 +2321,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
     fn gen_return_statement(&mut self, statement: &crate::ast::ReturnStmt) -> Result<(), String> {
         match statement.value {
             Some(value) => {
-                let value = self.gen_expr(value)?;
+                let value = self.gen_coerced_expr(value)?;
                 self.builder
                     .build_return(Some(&value))
                     .map_err(|error| format!("cannot return: {error}"))?;
@@ -3872,7 +3882,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                         })?;
                         arguments.push(address.into());
                     } else {
-                        arguments.push(self.gen_expr(value_node)?.into());
+                        arguments.push(self.gen_coerced_expr(value_node)?.into());
                     }
                 }
                 let call_site = if let Some(receiver_pointer) = receiver {
@@ -4204,7 +4214,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             match mapped {
                 Some(mapped) => {
                     for value_node in mapped {
-                        arguments.push(self.gen_expr(value_node)?.into());
+                        arguments.push(self.gen_coerced_expr(value_node)?.into());
                     }
                 }
                 None => {

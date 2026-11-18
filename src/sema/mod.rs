@@ -396,6 +396,8 @@ pub struct OperatorInfo {
     pub getter: Option<u32>,
     /// Indexer setter.
     pub setter: Option<u32>,
+    /// Whether a conversion operator may be invoked implicitly (§9.7).
+    pub implicitable: bool,
 }
 
 /// An accessor property (§3.8.2).
@@ -689,6 +691,9 @@ pub struct SemaResult {
     /// Ordered argument expressions of a call, after applying named arguments and
     /// default values (§4.5). Keyed by the call node.
     pub call_arguments: HashMap<NodeId, Vec<NodeId>>,
+    /// Implicit conversion operators invoked at a value node (`implicitable`,
+    /// §9.7). Keyed by the converted value expression.
+    pub implicit_conversions: HashMap<NodeId, u32>,
     /// Number of errors reported.
     pub error_count: u32,
 }

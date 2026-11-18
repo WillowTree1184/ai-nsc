@@ -1246,6 +1246,7 @@ impl<'a> Sema<'a> {
                     method: u32::MAX,
                     getter,
                     setter,
+                    implicitable: false,
                 });
             }
             OperatorHead::Shorthand {
@@ -1296,6 +1297,7 @@ impl<'a> Sema<'a> {
                     method,
                     getter: None,
                     setter: None,
+                    implicitable: declaration.modifiers.implicitable,
                 });
             }
             OperatorHead::Conversion {
@@ -1374,6 +1376,7 @@ impl<'a> Sema<'a> {
                     method,
                     getter: None,
                     setter: None,
+                    implicitable: declaration.modifiers.implicitable,
                 });
             }
         }
@@ -3940,6 +3943,17 @@ impl<'a> Sema<'a> {
 impl<'a> Sema<'a> {
     pub(crate) fn check_expr(&mut self, node: NodeId, expected: Option<TypeId>) -> Option<TypeId> {
         let ty = self.check_expr_inner(node, expected);
+        if let (Some(ty), Some(expected)) = (ty, expected) {
+            if ty != expected && !self.is_assignable(ty, expected) {
+                // An `implicitable` conversion operator may be invoked implicitly
+                // wherever the types do not match (§9.7).
+                if let Some(method) = self.find_implicit_conversion(ty, expected) {
+                    self.result.implicit_conversions.insert(node, method);
+                    self.result.node_types[node as usize] = Some(expected);
+                    return Some(expected);
+                }
+            }
+        }
         if let Some(ty) = ty {
             self.result.node_types[node as usize] = Some(ty);
         }
@@ -5145,6 +5159,43 @@ impl<'a> Sema<'a> {
     }
 
     /// Finds a conversion operator from `source` to `target` on `owner`.
+    /// Finds an `implicitable` conversion operator from `source` to `target`
+    /// (§9.7). Conversion operators are declared on the target type, so the
+    /// target's declaration chain is searched first and the source's second.
+    fn find_implicit_conversion(&self, source: TypeId, target: TypeId) -> Option<u32> {
+        for owner in [target, source] {
+            let mut current = Some(owner);
+            let mut depth = 0;
+            while let Some(ty) = current {
+                depth += 1;
+                if depth > 32 {
+                    break;
+                }
+                let Type::Named(index) = self.types_of(ty) else {
+                    break;
+                };
+                let definition = &self.result.type_defs[index as usize];
+                for operator in &definition.operators {
+                    if operator.kind != OperatorKind::Conversion
+                        || operator.method == u32::MAX
+                        || !operator.implicitable
+                    {
+                        continue;
+                    }
+                    let function = &self.result.functions[operator.method as usize];
+                    if function.return_type == Some(target)
+                        && function.parameters.len() == 1
+                        && self.is_assignable(source, function.parameters[0].ty)
+                    {
+                        return Some(operator.method);
+                    }
+                }
+                current = definition.base;
+            }
+        }
+        None
+    }
+
     fn find_conversion_operator(
         &self,
         owner: TypeId,

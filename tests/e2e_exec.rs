@@ -2537,3 +2537,45 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 167);
 }
+
+#[test]
+fn implicitable_conversion_operators_are_invoked_implicitly() {
+    let source = "\
+structure Celsius
+{
+    public Degrees: integer(4);
+}
+
+structure Fahrenheit
+{
+    public Degrees: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Fahrenheit, degrees: integer(4))
+        {
+            this.Degrees = degrees;
+        }
+
+        implicitable operator Fahrenheit(value: Celsius): Fahrenheit
+        {
+            local degrees: integer(4) = value.Degrees * 9 / 5 + 32;
+            return Fahrenheit(degrees);
+        }
+    }
+}
+
+fixed Report(entry: Fahrenheit): integer(4)
+{
+    return entry.Degrees;
+}
+
+fixed Main(): integer(4)
+{
+    local celsius: Celsius;
+    celsius.Degrees = 10;
+    local fahrenheit: Fahrenheit = celsius;
+    return Report(celsius) + fahrenheit.Degrees;
+}";
+    assert_eq!(run_program(source), 100);
+}

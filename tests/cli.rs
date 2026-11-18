@@ -1496,3 +1496,27 @@ fn early_dispose_with_a_still_reachable_alias_warns() {
     assert!(output.status.success(), "warnings must not fail: {stderr}");
     assert!(stderr.contains("early dispose"), "{stderr}");
 }
+
+#[test]
+fn array_target_bindings_must_be_cardinal() {
+    let stderr = check_source(
+        "\
+extension for array(length: integer(4)) T
+{
+    public fixed Size(this: &array(length) T): cardinal(4)
+    {
+        return Cast<cardinal(4)>(length);
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local values: array(3) integer(4);
+    return Cast<integer(4)>(values.Size());
+}",
+    );
+    assert!(
+        stderr.contains("array target bindings must have a cardinal type"),
+        "{stderr}"
+    );
+}

@@ -752,6 +752,16 @@ impl<'a> Sema<'a> {
                         let Some(ty) = self.resolve_type(ty_node) else {
                             return;
                         };
+                        // Array target bindings must be cardinal types (§3.8.3).
+                        let is_cardinal =
+                            matches!(self.types_of(ty), Type::Integer { signed: false, .. });
+                        if !is_cardinal {
+                            self.error(
+                                self.span_of(ty_node),
+                                "array target bindings must have a cardinal type",
+                            );
+                            return;
+                        }
                         resolved_bindings.push((name, ty));
                     }
                     self.result

@@ -266,3 +266,4 @@ report an error (§4.8).
 | 45 | MED | §15.2 | `IIterator<T>`, `IIterable<T>` and `DefaultAllocator` absent from the Built-In Library | partial (8ee6895: IIterator<T>/IIterable<T> instantiated and usable, end-to-end test; DefaultAllocator and containers remain) |
 | 46 | HIGH | §5.6 | `for` over `IIterator`/`IIterable` targets missing | fixed (ea017f6: iterator/iterable traversal with Next()/Value/Null, accessor conversion, break/continue) |
 | 47 | MED | §15.2 | Built-In Library containers (array/list style iterables) absent | open |
+| 48 | MED | §9.1-§9.4 | Accessibility modifiers not enforced on member access | partial (bb38cab: fields, methods, constructors, accessors and static fields enforce public/private/protected; function-value access rights (§9.1) remain open) |

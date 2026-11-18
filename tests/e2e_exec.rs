@@ -3821,3 +3821,37 @@ fixed Main(): integer(4)
     // '!=' is derived from the array extension's '=='.
     assert_eq!(run_program(source), 3);
 }
+
+#[test]
+fn nolaa_treats_stores_and_aliases_as_demands() {
+    let source = "\
+local saved: Token;
+local destroyed: integer(4) = 0;
+
+structure Token
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Destruct(this: &Token) { destroyed = destroyed + 1; }
+    }
+}
+
+fixed Run(): integer(4)
+{
+    heap token: Token = Token();
+    token.Value = 5;
+    local alias: Token = token;
+    saved = alias;
+    return 0;
+}
+
+fixed Main(): integer(4)
+{
+    local result: integer(4) = Run();
+    return saved.Value + destroyed * 10;
+}";
+    // The global and the local alias are demands: the unit must not be disposed.
+    assert_eq!(run_program(source), 5);
+}

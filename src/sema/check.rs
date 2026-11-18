@@ -4302,6 +4302,9 @@ impl<'a> Sema<'a> {
                             target_type,
                         );
                     }
+                    // Storing a heap pointer into an alias (local, field, global
+                    // or through a pointer) creates another demand on it (§12.2).
+                    self.note_heap_escape(statement.value);
                     let carrier = match self.result.resolutions[statement.target as usize].clone() {
                         Some(Resolution::Field { type_id, index }) => {
                             if let Type::Named(owner) = self.types_of(type_id) {
@@ -4632,6 +4635,15 @@ impl<'a> Sema<'a> {
                     continue;
                 }
             };
+            // An alias to a heap unit is an additional demand on it (§12.2):
+            // conservative alias tracking marks the source unit as escaped.
+            if let Some(initializer) = item.init {
+                if !self.compile_time_constants.is_empty() {
+                    // Compile-time variables are not run-time heap aliases.
+                } else {
+                    self.note_heap_escape(initializer);
+                }
+            }
             // Inside a compile-time block the declared value is a compile-time
             // constant usable by later constant expressions (§11.4).
             if !self.compile_time_constants.is_empty() && self.in_verbatim {
@@ -5117,6 +5129,15 @@ impl<'a> Sema<'a> {
                             );
                         }
                         if let Some(index) = self.heap_unit_locals.get(&local).copied() {
+                            if self.heap_units[index].escaped {
+                                self.warn(
+                                    self.span_of(statement.target),
+                                    format!(
+                                        "early dispose: '{}' is disposed while another demand on it may still exist (§12.2)",
+                                        name.name
+                                    ),
+                                );
+                            }
                             self.heap_units[index].disposed = true;
                         }
                         self.result.resolutions[statement.target as usize] =

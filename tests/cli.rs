@@ -1470,3 +1470,29 @@ fn compile_time_block_side_effects_warn() {
         "{stderr}"
     );
 }
+
+#[test]
+fn early_dispose_with_a_still_reachable_alias_warns() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-earlyalias-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(
+        &path,
+        "local saved: Token;\n\nstructure Token\n{\n    public Value: integer(4);\n}\n\nfixed Main(): integer(4)\n{\n    heap shared: Token = Token();\n    shared.Value = 1;\n    saved = shared;\n    dispose shared;\n    return 0;\n}",
+    )
+    .expect("write");
+    let output = ai_nsc()
+        .args(["check", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "warnings must not fail: {stderr}");
+    assert!(stderr.contains("early dispose"), "{stderr}");
+}

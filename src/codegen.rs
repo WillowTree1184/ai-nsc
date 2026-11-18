@@ -69,7 +69,7 @@ fn configure_module_target(module: &Module<'_>, triple_text: &str) -> Result<(),
     use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetTriple};
     let architecture = triple_text.split('-').next().unwrap_or("");
     match architecture {
-        "x86_64" | "x86_64h" => {
+        "x86_64" | "x86_64h" | "i686" => {
             Target::initialize_x86(&InitializationConfig::default());
         }
         "aarch64" | "arm64" => {
@@ -4183,7 +4183,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .into_pointer_value();
         let slot_address = self.address_with_size(
             vtable,
-            8,
+            self.pointer_byte_offset(1),
             self.context.i64_type().const_int(slot as u64, false),
         )?;
         let callee = self
@@ -5615,7 +5615,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                                         .into_pointer_value();
                                     let slot_address = self.address_with_size(
                                         vtable,
-                                        8,
+                                        self.pointer_byte_offset(1),
                                         self.context.i64_type().const_int(slot as u64, false),
                                     )?;
                                     let callee_pointer = self
@@ -5756,7 +5756,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                         .into_pointer_value();
                     let slot_address = self.address_with_size(
                         vtable,
-                        8,
+                        self.pointer_byte_offset(1),
                         self.context.i64_type().const_int(slot as u64, false),
                     )?;
                     let callee = self

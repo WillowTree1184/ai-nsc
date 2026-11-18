@@ -203,7 +203,12 @@ pub fn run_with_args(args: &[OsString]) -> i32 {
     // Cross-compilation produces objects but cannot link an executable for a
     // foreign target without a target sysroot (§14).
     if let Some(target) = &options.target {
-        if target != crate::HOST_TRIPLE && matches!(action, Action::Build | Action::Run) {
+        let runnable_32_bit =
+            target.starts_with("i686") && crate::HOST_TRIPLE.starts_with("x86_64");
+        if target != crate::HOST_TRIPLE
+            && !runnable_32_bit
+            && matches!(action, Action::Build | Action::Run)
+        {
             eprintln!(
                 "ai-nsc: linking for a foreign target '{target}' is not supported; use 'emit-obj'"
             );

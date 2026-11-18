@@ -1425,7 +1425,7 @@ fn unsupported_target_architectures_are_diagnosed() {
     let output = ai_nsc()
         .args([
             "emit-obj",
-            "--target=i686-unknown-linux-gnu",
+            "--target=mips-unknown-linux-gnu",
             path.to_str().expect("utf-8 path"),
         ])
         .output()
@@ -1434,7 +1434,7 @@ fn unsupported_target_architectures_are_diagnosed() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success());
     assert!(
-        stderr.contains("unsupported target architecture 'i686'"),
+        stderr.contains("unsupported target architecture 'mips'"),
         "{stderr}"
     );
 }
@@ -1666,4 +1666,64 @@ fn compile_time_expression_function_calls_are_folded_in_ir() {
         !ir.contains("call i32 @N06Double"),
         "call should be folded:\n{ir}"
     );
+}
+
+#[test]
+fn i686_target_builds_and_runs_heap_classes() {
+    // 32-bit x86 executables run on an x86_64 host when 32-bit libraries exist.
+    if std::env::consts::ARCH != "x86_64" || !std::path::Path::new("/usr/lib32/libc.so.6").exists()
+    {
+        return;
+    }
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-i686-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let source_path = directory.join("program.ns");
+    std::fs::write(
+        &source_path,
+        "\
+class Box
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Box, value: integer(4)) { this.Value = value; }
+        public fixed Get(this: &Box): integer(4) { return this.Value; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    heap box: Box = Box(40);
+    return box.Get() + 2;
+}",
+    )
+    .expect("write");
+    let executable = directory.join("program");
+    let output = ai_nsc()
+        .args([
+            "build",
+            "--target=i686-unknown-linux-gnu",
+            "-o",
+            executable.to_str().expect("utf-8 path"),
+            source_path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("run ai-nsc");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let status = std::process::Command::new(&executable)
+        .status()
+        .expect("run 32-bit program");
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(status.code(), Some(42));
 }

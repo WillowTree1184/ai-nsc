@@ -1230,6 +1230,7 @@ pub fn analyze_with_options(
         jit_allowed,
         compile_time_phase_b: false,
         compile_time_deferred: false,
+        compile_time_aborted: false,
         array_binding_lengths: Vec::new(),
         heap_groups: Vec::new(),
         pending_assume_no_demand: None,
@@ -1335,6 +1336,9 @@ pub(crate) struct Sema<'a> {
     /// Set when a phase-A top-level block contains a call that can only be
     /// resolved after declaration resolution; the block is re-run in phase B.
     pub(crate) compile_time_deferred: bool,
+    /// Set once compile-time execution reported an error; all further
+    /// compile-time execution stops (§11.4: an error aborts compile-time code).
+    pub(crate) compile_time_aborted: bool,
     /// Bound array dimension values while instantiating an array extension
     /// (§3.8.3).
     pub(crate) array_binding_lengths: Vec<HashMap<String, u64>>,
@@ -2621,7 +2625,7 @@ impl<'a> Sema<'a> {
     /// compile-time function calls can be interpreted (§11.2). The `#if`
     /// decisions already taken during declaration collection are preserved.
     fn rerun_top_level_compile_time(&mut self) {
-        if self.top_level_blocks.is_empty() {
+        if self.top_level_blocks.is_empty() || self.compile_time_aborted {
             return;
         }
         self.top_level_constants.clear();
@@ -2719,6 +2723,9 @@ impl<'a> Sema<'a> {
         if !self.compile_time_phase_b {
             self.compile_time_deferred = false;
         }
+        if self.compile_time_aborted {
+            return;
+        }
         let statements = self.block_statements(block);
         let flow = self.execute_compile_time_statements(&statements, false);
         if matches!(flow, CompileTimeFlow::Break | CompileTimeFlow::Continue) {
@@ -2730,12 +2737,21 @@ impl<'a> Sema<'a> {
     }
 
     /// Executes statements of a top-level `#{}` block at compile time (§11.4).
+    /// Number of errors reported so far by the diagnostic engine.
+    fn error_count(&self) -> u32 {
+        self.engine.error_count()
+    }
+
     fn execute_compile_time_statements(
         &mut self,
         statements: &[NodeId],
         in_loop: bool,
     ) -> CompileTimeFlow {
+        let errors_before = self.error_count();
         for statement in statements {
+            if self.compile_time_aborted {
+                return CompileTimeFlow::Normal;
+            }
             if !self.compile_time_phase_b && self.compile_time_deferred {
                 return CompileTimeFlow::Normal;
             }
@@ -2931,6 +2947,9 @@ impl<'a> Sema<'a> {
             if matches!(flow, CompileTimeFlow::Break | CompileTimeFlow::Continue) {
                 return flow;
             }
+        }
+        if self.error_count() > errors_before {
+            self.compile_time_aborted = true;
         }
         CompileTimeFlow::Normal
     }

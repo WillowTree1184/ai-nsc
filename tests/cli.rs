@@ -2316,3 +2316,44 @@ fixed Main(): integer(4)
     );
     assert!(stderr.is_empty(), "{stderr}");
 }
+
+#[test]
+fn compile_time_errors_stop_compile_time_execution() {
+    let stderr = check_source(
+        "\
+#{
+    while true
+    {
+        Compiler.LogError(\"stop now\");
+    }
+}
+
+fixed Main(): integer(4)
+{
+    return 0;
+}",
+    );
+    assert_eq!(stderr.matches("error: stop now").count(), 1, "{stderr}");
+    assert!(!stderr.contains("iteration limit"), "{stderr}");
+    let linkable = check_source(
+        "\
+linkable(\"printf\") PrintFormat(wildcard; CDeclaration);
+
+#{
+    while true
+    {
+        PrintFormat(\"Waiting\\0\");
+    }
+}
+
+fixed Main(): integer(4)
+{
+    return 0;
+}",
+    );
+    assert_eq!(
+        linkable.matches("external linkable function").count(),
+        1,
+        "{linkable}"
+    );
+}

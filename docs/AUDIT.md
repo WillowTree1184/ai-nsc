@@ -286,3 +286,4 @@ report an error (§4.8).
 | 65 | MED | §3.8.3 | Array extension targets unsupported | fixed (94c2f6d: array(length) T templates instantiated per array type with bound length constant; accessors/operators diagnosed) |
 | 66 | MED | §3.8.2, §3.8.3 | Array extension accessors unsupported | fixed (fcc9f48: per-owner accessors, spec function-literal get form, bound length constant, per-instance AST clone) |
 | 67 | LOW | §3.8.3 | Array extension operators unsupported | fixed (db74b74: per-owner operator registration, dispatch for non-named owners, lazy instantiation for operands) |
+| 68 | MED | §12.2 | NOLAA had no return safe point (trailing-return heap units leaked) | fixed (2f41b11: dispose still-alive units before return, warning suppression updated) |

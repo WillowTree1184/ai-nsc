@@ -4204,3 +4204,18 @@ fixed Main(): integer(4)
     // Both branch orders share the base type: 9 + 1.
     assert_eq!(run_program(source), 10);
 }
+
+#[test]
+fn nested_array_literals_and_combined_dimensions_are_the_same_type() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local nested: array(2) array(2) integer(4) = {
+        { 1, 2 },
+        { 3, 4 }
+    };
+    local combined: array(2, 2) integer(4) = nested;
+    return combined[1][0];
+}";
+    assert_eq!(run_program(source), 4);
+}

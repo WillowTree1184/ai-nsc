@@ -139,6 +139,23 @@ impl TypeStore {
 
     /// Interns a fixed-size array type.
     pub fn array(&mut self, dimensions: Vec<u64>, element: TypeId) -> TypeId {
+        // Nested fixed arrays are one array with combined dimensions
+        // (`array(2) array(2) T` == `array(2,2) T`, §3.6.1), so intern both
+        // spellings as the same type.
+        let mut dimensions = dimensions;
+        let mut element = element;
+        loop {
+            match self.get(element).clone() {
+                Type::Array {
+                    dimensions: inner,
+                    element: inner_element,
+                } => {
+                    dimensions.extend(inner);
+                    element = inner_element;
+                }
+                _ => break,
+            }
+        }
         self.intern(Type::Array {
             dimensions,
             element,

@@ -1633,3 +1633,37 @@ fixed Main(): integer(4)
         "{stderr}"
     );
 }
+
+#[test]
+fn compile_time_expression_function_calls_are_folded_in_ir() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-ctcall-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(
+        &path,
+        "fixed Double(value: integer(4)): integer(4)\n{\n    return value * 2;\n}\n\nfixed Main(): integer(4)\n{\n    return #(Double(3));\n}",
+    )
+    .expect("write");
+    let output = ai_nsc()
+        .args(["emit-ir", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let ir = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(ir.contains("ret i32 6"), "{ir}");
+    assert!(
+        !ir.contains("call i32 @N06Double"),
+        "call should be folded:\n{ir}"
+    );
+}

@@ -4294,6 +4294,89 @@ impl<'a> Sema<'a> {
         })
     }
 
+    /// Whether an expression is determinable at compile time (§11.3). This is
+    /// broader than a compile-time *constant* (§11.7): calls to ordinary
+    /// integer-valued functions with compile-time arguments can be evaluated.
+    fn is_compile_time_evaluable(&self, node: NodeId) -> bool {
+        if self.is_compile_time_constant(node) {
+            return true;
+        }
+        match self.node_kind(node) {
+            NodeKind::Unary(unary) => self.is_compile_time_evaluable(unary.operand),
+            NodeKind::Binary(binary) => {
+                self.is_compile_time_evaluable(binary.left)
+                    && self.is_compile_time_evaluable(binary.right)
+            }
+            NodeKind::Cast(cast) => self.is_compile_time_evaluable(cast.value),
+            NodeKind::Conditional(conditional) => {
+                self.is_compile_time_evaluable(conditional.condition)
+                    && self.is_compile_time_evaluable(conditional.then_value)
+                    && self.is_compile_time_evaluable(conditional.else_value)
+            }
+            NodeKind::CompileTimeExpr(inner) => self.is_compile_time_evaluable(inner),
+            NodeKind::Call(call) => {
+                if !call
+                    .arguments
+                    .iter()
+                    .all(|argument| self.is_compile_time_evaluable(argument.value))
+                {
+                    return false;
+                }
+                let callee = match self.node_kind(call.callee) {
+                    NodeKind::Name(name) => self.lookup(&name.name).cloned(),
+                    _ => None,
+                };
+                let Some(Symbol::Functions(overloads)) = callee else {
+                    return false;
+                };
+                if overloads.len() != 1 {
+                    return false;
+                }
+                let function = &self.result.functions[overloads[0] as usize];
+                function.body.is_some()
+                    && function
+                        .parameters
+                        .iter()
+                        .all(|parameter| self.is_integer(parameter.ty))
+                    && function.return_type.is_some_and(|ty| self.is_integer(ty))
+            }
+            _ => false,
+        }
+    }
+
+    /// Evaluates an expression that is a compile-time floating-point value
+    /// (§11.3), used for constant float-to-integer conversions.
+    fn eval_const_float(&mut self, node: NodeId) -> Option<f64> {
+        match self.node_kind(node).clone() {
+            NodeKind::FloatLiteral(literal) => literal::decode_float(&literal.raw).ok(),
+            NodeKind::IntegerLiteral(_) => self.eval_const_int(node).map(|value| value as f64),
+            NodeKind::Unary(unary) if unary.op == UnaryOp::Negate => {
+                self.eval_const_float(unary.operand).map(|value| -value)
+            }
+            NodeKind::Binary(binary) => {
+                let left = self.eval_const_float(binary.left)?;
+                let right = self.eval_const_float(binary.right)?;
+                Some(match binary.op {
+                    BinaryOp::Add => left + right,
+                    BinaryOp::Subtract => left - right,
+                    BinaryOp::Multiply => left * right,
+                    BinaryOp::Divide => left / right,
+                    _ => return None,
+                })
+            }
+            NodeKind::CompileTimeExpr(inner) => self.eval_const_float(inner),
+            NodeKind::Cast(cast) => self.eval_const_float(cast.value),
+            NodeKind::Name(name) => match self.lookup(&name.name).cloned() {
+                Some(Symbol::Global(global)) => {
+                    let init = self.result.globals[global as usize].init?;
+                    self.eval_const_float(init)
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     pub(crate) fn eval_const_int(&mut self, node: NodeId) -> Option<i128> {
         match self.node_kind(node).clone() {
             NodeKind::IntegerLiteral(literal) => match literal::decode_integer(&literal.raw) {
@@ -4313,6 +4396,52 @@ impl<'a> Sema<'a> {
                 self.eval_const_int(unary.operand).map(i128::wrapping_neg)
             }
             NodeKind::CompileTimeExpr(inner) => self.eval_const_int(inner),
+            NodeKind::Cast(cast) => {
+                let target = self.result.node_types.get(node as usize).copied().flatten();
+                let Some(Type::Integer { bytes, signed }) = target.map(|ty| self.type_of(ty))
+                else {
+                    return None;
+                };
+                let bits = u32::from(bytes) * 8;
+                if let Some(value) = self.eval_const_int(cast.value) {
+                    let mask = if bits >= 128 {
+                        u128::MAX
+                    } else {
+                        (1u128 << bits) - 1
+                    };
+                    let truncated = (value as u128) & mask;
+                    let sign_bit = if bits >= 128 {
+                        1u128 << 127
+                    } else {
+                        1u128 << (bits - 1)
+                    };
+                    return Some(if signed && truncated & sign_bit != 0 {
+                        (truncated | !mask) as i128
+                    } else {
+                        truncated as i128
+                    });
+                }
+                let float = self.eval_const_float(cast.value)?;
+                if !float.is_finite() {
+                    return Some(0);
+                }
+                let modulus = (2.0f64).powi(bits as i32);
+                let mut reduced = float % modulus;
+                if reduced < 0.0 {
+                    reduced += modulus;
+                }
+                if signed {
+                    let half = (2.0f64).powi(bits.saturating_sub(1) as i32);
+                    let signed_value = if reduced >= half {
+                        reduced - modulus
+                    } else {
+                        reduced
+                    };
+                    Some(signed_value as i128)
+                } else {
+                    Some(reduced as i128)
+                }
+            }
             // The compiler API call `Type.SizeOf<T>()` is a compile-time constant
             // (§11.8).
             NodeKind::Call(call) => {
@@ -6992,17 +7121,24 @@ impl<'a> Sema<'a> {
                     return None;
                 }
                 let ty = self.check_expr(inner, expected);
-                // A '#(...)' expression must be evaluable at compile time (§11.2).
-                if self.is_compile_time_constant(inner) {
+                // A '#(...)' expression must be evaluable at compile time (§11.3).
+                if self.is_compile_time_evaluable(inner) {
                     // Record the value so code generation can emit the
                     // compile-time end product directly (§11.4).
                     self.suppress_errors += 1;
                     let value = self.eval_const_int(inner);
                     self.suppress_errors -= 1;
-                    if let (Some(ty), Some(value)) = (ty, value) {
-                        if self.is_integer(ty) {
-                            self.result.compile_time_values.insert(node, value);
+                    match (ty, value) {
+                        (Some(ty), Some(value)) => {
+                            if self.is_integer(ty) {
+                                self.result.compile_time_values.insert(node, value);
+                            }
                         }
+                        (Some(ty), None) if self.is_integer(ty) => self.unsupported(
+                            self.span_of(node),
+                            "compile-time expressions that the interpreter cannot evaluate",
+                        ),
+                        _ => {}
                     }
                 } else {
                     self.unsupported(

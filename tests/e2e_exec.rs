@@ -4440,3 +4440,19 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 10);
 }
+
+#[test]
+fn compile_time_expressions_can_call_ordinary_functions() {
+    let source = "\
+fixed Double(value: integer(4)): integer(4)
+{
+    return value * 2;
+}
+
+fixed Main(): integer(4)
+{
+    local folded: integer(4) = #(Double(3) + 1);
+    return folded;
+}";
+    assert_eq!(run_program(source), 7);
+}

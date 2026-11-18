@@ -314,3 +314,4 @@ report an error (§4.8).
 | 93 | MED | §3.6.1 | Nested array spellings interned as distinct types | fixed (035ef15: array interning flattens nested dimensions; literals/declarations unify) |
 | 94 | LOW | §5.3 | Global constants accepted 'uninitialized' as initial value | fixed (a364ce9: constant-initializer context tracked, specific diagnostic for all constants) |
 | 95 | MED | §5.7 | Compound assignment ignored user-defined operators and accessor evaluation order | fixed (a6342ba: operator dispatch for compound assignments, RHS-before-current-value order) |
+| 96 | MED | §11.4 | Top-level compile-time assignments were not executed | fixed (eca2869: compile-time assignment/compound assignment execution, final values as run-time constants) |

@@ -35,7 +35,7 @@ size. Each round also keeps the docs' audit register in sync.
 
 | # | Item | Status | Notes |
 |---|------|--------|-------|
-| 1 | `#{}` full compile-time execution | **in progress** | Constant declarations, assignments and `#if` at top level execute at compile time; blocks with run-time statements are lowered as run-time equivalents with the spec-mandated side-effect warning and the §11.7 boundary diagnostic. Remaining: a true compile-time interpreter for loops/calls. Size: large. |
+| 1 | `#{}` full compile-time execution | **in progress** | Constant declarations, assignments (incl. compound) and `#if` at top level execute at compile time; blocks with run-time statements are lowered as run-time equivalents with the spec-mandated side-effect warning and the §11.7 boundary diagnostic. Remaining: a true compile-time interpreter for loops/calls. Size: large. |
 | 2 | NOLAA precision (general CFG safe points, full alias analysis) | **acceptable conservative** | All safety requirements are met: block-end/return/break/continue safe points, alias/store demands as escapes, Bind groups, AssumeNoDemandNext, linkable-call abandonment. Remaining work is earlier-dispose precision (optimization, not correctness). Size: large/optional. |
 | 3 | Array-extension indexer operators | **likely not applicable** | Array index access is a language built-in (§3.6.1/§4.4.3); extension indexers on array targets are diagnosed instead of silently ignored. Needs a spec clarification before changing. Size: small. |
 | 4 | 32-bit targets (i686/armv7/riscv32) | **open** | Layouts and code generation are 64-bit-only and 32-bit triples are diagnosed. Would need pointer-width-aware layout in sema and header offsets in codegen. Size: large. |

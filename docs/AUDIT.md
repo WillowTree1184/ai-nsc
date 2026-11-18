@@ -316,3 +316,4 @@ report an error (§4.8).
 | 95 | MED | §5.7 | Compound assignment ignored user-defined operators and accessor evaluation order | fixed (a6342ba: operator dispatch for compound assignments, RHS-before-current-value order) |
 | 96 | MED | §11.4 | Top-level compile-time assignments were not executed | fixed (eca2869: compile-time assignment/compound assignment execution, final values as run-time constants) |
 | 97 | MED | §11.4 | Compile-time blocks could not execute loops/branches | fixed (c95a4be: compile-time if/while execution, break/continue, constant conditions, iteration cap, inferred types) |
+| 98 | MED | §11.4, §11.2 | Compile-time blocks could not call ordinary functions | fixed (51ad63d: post-resolution re-execution, integer function interpreter with recursion/loops, strict constant predicate preserved) |

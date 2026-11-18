@@ -7077,7 +7077,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .build_conditional_branch(condition, then_block, else_block)
             .map_err(|error| format!("cannot branch: {error}"))?;
         self.builder.position_at_end(then_block);
-        let then_value = self.gen_expr(conditional.then_value)?;
+        let then_value = self.gen_coerced_expr(conditional.then_value)?;
         let then_end = self
             .builder
             .get_insert_block()
@@ -7086,7 +7086,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .build_unconditional_branch(end_block)
             .map_err(|error| format!("cannot branch: {error}"))?;
         self.builder.position_at_end(else_block);
-        let else_value = self.gen_expr(conditional.else_value)?;
+        let else_value = self.gen_coerced_expr(conditional.else_value)?;
         let else_end = self
             .builder
             .get_insert_block()

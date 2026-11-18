@@ -6508,15 +6508,48 @@ impl<'a> Sema<'a> {
                         expected,
                     );
                 }
-                let else_type = self.check_expr(conditional.else_value, then_type.or(expected));
-                if let (Some(then_type), Some(else_type)) = (then_type, else_type) {
-                    self.expect_assignable(
-                        self.span_of(conditional.else_value),
-                        else_type,
-                        then_type,
-                    );
+                // Literal branches take their type from the other branch; other
+                // branches are checked against the context, then the common type
+                // is computed (§4.9.27).
+                let else_is_literal = matches!(
+                    self.node_kind(conditional.else_value),
+                    NodeKind::IntegerLiteral(_)
+                        | NodeKind::FloatLiteral(_)
+                        | NodeKind::CharacterLiteral(_)
+                );
+                let else_expected = if else_is_literal {
+                    then_type.or(expected)
+                } else {
+                    expected
+                };
+                let else_type = self.check_expr(conditional.else_value, else_expected);
+                match (then_type, else_type) {
+                    (Some(then_type), Some(else_type)) if then_type != else_type => {
+                        if let Some(expected) = expected {
+                            // Both branches must fit the surrounding context type.
+                            self.expect_assignable(
+                                self.span_of(conditional.else_value),
+                                else_type,
+                                expected,
+                            );
+                            Some(expected)
+                        } else if self.is_assignable(else_type, then_type) {
+                            Some(then_type)
+                        } else if self.is_assignable(then_type, else_type) {
+                            // A branch derived from the other: the common type is
+                            // the base branch (§4.9.27).
+                            Some(else_type)
+                        } else {
+                            self.error(
+                                self.span_of(conditional.else_value),
+                                "conditional branches have no common type",
+                            );
+                            None
+                        }
+                    }
+                    (Some(then_type), _) => Some(then_type),
+                    (None, other) => other,
                 }
-                then_type
             }
             NodeKind::ArrayLiteral(literal) => self.check_array_literal(node, &literal, expected),
             NodeKind::CompileTimeExpr(inner) => {

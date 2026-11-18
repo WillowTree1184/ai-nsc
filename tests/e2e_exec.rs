@@ -4168,3 +4168,39 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 15);
 }
+
+#[test]
+fn conditional_expression_uses_the_common_base_type() {
+    let source = "\
+class Base
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Base, value: integer(4)) { this.Value = value; }
+        public fixed Get(this: &Base): integer(4) { return this.Value; }
+    }
+}
+
+class Derived: Base
+{
+    extension
+    {
+        public fixed Construct(this: &Derived, value: integer(4)) { base.Construct(value); }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local baseValue: Base = Base(1);
+    local derivedValue: Derived = Derived(9);
+    local chooseDerived: boolean = true;
+    local first: Base = chooseDerived ? derivedValue : baseValue;
+    local chooseBase: boolean = false;
+    local second: Base = chooseBase ? derivedValue : baseValue;
+    return first.Get() + second.Get();
+}";
+    // Both branch orders share the base type: 9 + 1.
+    assert_eq!(run_program(source), 10);
+}

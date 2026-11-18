@@ -18,7 +18,7 @@ path = "src/lib.rs"
 # inkwell 0.11 binds LLVM 18.1 through llvm-sys 181. The `prefer-dynamic`
 # variant links the shared libLLVM-18.so that Ubuntu's llvm-18-dev provides;
 # static component libraries are not shipped for every LLVM component.
-inkwell = { version = "0.11", features = ["llvm18-1-prefer-dynamic", "target-x86"] }
+inkwell = { version = "0.11", features = ["llvm18-1-prefer-dynamic", "target-x86", "target-aarch64"] }
 
 [profile.release]
 lto = "thin"

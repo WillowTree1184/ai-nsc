@@ -200,6 +200,17 @@ pub fn run_with_args(args: &[OsString]) -> i32 {
         (None, false) => Action::Build,
     };
 
+    // Cross-compilation produces objects but cannot link an executable for a
+    // foreign target without a target sysroot (§14).
+    if let Some(target) = &options.target {
+        if target != crate::HOST_TRIPLE && matches!(action, Action::Build | Action::Run) {
+            eprintln!(
+                "ai-nsc: linking for a foreign target '{target}' is not supported; use 'emit-obj'"
+            );
+            return 1;
+        }
+    }
+
     match action {
         Action::Help => {
             print!("{USAGE}");
@@ -298,6 +309,7 @@ fn compile(options: &Options) -> i32 {
     // ---- code generation ----------------------------------------------
     let codegen_options = codegen::CodegenOptions {
         optimization_level: options.optimization_level,
+        target: options.target.clone(),
     };
     let ir = match codegen::generate(&parsed, &sema_result, &codegen_options) {
         Ok(ir) => ir,

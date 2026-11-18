@@ -1314,3 +1314,65 @@ fn compile_time_only_blocks_leave_no_run_time_code() {
     );
     assert!(!main_ir.contains("add i32"), "{main_ir}");
 }
+
+#[test]
+fn emit_obj_supports_aarch64_cross_compilation() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-cross-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    let object = directory.join("program.o");
+    std::fs::write(&path, "fixed Main(): integer(4)\n{\n    return 42;\n}").expect("write");
+    let output = ai_nsc()
+        .args([
+            "emit-obj",
+            "--target=aarch64-unknown-linux-gnu",
+            path.to_str().expect("utf-8 path"),
+            "-o",
+            object.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("run ai-nsc");
+    let bytes = std::fs::read(&object).unwrap_or_default();
+    let _ = std::fs::remove_dir_all(&directory);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!bytes.is_empty(), "expected a non-empty object file");
+    // ELF magic: cross-compiled object is produced for the requested target.
+    assert_eq!(&bytes[..4], b"\x7fELF");
+}
+
+#[test]
+fn cross_target_linking_is_rejected_with_a_clear_message() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-crosslink-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(&path, "fixed Main(): integer(4)\n{\n    return 0;\n}").expect("write");
+    let output = ai_nsc()
+        .args([
+            "run",
+            "--target=aarch64-unknown-linux-gnu",
+            path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(stderr.contains("not supported"), "{stderr}");
+    assert!(stderr.contains("emit-obj"), "{stderr}");
+}

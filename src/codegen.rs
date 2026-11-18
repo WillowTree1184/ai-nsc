@@ -56,6 +56,44 @@ pub fn answer_module<'ctx>(context: &'ctx Context) -> Module<'ctx> {
 pub struct CodegenOptions {
     /// Optimization level requested by the user (applied by `clang`).
     pub optimization_level: u8,
+    /// Target triple to compile for; `None` keeps LLVM's host default.
+    pub target: Option<String>,
+}
+
+/// Configures the module's target triple and data layout for a target triple
+/// (§13, §14). This build supports x86 and aarch64 code generation.
+fn configure_module_target(module: &Module<'_>, triple_text: &str) -> Result<(), String> {
+    use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetTriple};
+    let architecture = triple_text.split('-').next().unwrap_or("");
+    match architecture {
+        "x86_64" | "i386" | "i486" | "i586" | "i686" | "x86" => {
+            Target::initialize_x86(&InitializationConfig::default());
+        }
+        "aarch64" | "arm64" | "arm" | "armeb" => {
+            Target::initialize_aarch64(&InitializationConfig::default());
+        }
+        other => {
+            return Err(format!(
+                "unsupported target architecture '{other}': this build supports x86 and aarch64"
+            ));
+        }
+    }
+    let triple = TargetTriple::create(triple_text);
+    let target = Target::from_triple(&triple)
+        .map_err(|error| format!("unknown target triple '{triple_text}': {error}"))?;
+    let machine = target
+        .create_target_machine(
+            &triple,
+            "generic",
+            "",
+            inkwell::OptimizationLevel::None,
+            RelocMode::Default,
+            CodeModel::Default,
+        )
+        .ok_or_else(|| format!("cannot create a target machine for '{triple_text}'"))?;
+    module.set_triple(&triple);
+    module.set_data_layout(&machine.get_target_data().get_data_layout());
+    Ok(())
 }
 
 /// Generates textual LLVM IR for a program.
@@ -67,6 +105,9 @@ pub struct CodegenOptions {
 pub fn generate(ast: &Ast, sema: &SemaResult, options: &CodegenOptions) -> Result<String, String> {
     let context = Context::create();
     let module = context.create_module("novasharp");
+    if let Some(triple) = &options.target {
+        configure_module_target(&module, triple)?;
+    }
     let builder = context.create_builder();
     let mut generator = Generator {
         context: &context,

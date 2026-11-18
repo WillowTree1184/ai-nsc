@@ -4029,6 +4029,119 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Returns the span of the first statement in a `#{}` block that has a
+    /// run-time side effect (§11.4 requires a warning for compile-time side
+    /// effects that cannot be preserved).
+    fn compile_time_block_side_effect(&self, block: NodeId) -> Option<Span> {
+        let statements = match self.node_kind(block) {
+            NodeKind::Block(statements) => statements.clone(),
+            _ => return None,
+        };
+        self.statements_side_effect(&statements)
+    }
+
+    fn statements_side_effect(&self, statements: &[NodeId]) -> Option<Span> {
+        for statement in statements {
+            match self.node_kind(*statement).clone() {
+                NodeKind::ExpressionStmt(expression) => {
+                    let is_api = builtin_compiler_function(self.ast, expression).is_some()
+                        || ["Platform", "NOLAA"].iter().any(|namespace| {
+                            builtin_namespace_call(self.ast, expression, namespace).is_some()
+                        })
+                        || builtin_size_of_type_argument(self.ast, expression).is_some();
+                    if !is_api {
+                        return Some(self.span_of(*statement));
+                    }
+                }
+                NodeKind::Heap(_) | NodeKind::Dispose(_) | NodeKind::Throw(_) => {
+                    return Some(self.span_of(*statement));
+                }
+                NodeKind::Local(declaration) => {
+                    for item in &declaration.items {
+                        if let Some(init) = item.init {
+                            if !self.is_compile_time_constant(init) {
+                                return Some(item.span);
+                            }
+                        }
+                    }
+                }
+                NodeKind::Fixed(declaration) => {
+                    if let Some(Initializer::Expression(expression)) = declaration.init {
+                        if !self.is_compile_time_constant(expression) {
+                            return Some(self.span_of(*statement));
+                        }
+                    }
+                }
+                NodeKind::Block(inner) => {
+                    if let Some(span) = self.statements_side_effect(&inner) {
+                        return Some(span);
+                    }
+                }
+                NodeKind::CompileTimeBlock(inner) => {
+                    if let Some(span) = self.compile_time_block_side_effect(inner) {
+                        return Some(span);
+                    }
+                }
+                NodeKind::If(statement) => {
+                    for branch in &statement.branches {
+                        if let Some(span) = self.compile_time_block_side_effect(branch.body) {
+                            return Some(span);
+                        }
+                    }
+                    if let Some(else_block) = statement.else_block {
+                        if let Some(span) = self.compile_time_block_side_effect(else_block) {
+                            return Some(span);
+                        }
+                    }
+                }
+                NodeKind::While(statement) => {
+                    if let Some(span) = self.compile_time_block_side_effect(statement.body) {
+                        return Some(span);
+                    }
+                }
+                NodeKind::DoWhile(statement) => {
+                    if let Some(span) = self.compile_time_block_side_effect(statement.body) {
+                        return Some(span);
+                    }
+                }
+                NodeKind::For(statement) => {
+                    if let Some(span) = self.compile_time_block_side_effect(statement.body) {
+                        return Some(span);
+                    }
+                }
+                NodeKind::Match(statement) => {
+                    for case in &statement.cases {
+                        if let Some(span) = self.compile_time_block_side_effect(case.body) {
+                            return Some(span);
+                        }
+                    }
+                }
+                NodeKind::CompileTimeIf(if_statement) => {
+                    let id = *statement;
+                    let taken = self
+                        .result
+                        .compile_time_conditions
+                        .get(&id)
+                        .copied()
+                        .unwrap_or(false);
+                    if taken {
+                        if let Some(span) =
+                            self.compile_time_block_side_effect(if_statement.then_block)
+                        {
+                            return Some(span);
+                        }
+                    } else if let Some(else_block) = if_statement.else_block {
+                        if let Some(span) = self.compile_time_block_side_effect(else_block) {
+                            return Some(span);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     /// Whether every statement of a `#{}` block is compile-time only, so the
     /// block has no run-time end products and need not be emitted (§11.4).
     fn compile_time_only_block(&self, block: NodeId) -> bool {
@@ -4392,6 +4505,14 @@ impl<'a> Sema<'a> {
                 self.compile_time_constants
                     .push(std::collections::HashMap::new());
                 self.check_block(block);
+                // Compile-time side effects cannot be preserved at run time; the
+                // block is lowered as an equivalent at run time (§11.4 warning).
+                if let Some(span) = self.compile_time_block_side_effect(block) {
+                    self.warn(
+                        span,
+                        "side effect in a compile-time block is lowered as a run-time equivalent (§11.4)",
+                    );
+                }
                 let compile_time_only = self.compile_time_only_block(block);
                 self.compile_time_constants.pop();
                 if compile_time_only {

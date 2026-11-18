@@ -303,3 +303,4 @@ report an error (§4.8).
 | 82 | MED | §3.8.2 | Free accessors (outside type bodies/extensions) unsupported | fixed (cb9acc2: free accessor function constants, default backing get/set, explicit members, read-only constant backing, scope visibility) |
 | 83 | LOW | §3.8.2 | Function-scope free accessors with local backing unsupported | fixed (f05fe40: by-reference backing parameter getter/setter, read-only fixed backings; explicit members diagnosed) |
 | 84 | MED | §12.2 | Linkable calls did not abandon NOLAA analysis / no Never-Disposed warning | fixed (47c9167: linkable abandonment marking, warning reporting, name-callee-only probe) |
+| 85 | MED | §3.8.2, §9.15 | Static accessors with explicit members unsupported | fixed (d4e8e85: parameterless static getter/setter functions, default backing bodies, static member access/codegen) |

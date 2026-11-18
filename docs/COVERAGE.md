@@ -79,7 +79,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §10 generics / monomorphization | 🟡 | types/functions/constraints/extension-for-generic/caching/mangling; including methods that declare their own type parameters and array extension targets (methods); remaining: array extension indexers and monomorphization-volume optimization (§14.3.2, not implemented) |
 | §11.1–11.7 compile-time: `#(...)`, `#if`/`#else`, `#{}` blocks (incl. top-level and cross-file order), `#` constant parameters | ✅ | compile-time e2e tests; blocks are lowered as runtime equivalents of compile-time results (semantics-preserving approximation) |
 | §11.8 compiler API: `Type.SizeOf<T>`, `Compiler.LogNote/LogWarning/LogError/Assert`, `Platform.Is`, `NOLAA.Abandon/Bind/AssumeNoDemandNext` | ✅ | compiler API tests |
-| §12 memory model: locals/heap/dispose/destructors, `manual`, custom `IAllocator` + `DefaultAllocator`, NOLAA (double-dispose/early-dispose/never-disposed warnings and auto-insertion at block-end, return, break and continue safe points) | ✅ | heap/dispose/allocation/NOLAA tests; NOLAA analysis is deliberately conservative (escapes are exempt) |
+| §12 memory model: locals/heap/dispose/destructors, `manual`, custom `IAllocator` + `DefaultAllocator`, NOLAA (double-dispose/early-dispose/never-disposed warnings, alias/store demand tracking, auto-insertion at block-end/return/break/continue safe points, Bind groups) | ✅ | heap/dispose/allocation/NOLAA tests; NOLAA analysis is deliberately conservative (escapes are exempt) |
 | §13 ABI: name mangling (§13.2), layouts, calling conventions, type info/vtables/interface tables | ✅ | mangling unit test + IR smoke tests; cross-target conventions beyond host diagnosed |
 | §14 startup: launcher, static/runtime initializers, exit code = Main return | ✅ | launcher IR/e2e exit-code tests |
 | §15 Built-In Library: `Object`, `CallingConvention`, `PlatformKind`, exception hierarchy with `InnerException`/constructors, `Optional<T>`, `Result<TValue; TAlternative>`, `IIterator<T>`, `IIterable<T>`, `IAllocator`, `DefaultAllocator`, compile-time library | ✅ | builtin library e2e tests; containers are not part of the spec's §15.2 |
@@ -96,10 +96,10 @@ These are deliberate, documented limitations rather than silent miscompiles:
 2. **Non-leading runtime array dimensions** are diagnosed (multi-dimensional
    VLAs with a leading runtime dimension are supported).
 5. **`verbatim`** is parsed/accepted but has no distinct semantics yet.
-6. **NOLAA** is a conservative approximation: warnings, block-end/return/
-   break/continue auto-dispose, `NOLAA.Bind` analysis groups and
-   `NOLAA.AssumeNoDemandNext`; general CFG safe-point insertion and full alias
-   analysis are not implemented.
+6. **NOLAA** is a conservative approximation: warnings (including Early-Dispose),
+   block-end/return/break/continue auto-dispose, alias/store demand tracking,
+   `NOLAA.Bind` groups and `NOLAA.AssumeNoDemandNext`; general CFG safe-point
+   insertion and complete alias analysis are not implemented.
 7. **Monomorphization volume optimization** (§14.3.2) is not implemented.
 8. **Target selection**: `--target` configures x86_64/aarch64/riscv64 code
    generation and object emission with the target data layout; 32-bit

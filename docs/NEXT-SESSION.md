@@ -32,9 +32,10 @@
    compile-time-only `#{}` blocks are no longer emitted (#71), and side effects
    are warned about (#75); blocks with run-time statements are still lowered as
    run-time equivalents, so full compile-time execution remains open (§11.4).
-2. NOLAA: general CFG safe-point insertion and full alias analysis (§12.2);
-   `Bind` groups, `AssumeNoDemandNext`, block-end/return/break/continue safe
-   points and escape propagation are implemented.
+2. NOLAA: general CFG safe-point insertion (§12.2); `Bind` groups,
+   `AssumeNoDemandNext`, block-end/return/break/continue safe points, alias/store
+   demand tracking and Early-Dispose warnings are implemented, while full
+   alias analysis remains conservative.
 3. Multi-dimensional VLAs (§3.6.1 subset).
 4. Array extension targets (`extension for array(...)`).
 5. Monomorphization volume optimization (§14.3.2).

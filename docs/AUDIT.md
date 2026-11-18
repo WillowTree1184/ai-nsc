@@ -279,3 +279,4 @@ report an error (§4.8).
 | 58 | LOW | §5.9.5 | Range array literals without expected element type rejected | fixed (468f8ac: element type inferred from the range start or for binding type) |
 | 59 | LOW | §all | Spec whole-program examples were only parse-tested | fixed (a59a0b4: 15+ sema-clean whole-program examples are compiled end to end by the CLI) |
 | 60 | MED | §11.2, §11.4, §11.6 | Top-level compile-time blocks/variables and top-level #if unimplemented | fixed (2273414: in-order execution during declaration collection, cross-file variables, selected-branch declaration collection, runtime final values) |
+| 61 | LOW | §9.8 | `verbatim` had no semantics | fixed (9e66017: optnone functions, runtime-evaluated verbatim storages, compile-time evaluation diagnosed inside verbatim) |

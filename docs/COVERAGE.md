@@ -75,7 +75,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §6 names/scopes: modules, shadowing, `owner` chains, imports | ✅ | scope/owner/use tests |
 | §7 modules | ✅ | module e2e tests |
 | §8 functions: parameters, defaults, by-ref, array parameter sugar, `#` compile-time constants, nested functions | ✅ | parameter/call tests; `#` on functions, methods and operators |
-| §9 modifiers: accessibility, `scoped`, `readonly`, `implicitable`, `manual`, `abstract`/`sealed`/`virtual`/`override`, `aligned`, `static`, `verbatim` | 🟡 | all enforced except full `verbatim` semantics (parsed and accepted as a modifier) |
+| §9 modifiers: accessibility, `scoped`, `readonly`, `implicitable`, `manual`, `abstract`/`sealed`/`virtual`/`override`, `aligned`, `static`, `verbatim` | 🟡 | all enforced, including `verbatim` (optnone functions, runtime-evaluated storages, compile-time evaluation rejected inside verbatim) |
 | §10 generics / monomorphization | 🟡 | types/functions/constraints/extension-for-generic/caching/mangling; remaining: generic methods declaring their own type parameters (diagnosed) and monomorphization-volume optimization (§14.3.2, not implemented) |
 | §11.1–11.7 compile-time: `#(...)`, `#if`/`#else`, `#{}` blocks (incl. top-level and cross-file order), `#` constant parameters | ✅ | compile-time e2e tests; blocks are lowered as runtime equivalents of compile-time results (semantics-preserving approximation) |
 | §11.8 compiler API: `Type.SizeOf<T>`, `Compiler.LogNote/LogWarning/LogError/Assert`, `Platform.Is`, `NOLAA.Abandon/Bind/AssumeNoDemandNext` | ✅ | compiler API tests |

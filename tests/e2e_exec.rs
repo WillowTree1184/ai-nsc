@@ -4219,3 +4219,31 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 4);
 }
+
+#[test]
+fn compound_assignment_uses_user_defined_operators() {
+    let source = "\
+structure Meter
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Meter, value: integer(4)) { this.Value = value; }
+        operator +(left: Meter, right: Meter): Meter
+        {
+            return Meter(left.Value + right.Value + 100);
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local total: Meter = Meter(2);
+    local increment: Meter = Meter(3);
+    total += increment;
+    return total.Value;
+}";
+    // 2 + 3 + 100 through the user-defined operator
+    assert_eq!(run_program(source), 105);
+}

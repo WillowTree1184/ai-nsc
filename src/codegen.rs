@@ -1375,7 +1375,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             NodeKind::Throw(statement) => self.gen_throw_statement(&statement),
             NodeKind::Dispose(statement) => self.gen_dispose_statement(&statement),
             NodeKind::Set(statement) => self.gen_set_statement(&statement),
-            NodeKind::CompoundSet(statement) => self.gen_compound_set_statement(&statement),
+            NodeKind::CompoundSet(statement) => self.gen_compound_set_statement(node, &statement),
             NodeKind::If(statement) => self.gen_if_statement(&statement),
             NodeKind::While(loop_statement) => self.gen_while_loop(&loop_statement),
             NodeKind::DoWhile(loop_statement) => {
@@ -2856,6 +2856,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
 
     fn gen_compound_set_statement(
         &mut self,
+        node: NodeId,
         statement: &crate::ast::CompoundSetStmt,
     ) -> Result<(), String> {
         if let Some(Resolution::Accessor { getter, setter }) =
@@ -2869,6 +2870,8 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             };
             let receiver = self.gen_instance_pointer(access.base)?;
             let receiver_type = self.type_of(access.base);
+            // The RHS is evaluated before the current value is read (§5.7).
+            let value = self.gen_coerced_expr(statement.value)?;
             let current_call =
                 self.gen_method_dispatch(getter, receiver_type, receiver, Vec::new())?;
             let current = match current_call.try_as_basic_value() {
@@ -2878,9 +2881,11 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 }
             };
             let target_type = self.type_of(statement.target);
-            let value = self.gen_expr(statement.value)?;
-            let result =
-                self.build_arithmetic(statement.op, current, value, target_type, statement.target)?;
+            let result = if let Some(method) = self.sema.compound_operators.get(&node).copied() {
+                self.gen_operator_call(method, vec![current, value])?
+            } else {
+                self.build_arithmetic(statement.op, current, value, target_type, statement.target)?
+            };
             self.gen_method_dispatch(setter, receiver_type, receiver, vec![result.into()])?;
             return Ok(());
         }
@@ -2895,6 +2900,13 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .builder
             .build_load(llvm_type, pointer, "compound_current")
             .map_err(|error| format!("cannot load target: {error}"))?;
+        if let Some(method) = self.sema.compound_operators.get(&node).copied() {
+            let result = self.gen_operator_call(method, vec![current, value])?;
+            self.builder
+                .build_store(pointer, result)
+                .map_err(|error| format!("cannot assign: {error}"))?;
+            return Ok(());
+        }
         // Pointer compound arithmetic (§3.6.2): `p += i` / `p -= i`.
         let result = if matches!(self.sema.types.get(target_type), Type::Pointer { .. })
             && matches!(statement.op, BinaryOp::Add | BinaryOp::Subtract)

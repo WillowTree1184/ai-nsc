@@ -948,6 +948,9 @@ pub struct SemaResult {
     pub owner_accessors: HashMap<TypeId, Vec<AccessorInfo>>,
     /// Operators belonging to non-named owners (array extensions, §3.8.3).
     pub owner_operators: HashMap<TypeId, Vec<OperatorInfo>>,
+    /// User-defined operator implementations selected for compound assignments
+    /// (§5.7), keyed by the assignment statement.
+    pub compound_operators: HashMap<NodeId, u32>,
     /// Accessors declared outside type bodies and extension blocks (§3.8.2).
     pub free_accessors: Vec<FreeAccessorInfo>,
     /// `extension for array(...)` templates.

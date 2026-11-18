@@ -5118,13 +5118,39 @@ impl<'a> Sema<'a> {
                     self.expect_assignable(self.span_of(statement.value), value_type, target_type);
                 }
                 if !self.compound_operator_allowed(statement.op, target_type) {
-                    self.error(
-                        self.span_of(node),
-                        format!(
-                            "compound assignment is not defined for '{}'",
-                            self.spelling(target_type)
-                        ),
-                    );
+                    // Compound assignment follows the target type's binary
+                    // operator, including user-defined overloads (§5.7).
+                    let kind = match statement.op {
+                        BinaryOp::Add => Some(OperatorKind::Add),
+                        BinaryOp::Subtract => Some(OperatorKind::Subtract),
+                        BinaryOp::Multiply => Some(OperatorKind::Multiply),
+                        BinaryOp::Divide => Some(OperatorKind::Divide),
+                        BinaryOp::Remainder => Some(OperatorKind::Remainder),
+                        _ => None,
+                    };
+                    let method = kind.and_then(|kind| {
+                        let other = value_type.unwrap_or(target_type);
+                        self.find_operator(target_type, other, kind)
+                    });
+                    match method {
+                        Some(method) => {
+                            let span = self.span_of(node);
+                            let operands = [statement.target, statement.value];
+                            if let Some(method) = self.specialize_operator(method, &operands, span)
+                            {
+                                self.result.compound_operators.insert(node, method);
+                            }
+                        }
+                        None => {
+                            self.error(
+                                self.span_of(node),
+                                format!(
+                                    "compound assignment is not defined for '{}'",
+                                    self.spelling(target_type)
+                                ),
+                            );
+                        }
+                    }
                 }
             }
             NodeKind::If(statement) => {

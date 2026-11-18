@@ -8554,8 +8554,15 @@ impl<'a> Sema<'a> {
                     NodeKind::Accessor(declaration) => {
                         self.create_array_extension_accessor(cloned, &declaration, type_id);
                     }
-                    NodeKind::Operator(_) => {
-                        self.resolve_operator_declaration(cloned, Some(type_id));
+                    NodeKind::Operator(declaration) => {
+                        if matches!(declaration.head, crate::ast::OperatorHead::Indexer { .. }) {
+                            self.unsupported(
+                                self.span_of(cloned),
+                                "array extension indexer operators",
+                            );
+                        } else {
+                            self.resolve_operator_declaration(cloned, Some(type_id));
+                        }
                     }
                     _ => {}
                 }

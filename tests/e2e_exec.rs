@@ -3797,3 +3797,27 @@ fixed Main(): integer(4)
     // The second call is a demand again, so no auto-dispose happens.
     assert_eq!(run_program(source), 6);
 }
+
+#[test]
+fn array_extension_operators_support_derived_comparisons() {
+    let source = "\
+extension for array(length: cardinal(4)) T
+{
+    operator ==(left: array(length) T, right: array(length) T): boolean
+    {
+        return Cast<integer(8)>(length) == 3;
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local first: array(3) integer(4);
+    local second: array(3) integer(4);
+    local score: integer(4) = 0;
+    if (first == second) { score += 1; }
+    if (first != second) { score += 2; }
+    return score;
+}";
+    // '!=' is derived from the array extension's '=='.
+    assert_eq!(run_program(source), 3);
+}

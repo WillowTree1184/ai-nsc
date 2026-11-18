@@ -3797,7 +3797,7 @@ impl<'a> Sema<'a> {
             };
             let template_name = self.result.type_defs[interface_index as usize]
                 .template
-                .and_then(|template| Some(self.result.type_defs[template as usize].name.clone()));
+                .map(|template| self.result.type_defs[template as usize].name.clone());
             let arguments = self.result.type_defs[interface_index as usize]
                 .generic_arguments
                 .clone();

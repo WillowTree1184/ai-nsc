@@ -2547,7 +2547,6 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .and_then(|methods| methods.first())
             .ok_or_else(|| "IIterator.Next is missing".to_string())?;
         let target_value = self.gen_expr(info.target)?;
-        let pointer_type = self.context.ptr_type(AddressSpace::default());
         let iterator = if info.use_accessor {
             let iterable_interface = info
                 .iterable_interface

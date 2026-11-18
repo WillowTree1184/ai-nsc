@@ -815,6 +815,17 @@ pub enum MatchPatternInfo {
     },
 }
 
+/// An `extension for array(length: cardinal(4)) T` template (§3.8.3).
+#[derive(Clone, Debug)]
+pub struct ArrayExtensionTemplate {
+    /// The extension declaration node.
+    pub extension: NodeId,
+    /// Bound dimension names and their bound types.
+    pub bindings: Vec<(String, TypeId)>,
+    /// The element type parameter.
+    pub parameter: GenericParameterInfo,
+}
+
 /// Everything the later phases need from semantic analysis.
 #[derive(Debug, Default)]
 pub struct SemaResult {
@@ -872,6 +883,12 @@ pub struct SemaResult {
     /// Integer values of compile-time expressions that can be emitted as
     /// constants (§11.4: keep only the required end products).
     pub compile_time_values: HashMap<NodeId, i128>,
+    /// Methods belonging to non-named owners (array extensions, §3.8.3).
+    pub owner_methods: HashMap<TypeId, Vec<u32>>,
+    /// `extension for array(...)` templates.
+    pub array_extension_templates: Vec<ArrayExtensionTemplate>,
+    /// Instantiated array extension methods per target array type.
+    pub array_extension_instances: HashMap<(NodeId, TypeId), Vec<u32>>,
     /// Number of errors reported.
     pub error_count: u32,
 }
@@ -1071,6 +1088,7 @@ pub fn analyze(
         expected_array_element: None,
         top_level_constants: HashMap::new(),
         in_verbatim: false,
+        array_binding_lengths: Vec::new(),
     };
     sema.run();
     sema.result.error_count = sema.engine.error_count();
@@ -1140,6 +1158,9 @@ pub(crate) struct Sema<'a> {
     pub(crate) top_level_constants: HashMap<String, (i128, TypeId)>,
     /// Whether the code being checked is inside a `verbatim` target (§9.8).
     pub(crate) in_verbatim: bool,
+    /// Bound array dimension values while instantiating an array extension
+    /// (§3.8.3).
+    pub(crate) array_binding_lengths: Vec<HashMap<String, u64>>,
 }
 
 impl<'a> Sema<'a> {

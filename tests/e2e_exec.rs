@@ -3541,3 +3541,24 @@ fixed Main(): integer(4)
     // (2+3) + (7*2)
     assert_eq!(run_program(source), 19);
 }
+
+#[test]
+fn array_extension_targets_instantiate_per_length_and_element() {
+    let source = "\
+extension for array(length: cardinal(4)) T
+{
+    public fixed Size(this: &array(length) T): cardinal(4)
+    {
+        return Cast<cardinal(4)>(length);
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local values: array(3) integer(4) = { 1, 2, 3 };
+    local letters: array(5) cardinal(4) = { 1, 2, 3, 4, 5 };
+    return Cast<integer(4)>(values.Size()) + Cast<integer(4)>(letters.Size());
+}";
+    // 3 + 5
+    assert_eq!(run_program(source), 10);
+}

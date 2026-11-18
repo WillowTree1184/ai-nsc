@@ -229,7 +229,7 @@ impl<'a> Sema<'a> {
     ///
     /// Reports one diagnostic per violated constraint and returns whether all
     /// constraints hold.
-    fn check_generic_constraints(
+    pub(crate) fn check_generic_constraints(
         &mut self,
         parameters: &[GenericParameterInfo],
         arguments: &[TypeId],

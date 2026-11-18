@@ -21,6 +21,19 @@ impl<'a> Sema<'a> {
                     position += 1;
                     match dimension {
                         ArrayDimension::Size(expression) => {
+                            // A dimension may reference a bound dimension by name
+                            // inside an array extension (§3.8.3).
+                            if let NodeKind::Name(name) = self.node_kind(*expression) {
+                                let bound = self
+                                    .array_binding_lengths
+                                    .iter()
+                                    .rev()
+                                    .find_map(|lengths| lengths.get(&name.name).copied());
+                                if let Some(length) = bound {
+                                    dimensions.push(length);
+                                    continue;
+                                }
+                            }
                             if !self.is_compile_time_constant(*expression) {
                                 // Runtime dimensions are only allowed inside a
                                 // function body (§3.6.1), and only as the leading
@@ -54,12 +67,22 @@ impl<'a> Sema<'a> {
                                 }
                             }
                         }
-                        ArrayDimension::Binding { .. } => {
-                            self.unsupported(
-                                self.span_of(node),
-                                "array dimension bindings (array parameter expansion)",
-                            );
-                            return None;
+                        ArrayDimension::Binding { name, .. } => {
+                            let bound = self
+                                .array_binding_lengths
+                                .iter()
+                                .rev()
+                                .find_map(|lengths| lengths.get(name).copied());
+                            match bound {
+                                Some(length) => dimensions.push(length),
+                                None => {
+                                    self.unsupported(
+                                        self.span_of(node),
+                                        "array dimension bindings (array parameter expansion)",
+                                    );
+                                    return None;
+                                }
+                            }
                         }
                     }
                 }
@@ -710,6 +733,29 @@ impl<'a> Sema<'a> {
                     self.register_generic_extension(node, target);
                     return;
                 }
+                if let NodeKind::ExtensionTarget(ExtensionTarget::Array {
+                    bindings,
+                    parameter,
+                }) = self.node_kind(target).clone()
+                {
+                    // `extension for array(length: cardinal(4)) T`: a template
+                    // specialised for every matching array type (§3.8.3).
+                    let mut resolved_bindings = Vec::new();
+                    for (name, ty_node) in bindings {
+                        let Some(ty) = self.resolve_type(ty_node) else {
+                            return;
+                        };
+                        resolved_bindings.push((name, ty));
+                    }
+                    self.result
+                        .array_extension_templates
+                        .push(ArrayExtensionTemplate {
+                            extension: node,
+                            bindings: resolved_bindings,
+                            parameter: GenericParameterInfo::from_ast(&parameter),
+                        });
+                    return;
+                }
             }
         }
         let target = match (owner, declaration.target) {
@@ -890,7 +936,8 @@ impl<'a> Sema<'a> {
         };
         let owner_kind = match self.result.types.get(owner) {
             Type::Named(index) => self.result.type_defs[*index as usize].kind,
-            _ => return None,
+            // Array extension targets are value types (§3.8.3).
+            _ => TypeDefKind::Structure,
         };
         if is_abstract && owner_kind != TypeDefKind::Interface {
             self.error(
@@ -995,7 +1042,7 @@ impl<'a> Sema<'a> {
             Type::Named(index) => self.result.type_defs[*index as usize]
                 .qualified_name
                 .clone(),
-            _ => return None,
+            _ => self.spelling(owner),
         };
         let scope: Vec<String> = owner_name.split('.').map(str::to_string).collect();
         let spellings: Vec<String> = parameters
@@ -1041,6 +1088,13 @@ impl<'a> Sema<'a> {
             locals: Vec::new(),
             span: self.span_of(node),
         });
+        if let Some(lengths) = self.array_binding_lengths.last() {
+            for (name, value) in lengths {
+                self.result.functions[index as usize]
+                    .constant_values
+                    .insert(name.clone(), *value as i128);
+            }
+        }
         self.result.functions[index as usize].accessibility = declaration.modifiers.accessibility;
         self.result.functions[index as usize].calling_convention = method_convention;
         self.result.functions[index as usize].scoped =
@@ -1056,6 +1110,12 @@ impl<'a> Sema<'a> {
                 .or_default()
                 .push(index);
             definition.method_list.push(index);
+        } else {
+            self.result
+                .owner_methods
+                .entry(owner)
+                .or_default()
+                .push(index);
         }
         Some(index)
     }
@@ -5593,6 +5653,18 @@ impl<'a> Sema<'a> {
                 self.result.resolutions[node as usize] = Some(Resolution::Constant { ty, value });
                 return Some(ty);
             }
+            // Compile-time bindings (e.g. array extension dimension bindings,
+            // §3.8.3) are available as constants in the body.
+            if let Some(value) = self
+                .constant_env
+                .iter()
+                .rev()
+                .find_map(|environment| environment.get(&name.name).copied())
+            {
+                let ty = self.result.types.integer(false, 8);
+                self.result.resolutions[node as usize] = Some(Resolution::Constant { ty, value });
+                return Some(ty);
+            }
             // Name elision for variant states (§3.7.5): in a context that wants a
             // variant, a payload-less state name stands for `Variant.State`.
             if let Some(expected) = expected {
@@ -7838,8 +7910,99 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Instantiates the `extension for array(...)` templates that match
+    /// `type_id` (§3.8.3).
+    fn ensure_array_extensions(&mut self, type_id: TypeId) {
+        let Type::Array {
+            dimensions,
+            element,
+        } = self.result.types.get(type_id).clone()
+        else {
+            return;
+        };
+        let templates = self.result.array_extension_templates.clone();
+        for template in templates {
+            if self
+                .result
+                .array_extension_instances
+                .contains_key(&(template.extension, type_id))
+            {
+                continue;
+            }
+            if dimensions.len() != template.bindings.len() {
+                continue;
+            }
+            let mut lengths = HashMap::new();
+            let mut compatible = true;
+            for ((name, bound), length) in template.bindings.iter().zip(dimensions.iter()) {
+                if !self.is_integer(*bound) {
+                    compatible = false;
+                    break;
+                }
+                lengths.insert(name.clone(), *length);
+            }
+            if !compatible {
+                continue;
+            }
+            if !self.check_generic_constraints(
+                std::slice::from_ref(&template.parameter),
+                &[element],
+                self.current_scope(),
+                self.span_of(template.extension),
+            ) {
+                continue;
+            }
+            let mut environment = HashMap::new();
+            environment.insert(template.parameter.name.clone(), element);
+            self.generic_env.push(environment);
+            self.array_binding_lengths.push(lengths);
+            let members = match self.node_kind(template.extension).clone() {
+                NodeKind::Extension(declaration) => declaration.members,
+                _ => Vec::new(),
+            };
+            let mut created = Vec::new();
+            for member in members {
+                match self.node_kind(member).clone() {
+                    NodeKind::Fixed(declaration) => {
+                        if let Some(index) = self.create_method(member, &declaration, type_id) {
+                            created.push(index);
+                        }
+                    }
+                    NodeKind::Accessor(_) => {
+                        self.unsupported(self.span_of(member), "array extension accessors")
+                    }
+                    NodeKind::Operator(_) => {
+                        self.unsupported(self.span_of(member), "array extension operators")
+                    }
+                    _ => {}
+                }
+            }
+            self.array_binding_lengths.pop();
+            self.generic_env.pop();
+            self.result
+                .array_extension_instances
+                .insert((template.extension, type_id), created);
+        }
+    }
+
     /// Collects methods named `name` from `type_id` and its base classes.
     fn collect_methods(&self, type_id: TypeId, name: &str) -> Vec<u32> {
+        if !matches!(self.result.types.get(type_id), Type::Named(_)) {
+            // Array extension methods (§3.8.3) are registered per owner type.
+            let found: Vec<u32> = self
+                .result
+                .owner_methods
+                .get(&type_id)
+                .map(|methods| {
+                    methods
+                        .iter()
+                        .copied()
+                        .filter(|method| self.result.functions[*method as usize].name == name)
+                        .collect()
+                })
+                .unwrap_or_default();
+            return found;
+        }
         let mut methods = Vec::new();
         let mut current = Some(type_id);
         let mut depth = 0;
@@ -7892,6 +8055,9 @@ impl<'a> Sema<'a> {
         name: &str,
         arguments: &[Argument],
     ) -> Option<Option<TypeId>> {
+        if matches!(self.result.types.get(base_type), Type::Array { .. }) {
+            self.ensure_array_extensions(base_type);
+        }
         let all_candidates = self.collect_methods(base_type, name);
         if all_candidates.is_empty() {
             return None;

@@ -1173,6 +1173,14 @@ pub fn analyze(
     sema.result
 }
 
+/// Control flow produced by a compile-time statement (§11.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompileTimeFlow {
+    Normal,
+    Break,
+    Continue,
+}
+
 pub(crate) struct Sema<'a> {
     pub(crate) ast: &'a mut Ast,
     pub(crate) sources: &'a SourceManager,
@@ -2499,8 +2507,23 @@ impl<'a> Sema<'a> {
     /// available to later blocks, `#if`s and constant expressions.
     fn execute_top_level_compile_time(&mut self, node: NodeId, block: NodeId) {
         let statements = self.block_statements(block);
+        let flow = self.execute_compile_time_statements(&statements, false);
+        if matches!(flow, CompileTimeFlow::Break | CompileTimeFlow::Continue) {
+            self.error(
+                self.span_of(node),
+                "'break'/'continue' outside a compile-time loop",
+            );
+        }
+    }
+
+    /// Executes statements of a top-level `#{}` block at compile time (§11.4).
+    fn execute_compile_time_statements(
+        &mut self,
+        statements: &[NodeId],
+        in_loop: bool,
+    ) -> CompileTimeFlow {
         for statement in statements {
-            match self.node_kind(statement).clone() {
+            let flow = match self.node_kind(*statement).clone() {
                 NodeKind::CompileTimeIf(if_statement) => {
                     let condition = if_statement.condition;
                     let taken = self
@@ -2512,14 +2535,30 @@ impl<'a> Sema<'a> {
                             );
                             false
                         });
-                    self.result.compile_time_conditions.insert(statement, taken);
+                    self.result
+                        .compile_time_conditions
+                        .insert(*statement, taken);
+                    continue;
                 }
                 NodeKind::CompileTimeBlock(inner) => {
-                    self.execute_top_level_compile_time(inner, inner);
+                    let statements = self.block_statements(inner);
+                    let flow = self.execute_compile_time_statements(&statements, in_loop);
+                    if matches!(flow, CompileTimeFlow::Break | CompileTimeFlow::Continue) {
+                        return flow;
+                    }
+                    continue;
+                }
+                NodeKind::Block(inner) => {
+                    let flow = self.execute_compile_time_statements(&inner, in_loop);
+                    if matches!(flow, CompileTimeFlow::Break | CompileTimeFlow::Continue) {
+                        return flow;
+                    }
+                    continue;
                 }
                 NodeKind::Local(declaration) => {
                     for item in &declaration.items {
                         let Some(init) = item.init else {
+                            self.unsupported(item.span, "uninitialized compile-time variables");
                             continue;
                         };
                         self.suppress_errors += 1;
@@ -2528,16 +2567,18 @@ impl<'a> Sema<'a> {
                         let declared = item.ty.and_then(|ty| self.resolve_type(ty));
                         match value {
                             Some(value) => {
-                                let ty = declared.unwrap_or(TypeId::ERROR);
+                                let ty =
+                                    declared.unwrap_or_else(|| self.inferred_integer_type(value));
                                 self.top_level_constants
                                     .insert(item.name.clone(), (value, ty));
                             }
                             None => self.unsupported(
-                                self.span_of(node),
+                                item.span,
                                 "non-constant values in top-level compile-time blocks",
                             ),
                         }
                     }
+                    continue;
                 }
                 NodeKind::Fixed(declaration) => {
                     if let Some(Initializer::Expression(expression)) = declaration.init {
@@ -2548,17 +2589,19 @@ impl<'a> Sema<'a> {
                             let ty = declaration
                                 .ty
                                 .and_then(|ty| self.resolve_type(ty))
-                                .unwrap_or(TypeId::ERROR);
+                                .unwrap_or_else(|| self.inferred_integer_type(value));
                             self.top_level_constants
                                 .insert(declaration.name.clone(), (value, ty));
                         }
                     }
+                    continue;
                 }
                 NodeKind::ExpressionStmt(expression) => {
                     self.compile_time_constants
                         .push(std::collections::HashMap::new());
                     self.check_expr(expression, None);
                     self.compile_time_constants.pop();
+                    continue;
                 }
                 NodeKind::Set(set_statement) => {
                     self.execute_top_level_assignment(
@@ -2566,6 +2609,7 @@ impl<'a> Sema<'a> {
                         &set_statement.value,
                         None,
                     );
+                    continue;
                 }
                 NodeKind::CompoundSet(compound) => {
                     self.execute_top_level_assignment(
@@ -2573,15 +2617,116 @@ impl<'a> Sema<'a> {
                         &compound.value,
                         Some(compound.op),
                     );
+                    continue;
+                }
+                NodeKind::If(if_statement) => {
+                    self.execute_compile_time_branches(&if_statement, in_loop)
+                }
+                NodeKind::While(while_statement) => {
+                    self.execute_compile_time_while(&while_statement)
+                }
+                NodeKind::Break(_) => {
+                    if !in_loop {
+                        self.error(
+                            self.span_of(*statement),
+                            "'break' outside a compile-time loop",
+                        );
+                    }
+                    CompileTimeFlow::Break
+                }
+                NodeKind::Continue(_) => {
+                    if !in_loop {
+                        self.error(
+                            self.span_of(*statement),
+                            "'continue' outside a compile-time loop",
+                        );
+                    }
+                    CompileTimeFlow::Continue
                 }
                 _ => {
                     self.unsupported(
-                        self.span_of(statement),
+                        self.span_of(*statement),
                         "this statement in a top-level compile-time block",
                     );
+                    continue;
                 }
+            };
+            if matches!(flow, CompileTimeFlow::Break | CompileTimeFlow::Continue) {
+                return flow;
             }
         }
+        CompileTimeFlow::Normal
+    }
+
+    fn execute_compile_time_branches(
+        &mut self,
+        statement: &crate::ast::IfStmt,
+        in_loop: bool,
+    ) -> CompileTimeFlow {
+        for branch in &statement.branches {
+            let Some(taken) = self.eval_compile_time_bool(branch.condition, 0) else {
+                self.error(
+                    self.span_of(branch.condition),
+                    "compile-time blocks cannot branch on run-time values (§11.4)",
+                );
+                return CompileTimeFlow::Normal;
+            };
+            if taken {
+                let statements = self.block_statements(branch.body);
+                return self.execute_compile_time_statements(&statements, in_loop);
+            }
+        }
+        if let Some(else_block) = statement.else_block {
+            let statements = self.block_statements(else_block);
+            return self.execute_compile_time_statements(&statements, in_loop);
+        }
+        CompileTimeFlow::Normal
+    }
+
+    fn execute_compile_time_while(&mut self, statement: &crate::ast::LoopStmt) -> CompileTimeFlow {
+        let mut iterations = 0usize;
+        while self
+            .eval_compile_time_bool(statement.condition, 0)
+            .unwrap_or_else(|| {
+                self.error(
+                    self.span_of(statement.condition),
+                    "compile-time blocks cannot branch on run-time values (§11.4)",
+                );
+                false
+            })
+        {
+            iterations += 1;
+            if iterations > 1_000_000 {
+                self.error(
+                    self.span_of(statement.condition),
+                    "compile-time loop exceeded the iteration limit",
+                );
+                return CompileTimeFlow::Normal;
+            }
+            let statements = self.block_statements(statement.body);
+            match self.execute_compile_time_statements(&statements, true) {
+                CompileTimeFlow::Break => break,
+                CompileTimeFlow::Normal | CompileTimeFlow::Continue => {}
+            }
+        }
+        CompileTimeFlow::Normal
+    }
+
+    /// Smallest signed integer type able to represent `value`, for inferred
+    /// compile-time variables (§5.2).
+    fn inferred_integer_type(&mut self, value: i128) -> TypeId {
+        let bytes = if i8::try_from(value).is_ok() {
+            1
+        } else if i16::try_from(value).is_ok() {
+            2
+        } else if i32::try_from(value).is_ok() {
+            4
+        } else if i64::try_from(value).is_ok() {
+            8
+        } else {
+            16
+        };
+        self.result.types.integer(true, bytes)
     }
 
     /// Declares modules that appear directly inside a type body (§3.7.1): they

@@ -4285,3 +4285,54 @@ fixed Main(): integer(4)
     // (2 + 5) * 3
     assert_eq!(run_program(source), 21);
 }
+
+#[test]
+fn compile_time_blocks_execute_loops_and_branches() {
+    let source = "\
+#{
+    local sum: integer(4) = 0;
+    local index: integer(4) = 0;
+    while (index < 4)
+    {
+        sum += index;
+        index += 1;
+    }
+    if (sum == 6)
+    {
+        sum = sum * 10;
+    }
+}
+
+local value: integer(4) = sum;
+
+fixed Main(): integer(4)
+{
+    return value;
+}";
+    // (0+1+2+3) * 10
+    assert_eq!(run_program(source), 60);
+}
+
+#[test]
+fn compile_time_blocks_execute_break_and_continue() {
+    let source = "\
+#{
+    local found: integer(4) = 0;
+    local index: integer(4) = 0;
+    while (true)
+    {
+        index += 1;
+        if (index == 3) { break; }
+        if (index == 2) { continue; }
+        found += index;
+    }
+}
+
+local value: integer(4) = found * 10 + index;
+
+fixed Main(): integer(4)
+{
+    return value;
+}";
+    assert_eq!(run_program(source), 13);
+}

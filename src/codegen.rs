@@ -4651,10 +4651,18 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 let llvm_type = self.llvm_type(ty)?;
                 let value = literal::decode_integer(&literal_value.raw)
                     .map_err(|message| format!("invalid integer literal: {message}"))?;
-                Ok(llvm_type
-                    .into_int_type()
-                    .const_int(value as u64, false)
-                    .into())
+                // An integer literal may be inferred as a floating-point type by
+                // the surrounding context (§2.7.1), e.g. Constructor(0, 0, 0)
+                // with float parameters.
+                match llvm_type {
+                    inkwell::types::BasicTypeEnum::IntType(int_type) => {
+                        Ok(int_type.const_int(value as u64, false).into())
+                    }
+                    inkwell::types::BasicTypeEnum::FloatType(float_type) => {
+                        Ok(float_type.const_float(value as f64).into())
+                    }
+                    _ => Err("integer literal must have an integer or float type".to_string()),
+                }
             }
             NodeKind::FloatLiteral(literal_value) => {
                 let ty = self.type_of(node);
@@ -7523,7 +7531,8 @@ fn round_up_u64(value: u64, alignment: u64) -> u64 {
 /// (§3.6.3). The default convention returns `None` (LLVM's default).
 fn llvm_calling_convention(value: i32) -> Option<u32> {
     match value {
-        1 => Some(8),  // C declaration
+        // LLVM's default calling convention is the C declaration convention.
+        1 => None,
         4 => Some(78), // System V AMD64
         7 => Some(79), // Microsoft x64
         _ => None,

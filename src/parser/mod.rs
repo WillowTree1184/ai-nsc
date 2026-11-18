@@ -693,6 +693,11 @@ impl<'a> Parser<'a> {
         if self.at(TokenKind::Wildcard) {
             self.bump();
             wildcard = true;
+            // `wildcard` may be followed by an explicit calling convention:
+            // `(wildcard; CDeclaration)` (§3.6.3).
+            if self.eat(TokenKind::Semicolon) {
+                calling_convention = self.parse_expression();
+            }
             return (parameters, wildcard, calling_convention);
         }
 

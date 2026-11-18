@@ -4654,3 +4654,37 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 3);
 }
+
+#[test]
+fn c_declaration_calling_convention_and_bare_enum_member_work() {
+    // §3.6.3: `(wildcard; CDeclaration)` is a legal function shorthand, the
+    // convention member may be written bare, and variadic calls use the C
+    // convention (not fastcc).
+    let source = "\
+structure Vector3
+{
+    public X: float(4);
+    public Y: float(4);
+    public Z: float(4);
+
+    extension
+    {
+        public fixed Construct(this: &Vector3, x: float(4), y: float(4), z: float(4))
+        {
+            this.X = x;
+            this.Y = y;
+            this.Z = z;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local o = Vector3(0, 0, 0);
+    local p = Vector3(1.5, 2.5, 3.5);
+    if (o.X != 0.0) { return 1; }
+    return Cast<integer(4)>(p.X) + Cast<integer(4)>(p.Y) + Cast<integer(4)>(p.Z);
+}";
+    // 1 + 2 + 3
+    assert_eq!(run_program(source), 6);
+}

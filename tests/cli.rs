@@ -2162,3 +2162,85 @@ fixed Main(): integer(4)
         "{mixed}"
     );
 }
+
+#[test]
+fn printf_scanf_with_c_declaration_calling_convention_run() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-cdecl-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(
+        &path,
+        "\
+linkable(\"printf\") PrintFormat(wildcard; CDeclaration);
+linkable(\"scanf\") ScanFormat(wildcard; CDeclaration);
+
+structure Vector3
+{
+    public X: float(4);
+    public Y: float(4);
+    public Z: float(4);
+
+    extension
+    {
+        public fixed Construct(this: &Vector3, x: float(4), y: float(4), z: float(4))
+        {
+            this.X = x;
+            this.Y = y;
+            this.Z = z;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local o = Vector3(0, 0, 0);
+    local p = Vector3(0, 0, 0);
+    ScanFormat(\"%f %f %f\\0\", &p.X, &p.Y, &p.Z);
+    PrintFormat(\"%f %f %f\\0\", p.X, p.Y, p.Z);
+    return 0;
+}",
+    )
+    .expect("write");
+    let executable = directory.join("program");
+    let output = ai_nsc()
+        .args([
+            "build",
+            "-o",
+            executable.to_str().expect("utf-8 path"),
+            path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("run ai-nsc");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut child = Command::new(&executable)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("run program");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(b"1.5 2.5 3.5\n")
+        .expect("write stdin");
+    let result = child.wait_with_output().expect("wait");
+    let _ = std::fs::remove_dir_all(&directory);
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert_eq!(result.status.code(), Some(0), "{stdout}");
+    assert!(
+        stdout.contains("1.500000 2.500000 3.500000"),
+        "stdout: {stdout}"
+    );
+}

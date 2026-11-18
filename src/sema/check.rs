@@ -3431,7 +3431,45 @@ impl<'a> Sema<'a> {
     /// and rejects conventions the current target cannot represent.
     fn resolve_calling_convention(&mut self, node: Option<NodeId>) -> Option<i32> {
         let node = node?;
-        let ty = self.check_expr(node, None)?;
+        // The specification's examples write the convention as a bare member
+        // name (`; CDeclaration`), so a member of `CallingConvention` is resolved
+        // directly here even though calling-convention expressions are not in
+        // §3.7.4's elision list.
+        let calling_type =
+            self.lookup("CallingConvention")
+                .cloned()
+                .and_then(|symbol| match symbol {
+                    Symbol::Type(ty) => Some(ty),
+                    _ => None,
+                });
+        let mut direct = None;
+        if let (Some(calling_type), NodeKind::Name(name)) =
+            (calling_type, self.node_kind(node).clone())
+        {
+            if self.lookup(&name.name).is_none() {
+                if let Type::Named(index) = self.types_of(calling_type) {
+                    let members = self.result.type_defs[index as usize].enum_members.clone();
+                    if let Some((position, _)) = members
+                        .iter()
+                        .enumerate()
+                        .find(|(_, (member, _))| member == &name.name)
+                    {
+                        direct = Some(position as u32);
+                    }
+                }
+            }
+        }
+        let ty = if let Some(position) = direct {
+            let calling_type = calling_type?;
+            self.result.resolutions[node as usize] = Some(Resolution::EnumMember {
+                type_id: calling_type,
+                index: position,
+            });
+            self.result.node_types[node as usize] = Some(calling_type);
+            calling_type
+        } else {
+            self.check_expr(node, calling_type)?
+        };
         let Type::Named(index) = self.types_of(ty) else {
             self.error(self.span_of(node), "expected a CallingConvention value");
             return None;

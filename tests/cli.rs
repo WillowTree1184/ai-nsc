@@ -1225,3 +1225,34 @@ fixed Main(): integer(4) { return 0; }",
     );
     assert!(stderr.contains("'Value' is not accessible"), "{stderr}");
 }
+
+#[test]
+fn compile_time_expressions_are_folded_in_ir() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-ctfold-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(
+        &path,
+        "fixed Main(): integer(4)\n{\n    return #(2 + 3);\n}",
+    )
+    .expect("write program");
+    let output = ai_nsc()
+        .args(["emit-ir", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let ir = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(ir.contains("ret i32 5"), "{ir}");
+    assert!(!ir.contains("add i32"), "{ir}");
+}

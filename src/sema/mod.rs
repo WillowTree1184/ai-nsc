@@ -869,6 +869,9 @@ pub struct SemaResult {
     /// Nested function declarations inside bodies (§5.3), mapped to the
     /// function literal expression that creates their value.
     pub nested_functions: HashMap<NodeId, NodeId>,
+    /// Integer values of compile-time expressions that can be emitted as
+    /// constants (§11.4: keep only the required end products).
+    pub compile_time_values: HashMap<NodeId, i128>,
     /// Number of errors reported.
     pub error_count: u32,
 }

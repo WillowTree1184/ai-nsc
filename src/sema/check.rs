@@ -5290,7 +5290,18 @@ impl<'a> Sema<'a> {
                 }
                 let ty = self.check_expr(inner, expected);
                 // A '#(...)' expression must be evaluable at compile time (§11.2).
-                if !self.is_compile_time_constant(inner) {
+                if self.is_compile_time_constant(inner) {
+                    // Record the value so code generation can emit the
+                    // compile-time end product directly (§11.4).
+                    self.suppress_errors += 1;
+                    let value = self.eval_const_int(inner);
+                    self.suppress_errors -= 1;
+                    if let (Some(ty), Some(value)) = (ty, value) {
+                        if self.is_integer(ty) {
+                            self.result.compile_time_values.insert(node, value);
+                        }
+                    }
+                } else {
                     self.unsupported(
                         self.span_of(node),
                         "compile-time expressions that depend on run-time values",

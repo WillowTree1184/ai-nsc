@@ -3528,3 +3528,16 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 5);
 }
+
+#[test]
+fn compile_time_expressions_emit_their_end_products() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local value: integer(4) = #(2 + 3);
+    local other: integer(8) = #(Cast<integer(8)>(7) * 2);
+    return value + Cast<integer(4)>(other);
+}";
+    // (2+3) + (7*2)
+    assert_eq!(run_program(source), 19);
+}

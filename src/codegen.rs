@@ -4169,7 +4169,29 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 Ok(self.literal_closure(index)?.into())
             }
             NodeKind::ArrayLiteral(literal_value) => self.gen_array_literal(node, &literal_value),
-            NodeKind::CompileTimeExpr(inner) => self.gen_expr(inner),
+            NodeKind::CompileTimeExpr(inner) => {
+                // Compile-time expressions are emitted as their end product
+                // (§11.4); only non-integer results fall back to the inner
+                // expression.
+                if let Some(value) = self.sema.compile_time_values.get(&node).copied() {
+                    if let inkwell::types::BasicTypeEnum::IntType(int_type) =
+                        self.llvm_type(self.type_of(node))?
+                    {
+                        let bits = int_type.get_bit_width() as u128;
+                        let mask = if bits >= 128 {
+                            u128::MAX
+                        } else {
+                            (1u128 << bits) - 1
+                        };
+                        let normalized = (value as u128 & mask) as u64;
+                        Ok(int_type.const_int(normalized, value < 0).into())
+                    } else {
+                        self.gen_expr(inner)
+                    }
+                } else {
+                    self.gen_expr(inner)
+                }
+            }
             _ => Err("unsupported expression in code generation".to_string()),
         }
     }

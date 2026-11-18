@@ -2025,6 +2025,45 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         Some((index, method))
     }
 
+    /// Writes the class instance header (vtable, typeinfo) into `storage`
+    /// (§3.7.1). Structures and enums have no header.
+    fn emit_instance_header(
+        &mut self,
+        ty: TypeId,
+        storage: PointerValue<'ctx>,
+    ) -> Result<(), String> {
+        let Type::Named(index) = self.sema.types.get(ty).clone() else {
+            return Ok(());
+        };
+        if self.sema.type_defs[index as usize].kind != TypeDefKind::Class {
+            return Ok(());
+        }
+        let instance_struct = self.struct_type(index)?;
+        let pointer_type = self.context.ptr_type(AddressSpace::default());
+        let vtable_pointer = self
+            .vtable_globals
+            .get(&index)
+            .map(|global| global.as_pointer_value())
+            .unwrap_or_else(|| pointer_type.const_zero());
+        let typeinfo_pointer = self
+            .typeinfo_globals
+            .get(&index)
+            .map(|global| global.as_pointer_value())
+            .unwrap_or_else(|| pointer_type.const_zero());
+        for (field_index, header_value) in
+            [vtable_pointer, typeinfo_pointer].into_iter().enumerate()
+        {
+            let pointer = self
+                .builder
+                .build_struct_gep(instance_struct, storage, field_index as u32, "header")
+                .map_err(|error| format!("cannot initialize header: {error}"))?;
+            self.builder
+                .build_store(pointer, header_value)
+                .map_err(|error| format!("cannot initialize header: {error}"))?;
+        }
+        Ok(())
+    }
+
     /// Calls an allocator's `Allocate` and returns the allocated pointer, throwing
     /// `AllocateFailedException` when the Result carries an alternative (§5.4).
     fn gen_allocator_allocate(
@@ -2231,6 +2270,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         self.builder
             .build_store(storage, instance_type.const_zero())
             .map_err(|error| format!("cannot initialize heap storage: {error}"))?;
+        // Heap-allocated class instances need their vtable/typeinfo header just
+        // like stack-constructed ones, or interface/virtual dispatch crashes.
+        self.emit_instance_header(info.ty, storage)?;
         if let Some(initializer) = declaration.init {
             let is_construction = matches!(
                 self.sema.resolutions[initializer as usize],
@@ -6132,32 +6174,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         self.builder
             .build_store(storage, instance_type.const_zero())
             .map_err(|error| format!("cannot initialize instance: {error}"))?;
-        if let Type::Named(class_index) = self.sema.types.get(type_id).clone() {
-            if self.sema.type_defs[class_index as usize].kind == TypeDefKind::Class {
-                let instance_struct = self.struct_type(class_index)?;
-                let vtable_pointer = self
-                    .vtable_globals
-                    .get(&class_index)
-                    .map(|global| global.as_pointer_value())
-                    .unwrap_or_else(|| self.context.ptr_type(AddressSpace::default()).const_zero());
-                let typeinfo_pointer = self
-                    .typeinfo_globals
-                    .get(&class_index)
-                    .map(|global| global.as_pointer_value())
-                    .unwrap_or_else(|| self.context.ptr_type(AddressSpace::default()).const_zero());
-                for (field_index, header_value) in
-                    [vtable_pointer, typeinfo_pointer].into_iter().enumerate()
-                {
-                    let pointer = self
-                        .builder
-                        .build_struct_gep(instance_struct, storage, field_index as u32, "header")
-                        .map_err(|error| format!("cannot initialize header: {error}"))?;
-                    self.builder
-                        .build_store(pointer, header_value)
-                        .map_err(|error| format!("cannot initialize header: {error}"))?;
-                }
-            }
-        }
+        self.emit_instance_header(type_id, storage)?;
         self.gen_construct_into(node, storage)?;
         if is_class {
             Ok(storage.into())

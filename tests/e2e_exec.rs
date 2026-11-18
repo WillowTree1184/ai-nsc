@@ -4508,3 +4508,40 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 42);
 }
+
+#[test]
+fn heap_class_instances_support_interface_dispatch() {
+    // Regression (#108): heap construction skipped the class header, so the
+    // typeinfo used by interface dispatch was null.
+    let source = "\
+interface IShape
+{
+    extension
+    {
+        public fixed Area(this: &IShape): integer(4);
+    }
+}
+
+class Square: IShape
+{
+    private Side: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Square, side: integer(4)) { this.Side = side; }
+        public fixed Area(this: &Square): integer(4) { return this.Side * this.Side; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    heap square: Square = Square(4);
+    local shape: IShape = square;
+    local values: array(3) integer(4);
+    values[0] = shape.Area();
+    if (shape is Square) { values[1] = 1; } else { values[1] = 0; }
+    values[2] = 25;
+    return values[0] + values[1] + values[2];
+}";
+    assert_eq!(run_program(source), 42);
+}

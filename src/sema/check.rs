@@ -1262,6 +1262,12 @@ impl<'a> Sema<'a> {
         let mut getter = None;
         let mut setter = None;
         for member in &declaration.members {
+            if member.this_type.is_some() {
+                self.error(
+                    member.span,
+                    "a static accessor member must not declare 'this' (§3.8.2)",
+                );
+            }
             let implementation = match (member.expression, member.body) {
                 (Some(expression), None) => match self.node_kind(expression).clone() {
                     NodeKind::FunctionLiteral(literal) => {
@@ -1769,6 +1775,13 @@ impl<'a> Sema<'a> {
                             "indexer accessor members require an implementation",
                         );
                         continue;
+                    }
+                    self.validate_accessor_this(&member, owner, Some(return_ty));
+                    if member.body.is_some() && member.this_type.is_none() {
+                        self.error(
+                            member.span,
+                            "an indexer accessor block must declare 'this' (§3.8.2)",
+                        );
                     }
                     if member.is_getter {
                         getter = self.create_operator_method(
@@ -2303,6 +2316,12 @@ impl<'a> Sema<'a> {
         let mut setter_body: Option<FunctionBody> = None;
         let mut setter_value_name = "value".to_string();
         for member in &declaration.members {
+            if member.this_type.is_some() {
+                self.error(
+                    member.span,
+                    "a free accessor member must not declare 'this' (§3.8.2)",
+                );
+            }
             let implementation = match (member.expression, member.body) {
                 (Some(expression), None) => match self.node_kind(expression).clone() {
                     NodeKind::FunctionLiteral(literal) => {
@@ -2629,6 +2648,13 @@ impl<'a> Sema<'a> {
                 );
                 continue;
             }
+            self.validate_accessor_this(member, owner, Some(ty));
+            if !is_interface && member.body.is_some() && member.this_type.is_none() {
+                self.error(
+                    member.span,
+                    "an extension-block accessor block must declare 'this' (§3.8.2)",
+                );
+            }
             let method = self.create_accessor_method(
                 owner,
                 &declaration.name,
@@ -2656,6 +2682,58 @@ impl<'a> Sema<'a> {
             return;
         }
         definition.accessors.push(accessor);
+    }
+
+    /// Validates the explicit `this` parameter of an accessor block shorthand
+    /// (§3.8.2): it must name the extension target type, carrying `&` exactly
+    /// for value-type targets.
+    fn validate_accessor_this(
+        &mut self,
+        member: &crate::ast::AccessorMember,
+        owner: TypeId,
+        value_type: Option<TypeId>,
+    ) {
+        if let Some(this_node) = member.this_type {
+            let Some(this_type) = self.resolve_type(this_node) else {
+                return;
+            };
+            if this_type != owner {
+                self.error(
+                    member.span,
+                    "accessor 'this' type must be the extension target type (§3.8.2)",
+                );
+            }
+            let reference_target = matches!(
+                self.types_of(owner),
+                Type::Named(index)
+                    if matches!(
+                        self.result.type_defs[index as usize].kind,
+                        TypeDefKind::Class | TypeDefKind::Interface
+                    )
+            ) || matches!(self.types_of(owner), Type::Function { .. });
+            if reference_target && member.this_by_ref {
+                self.error(
+                    member.span,
+                    "a reference-type accessor 'this' must not carry '&' (§3.8.2)",
+                );
+            }
+            if !reference_target && !member.this_by_ref {
+                self.error(
+                    member.span,
+                    "a value-type accessor 'this' must carry '&' (§3.8.2)",
+                );
+            }
+        }
+        if let (Some(written), Some(expected)) = (member.value_type, value_type) {
+            if let Some(written) = self.resolve_type(written) {
+                if written != expected {
+                    self.error(
+                        member.span,
+                        "the accessor 'value' type must match the accessor type",
+                    );
+                }
+            }
+        }
     }
 
     fn create_accessor_method(
@@ -10090,6 +10168,13 @@ impl<'a> Sema<'a> {
             setter: None,
         };
         for member in &declaration.members {
+            self.validate_accessor_this(member, owner, Some(ty));
+            if member.body.is_some() && member.this_type.is_none() {
+                self.error(
+                    member.span,
+                    "an array-extension accessor block must declare 'this' (§3.8.2)",
+                );
+            }
             let implementation = match (member.expression, member.body) {
                 // `get = (this: &array(length) T) cardinal(4) => { ... }`:
                 // the function literal's block/expression is the implementation

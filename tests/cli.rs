@@ -1884,3 +1884,74 @@ fixed Main(): integer(4)
         "{in_compile_time}"
     );
 }
+
+#[test]
+fn accessor_this_types_follow_target_reference_rules() {
+    // §3.8.2: value-type targets require `&`, reference-type targets forbid it,
+    // and extension-block accessor blocks must declare `this`.
+    let missing_and = check_source(
+        "\
+structure Holder
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public accessor Item: integer(4)
+        {
+            get(this: Holder) { return this.Value; }
+            set(this: Holder, value) { this.Value = value; }
+        }
+    }
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(
+        missing_and.contains("value-type accessor 'this' must carry '&'"),
+        "{missing_and}"
+    );
+    let extra_and = check_source(
+        "\
+class Holder
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public accessor Item: integer(4)
+        {
+            get(this: &Holder) { return this.Value; }
+            set(this: &Holder, value) { this.Value = value; }
+        }
+    }
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(
+        extra_and.contains("reference-type accessor 'this' must not carry '&'"),
+        "{extra_and}"
+    );
+    let missing_this = check_source(
+        "\
+class Holder
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public accessor Item: integer(4)
+        {
+            get() { return this.Value; }
+        }
+    }
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(
+        missing_this.contains("must declare 'this'"),
+        "{missing_this}"
+    );
+}

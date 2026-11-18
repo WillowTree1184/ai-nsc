@@ -676,8 +676,8 @@ class Counter
         public fixed Construct(this: &Counter, count: integer(4)) { this.Count = count; }
         public accessor Value: integer(4)
         {
-            get() { return this.Count; }
-            set(value) { this.Count = value; }
+            get(this: Counter) { return this.Count; }
+            set(this: Counter, value) { this.Count = value; }
         }
     }
 }

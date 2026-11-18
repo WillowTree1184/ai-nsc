@@ -4019,3 +4019,30 @@ fixed Main(): integer(4)
     // read 2, then the setter updates the local storage to 7
     assert_eq!(run_program(source), 27);
 }
+
+#[test]
+fn static_accessors_with_explicit_members() {
+    let source = "\
+class Counter
+{
+    public static Total: integer(4);
+
+    extension
+    {
+        public static accessor Count: integer(4)
+        {
+            get() { return Counter.Total; }
+            set(value) { Counter.Total = value * 2; }
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    Counter.Total = 1;
+    Counter.Count = 5;
+    return Counter.Count;
+}";
+    // setter stores 10, getter reads it back
+    assert_eq!(run_program(source), 10);
+}

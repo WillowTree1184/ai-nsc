@@ -2822,6 +2822,18 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             self.sema.resolutions[statement.target as usize].clone()
         {
             let setter = setter.ok_or_else(|| "accessor is read-only".to_string())?;
+            // Static accessors take only the value parameter (§9.15).
+            if self.sema.functions[setter as usize].parameters.len() == 1 {
+                let function = *self
+                    .functions
+                    .get(&setter)
+                    .ok_or_else(|| "missing static accessor setter".to_string())?;
+                let value = self.gen_expr(statement.value)?;
+                self.builder
+                    .build_call(function, &[value.into()], "static_accessor_set")
+                    .map_err(|error| format!("cannot call accessor setter: {error}"))?;
+                return Ok(());
+            }
             let NodeKind::MemberAccess(access) = self.ast.node(statement.target).kind.clone()
             else {
                 return Err("accessor write requires a member access".to_string());
@@ -4513,6 +4525,23 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             }
             Some(Resolution::Accessor { getter, .. }) => {
                 let getter = getter.ok_or_else(|| "accessor is write-only".to_string())?;
+                // Static accessors are parameterless functions (§9.15).
+                if self.sema.functions[getter as usize].parameters.is_empty() {
+                    let function = *self
+                        .functions
+                        .get(&getter)
+                        .ok_or_else(|| "missing static accessor getter".to_string())?;
+                    let call = self
+                        .builder
+                        .build_call(function, &[], "static_accessor_get")
+                        .map_err(|error| format!("cannot call accessor: {error}"))?;
+                    return match call.try_as_basic_value() {
+                        ValueKind::Basic(value) => Ok(value),
+                        ValueKind::Instruction(_) => {
+                            Err("accessor getter produced no value".to_string())
+                        }
+                    };
+                }
                 let NodeKind::MemberAccess(access) = self.ast.node(node).kind.clone() else {
                     return Err("accessor access requires a member access".to_string());
                 };

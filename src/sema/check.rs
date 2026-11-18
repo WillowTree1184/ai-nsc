@@ -1195,55 +1195,196 @@ impl<'a> Sema<'a> {
     /// Registers a `static accessor`: a class-level property backed by a static
     /// field, exposed as `Class.Name` (§3.8.2, §9.15).
     fn create_static_accessor(&mut self, node: NodeId, declaration: &AccessorDecl, owner: TypeId) {
-        if !declaration.members.is_empty() {
-            self.unsupported(
-                self.span_of(node),
-                "static accessors with explicit accessor members",
-            );
-            return;
-        }
-        let Some(backing) = declaration.backing else {
-            self.error(
-                self.span_of(node),
-                "a static accessor requires a backing static field",
-            );
-            return;
-        };
-        let NodeKind::Name(name) = self.node_kind(backing) else {
-            self.error(
-                self.span_of(backing),
-                "an accessor backing must be a field name",
-            );
-            return;
-        };
         let Type::Named(owner_index) = self.types_of(owner) else {
-            return;
-        };
-        let backing_global = self.result.type_defs[owner_index as usize]
-            .static_fields
-            .get(&name.name)
-            .copied();
-        let Some(backing_global) = backing_global else {
-            self.error(
-                self.span_of(backing),
-                format!("unknown static backing field '{}'", name.name),
-            );
             return;
         };
         let Some(ty) = self.resolve_type(declaration.ty) else {
             return;
         };
-        let global_ty = self.result.globals[backing_global as usize].ty;
-        if global_ty != ty {
-            self.error(
-                self.span_of(node),
-                "the accessor type must match its backing static field",
-            );
+        let backing_global = if let Some(backing) = declaration.backing {
+            let NodeKind::Name(name) = self.node_kind(backing).clone() else {
+                self.error(
+                    self.span_of(backing),
+                    "an accessor backing must be a field name",
+                );
+                return;
+            };
+            let backing_global = self.result.type_defs[owner_index as usize]
+                .static_fields
+                .get(&name.name)
+                .copied();
+            let Some(backing_global) = backing_global else {
+                self.error(
+                    self.span_of(backing),
+                    format!("unknown static backing field '{}'", name.name),
+                );
+                return;
+            };
+            if self.result.globals[backing_global as usize].ty != ty {
+                self.error(
+                    self.span_of(node),
+                    "the accessor type must match its backing static field",
+                );
+                return;
+            }
+            Some(backing_global)
+        } else {
+            None
+        };
+        if declaration.members.is_empty() {
+            // Alias form: `static accessor Name: T => Backing;` reads/writes the
+            // static field directly.
+            let Some(backing_global) = backing_global else {
+                self.error(
+                    self.span_of(node),
+                    "a static accessor requires a backing static field",
+                );
+                return;
+            };
+            self.result.type_defs[owner_index as usize]
+                .static_fields
+                .insert(declaration.name.clone(), backing_global);
             return;
         }
+        let backing_readonly =
+            backing_global.is_some_and(|global| self.result.globals[global as usize].fixed);
+        let mut getter = None;
+        let mut setter = None;
+        for member in &declaration.members {
+            let implementation = match (member.expression, member.body) {
+                (Some(expression), None) => match self.node_kind(expression).clone() {
+                    NodeKind::FunctionLiteral(literal) => {
+                        Some(match self.node_kind(literal.body) {
+                            NodeKind::Block(_) => FunctionBody::Block(literal.body),
+                            NodeKind::VerbatimBlock(inner) => FunctionBody::Block(inner),
+                            _ => FunctionBody::Expression(literal.body),
+                        })
+                    }
+                    _ => {
+                        self.error(
+                            member.span,
+                            "a static accessor member must be a function literal",
+                        );
+                        None
+                    }
+                },
+                (None, Some(block)) => Some(FunctionBody::Block(block)),
+                (Some(_), Some(_)) => {
+                    self.error(
+                        member.span,
+                        "an accessor member takes either an expression or a block",
+                    );
+                    None
+                }
+                (None, None) => backing_global.map(|global| {
+                    if member.is_getter {
+                        FunctionBody::FreeBackingGet(global)
+                    } else {
+                        FunctionBody::FreeBackingSet(global)
+                    }
+                }),
+            };
+            if member.is_getter {
+                getter = self.register_static_accessor_function(
+                    owner,
+                    &declaration.name,
+                    true,
+                    Vec::new(),
+                    Some(ty),
+                    implementation,
+                    member.span,
+                );
+            } else {
+                if backing_readonly && member.expression.is_none() && member.body.is_none() {
+                    self.error(member.span, "a read-only backing cannot provide a setter");
+                    return;
+                }
+                setter = self.register_static_accessor_function(
+                    owner,
+                    &declaration.name,
+                    false,
+                    vec![ParameterInfo {
+                        name: "value".to_string(),
+                        ty,
+                        by_ref: false,
+                        default: None,
+                        compile_time: false,
+                    }],
+                    None,
+                    implementation,
+                    member.span,
+                );
+            }
+        }
         self.result.type_defs[owner_index as usize]
-            .static_fields
-            .insert(declaration.name.clone(), backing_global);
+            .static_accessors
+            .push(AccessorInfo {
+                accessibility: declaration.modifiers.accessibility,
+                scoped: Vec::new(),
+                name: declaration.name.clone(),
+                ty,
+                getter,
+                setter,
+            });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn register_static_accessor_function(
+        &mut self,
+        owner: TypeId,
+        accessor: &str,
+        is_getter: bool,
+        parameters: Vec<ParameterInfo>,
+        return_type: Option<TypeId>,
+        body: Option<FunctionBody>,
+        span: Span,
+    ) -> Option<u32> {
+        let Type::Named(owner_index) = self.types_of(owner) else {
+            return None;
+        };
+        let owner_name = self.result.type_defs[owner_index as usize]
+            .qualified_name
+            .clone();
+        let scope: Vec<String> = owner_name.split('.').map(str::to_string).collect();
+        let member = if is_getter { "get" } else { "set" };
+        let name = format!("{accessor}@{member}");
+        let spellings: Vec<String> = parameters
+            .iter()
+            .map(|parameter| self.spelling(parameter.ty))
+            .collect();
+        let mangled = mangle_function(&scope, &name, &spellings);
+        let index = self.result.functions.len() as u32;
+        let decl_scope = self.current_scope();
+        self.result.functions.push(FunctionInfo {
+            name,
+            scope,
+            node: NodeId::default(),
+            body,
+            parameters,
+            method_of: None,
+            static_owner: Some(owner),
+            is_virtual: false,
+            is_override: false,
+            is_sealed: false,
+            accessibility: Accessibility::Public,
+            calling_convention: None,
+            scoped: Vec::new(),
+            is_abstract: false,
+            return_type,
+            mangled,
+            exposed_symbol: None,
+            generic_parameters: Vec::new(),
+            generic_arguments: Vec::new(),
+            template: None,
+            decl_scope,
+            generic_env: self.captured_generic_env(),
+            environment: false,
+            captures: Vec::new(),
+            constant_values: HashMap::new(),
+            locals: Vec::new(),
+            span,
+        });
+        Some(index)
     }
 
     /// Registers a `static` method: no `this`, class-level storage (§9.15).
@@ -6860,6 +7001,27 @@ impl<'a> Sema<'a> {
                         }
                         self.result.resolutions[node as usize] = Some(Resolution::Global(global));
                         return Some(self.result.globals[global as usize].ty);
+                    }
+                    // Static accessors are read/written through their getters and
+                    // setters (§3.8.2, §9.15).
+                    if let Some(accessor) = self.result.type_defs[index as usize]
+                        .static_accessors
+                        .iter()
+                        .find(|accessor| accessor.name == access.name)
+                        .cloned()
+                    {
+                        if !self.member_accessible(accessor.accessibility, type_id) {
+                            self.error(
+                                self.span_of(node),
+                                format!("'{}' is not accessible here", access.name),
+                            );
+                            return None;
+                        }
+                        self.result.resolutions[node as usize] = Some(Resolution::Accessor {
+                            getter: accessor.getter,
+                            setter: accessor.setter,
+                        });
+                        return Some(accessor.ty);
                     }
                     self.error(
                         self.span_of(node),

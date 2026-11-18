@@ -309,3 +309,4 @@ report an error (§4.8).
 | 88 | MED | §3.7.1, §7 | Modules inside type bodies unsupported | fixed (4bb904a: scoped identifier organization, nested modules, qualified access through the type name) |
 | 89 | HIGH | §4.9.14 | Right shift used arithmetic shift for signed operands (runtime and constant folding) | fixed (a407fcb: logical zero-filling shift within operand width, both code generation and folding) |
 | 90 | MED | §2.7.1, §3.2 | Minimum integer literal rejected; NaN float-to-integer cast produced poison | fixed (1e12fa6: minimum-literal typing under negation, deterministic NaN conversion) |
+| 91 | MED | §4.9.24, §4.9.25 | Logical operators rejected implicitly boolean-convertible operands | fixed (59fcfea: implicitable conversion recorded and applied, short-circuit preserved) |

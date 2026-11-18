@@ -3706,21 +3706,49 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         node: NodeId,
         statement: &crate::ast::ReturnStmt,
     ) -> Result<(), String> {
-        // NOLAA: dispose still-alive heap units before the jump (§12.2).
-        if let Some(locals) = self.sema.jump_dispose.get(&node).cloned() {
-            for local in locals {
-                self.gen_dispose_local(local)?;
-            }
-        }
+        let disposals = self
+            .sema
+            .jump_dispose
+            .get(&node)
+            .cloned()
+            .unwrap_or_default();
         match statement.value {
             Some(value) => {
+                // The returned expression is evaluated before the end-of-lifetime
+                // disposal, since it may read heap units that are about to be
+                // released (§12.2). If there is nothing to dispose the constant
+                // is returned directly so folded IR stays foldable.
                 let value = self.gen_coerced_expr(value)?;
+                if disposals.is_empty() {
+                    self.builder
+                        .build_return(Some(&value))
+                        .map_err(|error| format!("cannot return: {error}"))?;
+                    return Ok(());
+                }
+                let llvm_type = value.get_type();
+                let slot = self
+                    .builder
+                    .build_alloca(llvm_type, "returned_value")
+                    .map_err(|error| format!("cannot allocate returned value: {error}"))?;
+                self.builder
+                    .build_store(slot, value)
+                    .map_err(|error| format!("cannot store returned value: {error}"))?;
+                for local in disposals {
+                    self.gen_dispose_local(local)?;
+                }
+                let value = self
+                    .builder
+                    .build_load(llvm_type, slot, "returned")
+                    .map_err(|error| format!("cannot load returned value: {error}"))?;
                 self.builder
                     .build_return(Some(&value))
                     .map_err(|error| format!("cannot return: {error}"))?;
                 Ok(())
             }
             None => {
+                for local in disposals {
+                    self.gen_dispose_local(local)?;
+                }
                 self.builder
                     .build_return(None)
                     .map_err(|error| format!("cannot return: {error}"))?;

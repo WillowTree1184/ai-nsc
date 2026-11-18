@@ -4480,3 +4480,31 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 4);
 }
+
+#[test]
+fn returned_heap_structure_fields_are_read_before_disposal() {
+    // Regression (#105): the return expression reads heap fields, so end-of-
+    // lifetime disposal must happen only after the value is computed (§12.2).
+    let source = "\
+structure Pair
+{
+    public A: integer(4);
+    public B: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Pair, a: integer(4), b: integer(4))
+        {
+            this.A = a;
+            this.B = b;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    heap pair: Pair = Pair(40, 2);
+    return pair.A + pair.B;
+}";
+    assert_eq!(run_program(source), 42);
+}

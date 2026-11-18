@@ -2579,3 +2579,27 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 100);
 }
+
+#[test]
+fn closures_capture_enclosing_variables_by_value() {
+    let source = "\
+fixed MakeCounter(start: integer(4)): function() integer(4)
+{
+    local counter: integer(4) = start;
+    return () integer(4) => { counter += 1; return counter; };
+}
+
+fixed Main(): integer(4)
+{
+    local limit: integer(4) = 3;
+    local adder: function(integer(4)) integer(4) = (value: integer(4)) integer(4) => value + limit;
+    local doubled: function(integer(4)) integer(4) = (value: integer(4)) integer(4) => adder(value) * 2;
+
+    local counter: function() integer(4) = MakeCounter(10);
+    local a: integer(4) = counter();
+    local b: integer(4) = counter();
+    return doubled(5) * 10 + a + b;
+}";
+    // 16 * 10 + 11 + 12
+    assert_eq!(run_program(source), 183);
+}

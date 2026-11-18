@@ -835,6 +835,8 @@ impl<'a> Sema<'a> {
             template: None,
             decl_scope,
             generic_env,
+            environment: false,
+            captures: Vec::new(),
             locals: Vec::new(),
             span: self.span_of(node),
         });
@@ -1016,6 +1018,8 @@ impl<'a> Sema<'a> {
             template: None,
             decl_scope,
             generic_env,
+            environment: false,
+            captures: Vec::new(),
             locals: Vec::new(),
             span: self.span_of(node),
         });
@@ -1569,6 +1573,8 @@ impl<'a> Sema<'a> {
             template: None,
             decl_scope,
             generic_env,
+            environment: false,
+            captures: Vec::new(),
             locals: Vec::new(),
             span,
         });
@@ -1784,6 +1790,8 @@ impl<'a> Sema<'a> {
             template: None,
             decl_scope,
             generic_env,
+            environment: false,
+            captures: Vec::new(),
             locals: Vec::new(),
             span,
         });
@@ -2207,6 +2215,8 @@ impl<'a> Sema<'a> {
             template: None,
             decl_scope,
             generic_env,
+            environment: false,
+            captures: Vec::new(),
             locals: Vec::new(),
             span: self.span_of(node),
         });
@@ -2682,9 +2692,18 @@ impl<'a> Sema<'a> {
             let body = body.expect("body checked above");
             let generic_env = self.result.functions[current].generic_env.clone();
             let static_owner = self.result.functions[current].static_owner;
+            let environment = self.result.functions[current].environment;
+            let captures = self.result.functions[current].captures.clone();
             self.current_function = Some(current as u32);
             self.loop_labels.clear();
             self.push_scope();
+            if environment {
+                // Captured names are visible inside the literal (§2.7.9).
+                self.push_scope();
+                for capture in &captures {
+                    self.declare(capture.name.clone(), Symbol::Local(capture.local), span);
+                }
+            }
             self.generic_env.push(generic_env);
             // Static fields of the owning class are in scope in a static method
             // body (§9.15).
@@ -2700,7 +2719,7 @@ impl<'a> Sema<'a> {
                     }
                 }
             }
-            let mut llvm_parameter_index = 0u32;
+            let mut llvm_parameter_index = u32::from(environment);
             if let Some(owner) = method_of {
                 self.declare("this".to_string(), Symbol::This { owner }, span);
                 llvm_parameter_index = 1;
@@ -2729,6 +2748,9 @@ impl<'a> Sema<'a> {
                     self.check_expr(expression, None);
                 }
                 FunctionBody::BackingGet { .. } | FunctionBody::BackingSet { .. } => {}
+            }
+            if environment {
+                self.pop_scope();
             }
             self.generic_env.pop();
             self.pop_scope();
@@ -5474,6 +5496,59 @@ impl<'a> Sema<'a> {
             NodeKind::VerbatimBlock(inner) => FunctionBody::Block(inner),
             _ => FunctionBody::Expression(literal.body),
         };
+        // Capture the enclosing function's locals (and `this`) by value (§2.7.9).
+        let parameter_names: Vec<String> = literal
+            .parameters
+            .iter()
+            .map(|parameter| parameter.name.clone())
+            .collect();
+        let mut visible: Vec<(String, Symbol)> = Vec::new();
+        let mut scope = Some(self.current_scope());
+        while let Some(index) = scope {
+            for (name, symbol) in self.scopes[index].symbols.iter() {
+                if visible.iter().any(|(existing, _)| existing == name) {
+                    continue;
+                }
+                if parameter_names.iter().any(|parameter| parameter == name) {
+                    continue;
+                }
+                visible.push((name.clone(), symbol.clone()));
+            }
+            scope = self.scopes[index].parent;
+        }
+        let mut captures: Vec<CaptureInfo> = Vec::new();
+        let mut offset: u64 = 0;
+        for (name, symbol) in visible {
+            let (ty, source) = match symbol {
+                Symbol::Local(local) => match self.local_info(local).cloned() {
+                    Some(info) => (info.ty, CaptureSource::Local(local)),
+                    None => continue,
+                },
+                Symbol::This { owner } => (owner, CaptureSource::This),
+                _ => continue,
+            };
+            let (size, alignment) = self.size_align(ty);
+            offset = round_up(offset, alignment.max(1));
+            captures.push(CaptureInfo {
+                name,
+                ty,
+                local: captures.len() as LocalId,
+                offset,
+                source,
+            });
+            offset += size;
+        }
+        let capture_locals: Vec<LocalInfo> = captures
+            .iter()
+            .map(|capture| LocalInfo {
+                name: capture.name.clone(),
+                ty: capture.ty,
+                fixed: false,
+                parameter: None,
+                storage: Storage::Capture(capture.local),
+                span,
+            })
+            .collect();
         let index = self.result.functions.len() as u32;
         let name = format!("lambda{index}");
         let scope = self.scope_path.clone();
@@ -5505,7 +5580,9 @@ impl<'a> Sema<'a> {
             template: None,
             decl_scope,
             generic_env,
-            locals: Vec::new(),
+            environment: true,
+            captures,
+            locals: capture_locals,
             span: span_of_function,
         });
         self.result.function_literals.insert(node, index);

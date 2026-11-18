@@ -318,6 +318,11 @@ pub struct FunctionInfo {
     /// Substitution environment active when the function was created, i.e. the
     /// generic arguments of its enclosing instantiated type (§10.1).
     pub generic_env: HashMap<String, TypeId>,
+    /// Whether the function takes a hidden leading closure-environment pointer
+    /// (§2.7.9; function literals).
+    pub environment: bool,
+    /// Variables captured from the enclosing function (function literals).
+    pub captures: Vec<CaptureInfo>,
     /// Locals declared in the body, in declaration order.
     pub locals: Vec<LocalInfo>,
     /// Span of the declaration, for diagnostics.
@@ -423,6 +428,32 @@ pub enum Storage {
     /// By-reference parameter storage: the slot holds a pointer to the caller's
     /// value (§8.2).
     Reference,
+    /// Storage inside a closure environment (captured variable, §2.7.9).
+    Capture(u32),
+}
+
+/// Where a captured variable comes from when a function literal is created.
+#[derive(Clone, Copy, Debug)]
+pub enum CaptureSource {
+    /// A local (or parameter) of the enclosing function.
+    Local(LocalId),
+    /// The enclosing method's `this` reference.
+    This,
+}
+
+/// One variable captured by a function literal (§2.7.9).
+#[derive(Clone, Debug)]
+pub struct CaptureInfo {
+    /// Captured name.
+    pub name: String,
+    /// Captured type.
+    pub ty: TypeId,
+    /// Local that receives the captured value inside the literal.
+    pub local: LocalId,
+    /// Byte offset inside the closure environment record.
+    pub offset: u64,
+    /// Where the value is read from when the closure is created.
+    pub source: CaptureSource,
 }
 
 /// A local variable (also used for parameters' storage).

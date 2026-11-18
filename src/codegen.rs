@@ -27,7 +27,9 @@ use crate::ast::{
 };
 use crate::literal;
 use crate::sema::types::{Type, TypeId};
-use crate::sema::{MatchPatternInfo, ParameterInfo, Resolution, SemaResult, Storage, TypeDefKind};
+use crate::sema::{
+    CaptureSource, MatchPatternInfo, ParameterInfo, Resolution, SemaResult, Storage, TypeDefKind,
+};
 
 /// Name of the module used by the workspace smoke test.
 pub const SMOKE_MODULE_NAME: &str = "ainsc_smoke";
@@ -88,6 +90,8 @@ pub fn generate(ast: &Ast, sema: &SemaResult, options: &CodegenOptions) -> Resul
         interface_tables: HashMap::new(),
         trap_stack: Vec::new(),
         type_key_globals: HashMap::new(),
+        closure_globals: HashMap::new(),
+        current_env_slot: None,
         builtin_exceptions: HashMap::new(),
     };
     generator.run()?;
@@ -141,6 +145,10 @@ struct Generator<'ctx, 'a> {
     interface_tables: HashMap<u32, GlobalValue<'ctx>>,
     trap_stack: Vec<TrapFrame<'ctx>>,
     type_key_globals: HashMap<TypeId, GlobalValue<'ctx>>,
+    /// Static closure objects created for function values (§2.7.9).
+    closure_globals: HashMap<u32, GlobalValue<'ctx>>,
+    /// Slot holding the current literal's closure environment pointer.
+    current_env_slot: Option<PointerValue<'ctx>>,
     builtin_exceptions: HashMap<u32, GlobalValue<'ctx>>,
 }
 
@@ -317,10 +325,14 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
     }
 
     fn function_type(&mut self, function_index: u32) -> Result<FunctionType<'ctx>, String> {
+        let environment = self.sema.functions[function_index as usize].environment;
         let info = &self.sema.functions[function_index as usize];
         let parameter_types = info.parameters.clone();
         let return_type = info.return_type;
-        let mut parameter_metadata = Vec::with_capacity(parameter_types.len());
+        let mut parameter_metadata = Vec::with_capacity(parameter_types.len() + 1);
+        if environment {
+            parameter_metadata.push(self.context.ptr_type(AddressSpace::default()).into());
+        }
         for parameter in &parameter_types {
             parameter_metadata.push(self.llvm_parameter_type(parameter)?.into());
         }
@@ -665,10 +677,25 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             self.current_return = return_type;
             self.local_slots.clear();
             self.current_this_slot = None;
+            self.current_env_slot = None;
             self.loops.clear();
 
             let entry = self.context.append_basic_block(function, "entry");
             self.builder.position_at_end(entry);
+            if self.sema.functions[index as usize].environment {
+                let pointer_type = self.context.ptr_type(AddressSpace::default());
+                let env_slot = self
+                    .builder
+                    .build_alloca(pointer_type, "environment")
+                    .map_err(|error| format!("cannot allocate environment: {error}"))?;
+                let env_value = function
+                    .get_nth_param(0)
+                    .ok_or_else(|| "literal has no environment parameter".to_string())?;
+                self.builder
+                    .build_store(env_slot, env_value)
+                    .map_err(|error| format!("cannot store environment: {error}"))?;
+                self.current_env_slot = Some(env_slot);
+            }
             if method_of.is_some() {
                 let pointer_type = self.context.ptr_type(AddressSpace::default());
                 let this_slot = self
@@ -684,6 +711,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 self.current_this_slot = Some(this_slot);
             }
             for (local_index, local) in locals.iter().enumerate() {
+                if matches!(local.storage, Storage::Capture(_)) {
+                    continue;
+                }
                 let llvm_type = if matches!(local.storage, Storage::Heap | Storage::Reference) {
                     self.context.ptr_type(AddressSpace::default()).into()
                 } else {
@@ -1732,6 +1762,255 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
 
     /// Generates `node` and applies its implicit conversion operator, if one was
     /// recorded by semantic analysis (§9.7).
+    /// Allocates `size` bytes with `malloc`.
+    fn malloc_bytes(&mut self, size: u64) -> Result<PointerValue<'ctx>, String> {
+        let malloc = self
+            .malloc_fn
+            .ok_or_else(|| "malloc is not declared".to_string())?;
+        let call = self
+            .builder
+            .build_call(
+                malloc,
+                &[self.context.i64_type().const_int(size, false).into()],
+                "allocate",
+            )
+            .map_err(|error| format!("cannot allocate memory: {error}"))?;
+        match call.try_as_basic_value() {
+            ValueKind::Basic(value) => {
+                let pointer = value.into_pointer_value();
+                if size > 0 {
+                    let null = self.context.ptr_type(AddressSpace::default()).const_null();
+                    let failed = self
+                        .builder
+                        .build_int_compare(
+                            IntPredicate::EQ,
+                            self.builder
+                                .build_ptr_to_int(
+                                    pointer,
+                                    self.context.i64_type(),
+                                    "allocation_bits",
+                                )
+                                .map_err(|error| format!("cannot check allocation: {error}"))?,
+                            self.context.i64_type().const_zero(),
+                            "allocation_failed",
+                        )
+                        .map_err(|error| format!("cannot check allocation: {error}"))?;
+                    let _ = (null, failed);
+                }
+                Ok(pointer)
+            }
+            ValueKind::Instruction(_) => Err("malloc produced no value".to_string()),
+        }
+    }
+
+    /// Creates the closure object for a function literal (§2.7.9): a static
+    /// `{ code, null }` pair when nothing is captured, or a heap-allocated
+    /// environment record plus closure when variables are captured.
+    fn literal_closure(&mut self, index: u32) -> Result<PointerValue<'ctx>, String> {
+        let pointer_type = self.context.ptr_type(AddressSpace::default());
+        let captures = self.sema.functions[index as usize].captures.clone();
+        let code = *self
+            .functions
+            .get(&index)
+            .ok_or_else(|| "missing literal function".to_string())?;
+        let code_pointer = code.as_global_value().as_pointer_value();
+        if captures.is_empty() {
+            if let Some(global) = self.closure_globals.get(&index) {
+                return Ok(global.as_pointer_value());
+            }
+            let closure_type = pointer_type.array_type(2);
+            let global =
+                self.module
+                    .add_global(closure_type, None, &format!("nsc.literal.{index}"));
+            let initializer = pointer_type.const_array(&[code_pointer, pointer_type.const_null()]);
+            global.set_initializer(&initializer);
+            global.set_constant(true);
+            self.closure_globals.insert(index, global);
+            return Ok(global.as_pointer_value());
+        }
+        // Environment record.
+        let mut offset: u64 = 0;
+        let mut alignment: u64 = 1;
+        for capture in &captures {
+            let (size, align) = self.sema.size_align(capture.ty);
+            let align = align.max(1);
+            offset = round_up_u64(offset, align);
+            alignment = alignment.max(align);
+            offset += size;
+        }
+        let size = round_up_u64(offset, alignment);
+        let environment = self.malloc_bytes(size)?;
+        for capture in &captures {
+            let value = match capture.source {
+                CaptureSource::Local(local) => {
+                    let slot = *self
+                        .local_slots
+                        .get(&local)
+                        .ok_or_else(|| "missing captured local slot".to_string())?;
+                    let storage = self
+                        .local_info(local)
+                        .map(|info| info.storage)
+                        .unwrap_or(Storage::Value);
+                    match storage {
+                        Storage::Reference => {
+                            let pointer = self
+                                .builder
+                                .build_load(pointer_type, slot, "capture_reference")
+                                .map_err(|error| format!("cannot load reference: {error}"))?
+                                .into_pointer_value();
+                            let llvm_type = self.llvm_type(capture.ty)?;
+                            self.builder
+                                .build_load(llvm_type, pointer, "captured_value")
+                                .map_err(|error| format!("cannot load captured value: {error}"))?
+                        }
+                        _ => {
+                            let llvm_type = self.llvm_type(capture.ty)?;
+                            self.builder
+                                .build_load(llvm_type, slot, "captured_value")
+                                .map_err(|error| format!("cannot load captured value: {error}"))?
+                        }
+                    }
+                }
+                CaptureSource::This => {
+                    let slot = self
+                        .current_this_slot
+                        .ok_or_else(|| "captured 'this' outside a method".to_string())?;
+                    self.builder
+                        .build_load(pointer_type, slot, "captured_this")
+                        .map_err(|error| format!("cannot load this: {error}"))?
+                }
+            };
+            let address = self.address_with_size(
+                environment,
+                1,
+                self.context.i64_type().const_int(capture.offset, false),
+            )?;
+            self.builder
+                .build_store(address, value)
+                .map_err(|error| format!("cannot store captured value: {error}"))?;
+        }
+        let closure = self.malloc_bytes(16)?;
+        let code_slot = self.address_with_size(closure, 1, self.context.i64_type().const_zero())?;
+        let environment_slot =
+            self.address_with_size(closure, 1, self.context.i64_type().const_int(8, false))?;
+        self.builder
+            .build_store(code_slot, code_pointer)
+            .map_err(|error| format!("cannot store closure code: {error}"))?;
+        self.builder
+            .build_store(environment_slot, environment)
+            .map_err(|error| format!("cannot store closure environment: {error}"))?;
+        Ok(closure)
+    }
+
+    /// Returns a pointer to the closure object for `index`: a static
+    /// `{ code, environment }` pair whose code is a trampoline that prepends the
+    /// (unused) environment parameter (§2.7.9).
+    fn function_value_closure(&mut self, index: u32) -> Result<PointerValue<'ctx>, String> {
+        let key = index;
+        if let Some(global) = self.closure_globals.get(&key) {
+            return Ok(global.as_pointer_value());
+        }
+        let pointer_type = self.context.ptr_type(AddressSpace::default());
+        let info = self.sema.functions[index as usize].parameters.clone();
+        let trampoline_name = format!("nsc.valuefn.{index}");
+        let trampoline = match self.module.get_function(&trampoline_name) {
+            Some(function) => function,
+            None => {
+                let mut parameter_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
+                    Vec::with_capacity(info.len() + 1);
+                parameter_types.push(pointer_type.into());
+                for parameter in &info {
+                    parameter_types.push(self.llvm_parameter_type(parameter)?.into());
+                }
+                let return_type = self.sema.functions[index as usize].return_type;
+                let function_type = match return_type {
+                    Some(ty) => self.llvm_type(ty)?.fn_type(&parameter_types, false),
+                    None => self.context.void_type().fn_type(&parameter_types, false),
+                };
+                let function = self
+                    .module
+                    .add_function(&trampoline_name, function_type, None);
+                let entry = self.context.append_basic_block(function, "entry");
+                let previous_block = self.builder.get_insert_block();
+                let previous_function = self.current_function;
+                self.builder.position_at_end(entry);
+                let target = *self
+                    .functions
+                    .get(&index)
+                    .ok_or_else(|| "missing function for closure".to_string())?;
+                let mut arguments: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+                    Vec::with_capacity(info.len());
+                for position in 0..info.len() {
+                    let value = function
+                        .get_nth_param((position + 1) as u32)
+                        .ok_or_else(|| "missing trampoline parameter".to_string())?;
+                    arguments.push(value.into());
+                }
+                let call_site = self
+                    .builder
+                    .build_call(target, &arguments, "closure_call")
+                    .map_err(|error| format!("cannot build closure trampoline: {error}"))?;
+                match return_type {
+                    Some(_) => {
+                        let value = match call_site.try_as_basic_value() {
+                            ValueKind::Basic(value) => value,
+                            ValueKind::Instruction(_) => {
+                                return Err("closure trampoline lost its value".to_string())
+                            }
+                        };
+                        self.builder
+                            .build_return(Some(&value))
+                            .map_err(|error| format!("cannot return: {error}"))?;
+                    }
+                    None => {
+                        self.builder
+                            .build_return(None)
+                            .map_err(|error| format!("cannot return: {error}"))?;
+                    }
+                }
+                self.current_function = previous_function;
+                if let Some(block) = previous_block {
+                    self.builder.position_at_end(block);
+                }
+                function
+            }
+        };
+        let closure_type = pointer_type.array_type(2);
+        let global = self
+            .module
+            .add_global(closure_type, None, &format!("nsc.closure.{index}"));
+        let initializer = pointer_type.const_array(&[
+            trampoline.as_global_value().as_pointer_value(),
+            pointer_type.const_null(),
+        ]);
+        global.set_initializer(&initializer);
+        global.set_constant(true);
+        self.closure_globals.insert(key, global);
+        Ok(global.as_pointer_value())
+    }
+
+    /// Loads the code and environment pointers of a closure value.
+    fn load_closure(
+        &mut self,
+        closure: PointerValue<'ctx>,
+    ) -> Result<(PointerValue<'ctx>, PointerValue<'ctx>), String> {
+        let pointer_type = self.context.ptr_type(AddressSpace::default());
+        let code_slot = self.address_with_size(closure, 1, self.context.i64_type().const_zero())?;
+        let environment_slot =
+            self.address_with_size(closure, 1, self.context.i64_type().const_int(8, false))?;
+        let code = self
+            .builder
+            .build_load(pointer_type, code_slot, "closure_code")
+            .map_err(|error| format!("cannot load closure code: {error}"))?
+            .into_pointer_value();
+        let environment = self
+            .builder
+            .build_load(pointer_type, environment_slot, "closure_env")
+            .map_err(|error| format!("cannot load closure environment: {error}"))?
+            .into_pointer_value();
+        Ok((code, environment))
+    }
+
     fn gen_coerced_expr(&mut self, node: NodeId) -> Result<BasicValueEnum<'ctx>, String> {
         let value = self.gen_expr(node)?;
         match self.sema.implicit_conversions.get(&node).copied() {
@@ -3089,11 +3368,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .function_literals
                     .get(&node)
                     .ok_or_else(|| "missing function literal".to_string())?;
-                let function = *self
-                    .functions
-                    .get(&index)
-                    .ok_or_else(|| "missing literal function".to_string())?;
-                Ok(function.as_global_value().as_pointer_value().into())
+                Ok(self.literal_closure(index)?.into())
             }
             NodeKind::ArrayLiteral(literal_value) => self.gen_array_literal(node, &literal_value),
             NodeKind::CompileTimeExpr(inner) => self.gen_expr(inner),
@@ -3108,6 +3383,32 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 let info = self
                     .local_info(local)
                     .ok_or_else(|| "missing local information".to_string())?;
+                if let Storage::Capture(capture_index) = info.storage {
+                    let capture = self.sema.functions[self.current_function as usize]
+                        .captures
+                        .get(capture_index as usize)
+                        .cloned()
+                        .ok_or_else(|| "missing capture information".to_string())?;
+                    let env_slot = self
+                        .current_env_slot
+                        .ok_or_else(|| "missing environment".to_string())?;
+                    let pointer_type = self.context.ptr_type(AddressSpace::default());
+                    let environment = self
+                        .builder
+                        .build_load(pointer_type, env_slot, "environment")
+                        .map_err(|error| format!("cannot load environment: {error}"))?
+                        .into_pointer_value();
+                    let address = self.address_with_size(
+                        environment,
+                        1,
+                        self.context.i64_type().const_int(capture.offset, false),
+                    )?;
+                    let llvm_type = self.llvm_type(capture.ty)?;
+                    return self
+                        .builder
+                        .build_load(llvm_type, address, "captured")
+                        .map_err(|error| format!("cannot load captured value: {error}"));
+                }
                 let slot = *self
                     .local_slots
                     .get(&local)
@@ -3217,13 +3518,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 let llvm_type = self.llvm_type(self.type_of(node))?.into_int_type();
                 Ok(llvm_type.const_int(size, false).into())
             }
-            Some(Resolution::Function(index)) => {
-                let function = *self
-                    .functions
-                    .get(&index)
-                    .ok_or_else(|| "missing function value".to_string())?;
-                Ok(function.as_global_value().as_pointer_value().into())
-            }
+            Some(Resolution::Function(index)) => Ok(self.function_value_closure(index)?.into()),
             Some(Resolution::Type(_)) | None => Err("name cannot be used as a value".to_string()),
         }
     }
@@ -3360,6 +3655,28 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 let info = self
                     .local_info(local)
                     .ok_or_else(|| "missing local information".to_string())?;
+                if let Storage::Capture(capture_index) = info.storage {
+                    let capture = self.sema.functions[self.current_function as usize]
+                        .captures
+                        .get(capture_index as usize)
+                        .cloned()
+                        .ok_or_else(|| "missing capture information".to_string())?;
+                    let env_slot = self
+                        .current_env_slot
+                        .ok_or_else(|| "missing environment".to_string())?;
+                    let pointer_type = self.context.ptr_type(AddressSpace::default());
+                    let environment = self
+                        .builder
+                        .build_load(pointer_type, env_slot, "environment")
+                        .map_err(|error| format!("cannot load environment: {error}"))?
+                        .into_pointer_value();
+                    let address = self.address_with_size(
+                        environment,
+                        1,
+                        self.context.i64_type().const_int(capture.offset, false),
+                    )?;
+                    return Ok(Some(address));
+                }
                 let slot = *self
                     .local_slots
                     .get(&local)
@@ -3992,8 +4309,11 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 else {
                     return Err("call target is not callable".to_string());
                 };
-                let pointer = self.gen_expr(call.callee)?.into_pointer_value();
-                let mut llvm_parameters = Vec::with_capacity(parameters.len());
+                let closure = self.gen_expr(call.callee)?.into_pointer_value();
+                let (code, environment) = self.load_closure(closure)?;
+                let pointer_type = self.context.ptr_type(AddressSpace::default());
+                let mut llvm_parameters = Vec::with_capacity(parameters.len() + 1);
+                llvm_parameters.push(pointer_type.into());
                 for parameter in &parameters {
                     llvm_parameters.push(self.llvm_type(*parameter)?.into());
                 }
@@ -4001,13 +4321,22 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     Some(ty) => self.llvm_type(ty)?.fn_type(&llvm_parameters, wildcard),
                     None => self.context.void_type().fn_type(&llvm_parameters, wildcard),
                 };
-                let mut arguments = Vec::with_capacity(call.arguments.len());
-                for argument in &call.arguments {
-                    arguments.push(self.gen_expr(argument.value)?.into());
+                let mut arguments = Vec::with_capacity(call.arguments.len() + 1);
+                arguments.push(environment.into());
+                let mapped = self.sema.call_arguments.get(&node).cloned();
+                let count = mapped
+                    .as_ref()
+                    .map_or(call.arguments.len(), |mapped| mapped.len());
+                for position in 0..count {
+                    let value_node = match &mapped {
+                        Some(mapped) => mapped[position],
+                        None => call.arguments[position].value,
+                    };
+                    arguments.push(self.gen_coerced_expr(value_node)?.into());
                 }
                 let call_site = self
                     .builder
-                    .build_indirect_call(function_type, pointer, &arguments, "indirect")
+                    .build_indirect_call(function_type, code, &arguments, "indirect")
                     .map_err(|error| format!("cannot call function value: {error}"))?;
                 match return_type {
                     Some(_) => match call_site.try_as_basic_value() {
@@ -5611,4 +5940,12 @@ fn integer_predicate(op: BinaryOp, signed: bool) -> Result<IntPredicate, String>
         }
         _ => return Err("unsupported integer comparison".to_string()),
     })
+}
+
+/// Rounds `value` up to a multiple of `alignment`.
+fn round_up_u64(value: u64, alignment: u64) -> u64 {
+    if alignment <= 1 {
+        return value;
+    }
+    value.div_ceil(alignment) * alignment
 }

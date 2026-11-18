@@ -162,6 +162,8 @@ impl<'a> Sema<'a> {
             template: None,
             decl_scope: self.current_scope(),
             generic_env: HashMap::new(),
+            environment: false,
+            captures: Vec::new(),
             locals: Vec::new(),
             span,
         });
@@ -539,6 +541,8 @@ impl<'a> Sema<'a> {
             template: Some(template_index),
             decl_scope,
             generic_env: environment,
+            environment: false,
+            captures: Vec::new(),
             locals: Vec::new(),
             span: self.span_of(cloned),
         });

@@ -748,20 +748,6 @@ fixed Main(): integer(4)
 }
 
 #[test]
-fn capturing_function_literals_are_diagnosed() {
-    let stderr = check_source(
-        "\
-fixed Main(): integer(4)
-{
-    local limit: integer(4) = 3;
-    local f: function(integer(4)) integer(4) = (value: integer(4)) integer(4) => value + limit;
-    return f(1);
-}",
-    );
-    assert!(stderr.contains("unknown name 'limit'"), "{stderr}");
-}
-
-#[test]
 fn missing_required_argument_is_reported() {
     let stderr = check_source(
         "\

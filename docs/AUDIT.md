@@ -281,3 +281,4 @@ report an error (§4.8).
 | 60 | MED | §11.2, §11.4, §11.6 | Top-level compile-time blocks/variables and top-level #if unimplemented | fixed (2273414: in-order execution during declaration collection, cross-file variables, selected-branch declaration collection, runtime final values) |
 | 61 | LOW | §9.8 | `verbatim` had no semantics | fixed (9e66017: optnone functions, runtime-evaluated verbatim storages, compile-time evaluation diagnosed inside verbatim) |
 | 62 | MED | §10.1, §10.2 | Generic methods declaring their own type parameters unsupported | fixed (cf36878: method templates instantiated by `receiver.Method<T>(...)`, receiver compatibility, mangling/caching; missing type arguments diagnosed) |
+| 63 | LOW | §9.5 | `scoped(operator Symbol)`/conversion targets not distinguished | fixed (5799c6c: symbol/conversion matching, parser support) |

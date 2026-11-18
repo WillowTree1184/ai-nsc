@@ -103,7 +103,5 @@ These are deliberate, documented limitations rather than silent miscompiles:
 8. **Target selection**: code generation targets the host ABI; calling
    conventions the host backend cannot represent are diagnosed.
 9. **Platform queries** in the compile-time library answer for the host target.
-10. `scoped(operator Symbol)` and `scoped(operator Identifier)` distinguish no
-    symbol; any operator of the declaring type is allowed.
 11. Container/iterator utilities beyond the specification's §15.2 (dynamic
     arrays, lists, maps) are not provided.

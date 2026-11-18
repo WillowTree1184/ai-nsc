@@ -445,7 +445,9 @@ impl<'a> Sema<'a> {
         // fields declared here (declaration order, §3.7.2).
         let mut fields: Vec<FieldInfo> = Vec::new();
         let mut field_initializers: Vec<Option<NodeId>> = Vec::new();
-        let mut offset: u64 = if is_class { 16 } else { 0 };
+        let pointer_size = u64::from(self.result.types.pointer_size());
+        // Classes start with the vtable and typeinfo pointers (§3.7.1).
+        let mut offset: u64 = if is_class { 2 * pointer_size } else { 0 };
         let mut max_align: u64 = if is_class { 8 } else { 1 };
 
         if let Some(base_type) = base_type {
@@ -646,8 +648,8 @@ impl<'a> Sema<'a> {
             definition.instance_align = max_align;
             if is_class {
                 // The value representation of a class is a reference (§3.4).
-                definition.size = 8;
-                definition.align = 8;
+                definition.size = pointer_size;
+                definition.align = pointer_size;
             } else {
                 definition.size = instance_size;
                 definition.align = max_align;
@@ -1686,8 +1688,8 @@ impl<'a> Sema<'a> {
         };
         let definition = &mut self.result.type_defs[index as usize];
         // An interface is a reference type with no instance layout of its own.
-        definition.size = 8;
-        definition.align = 8;
+        definition.size = u64::from(self.result.types.pointer_size());
+        definition.align = u64::from(self.result.types.pointer_size());
         definition.instance_size = 0;
         definition.instance_align = 1;
         self.resolve_pending_accessors();

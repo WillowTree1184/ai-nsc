@@ -967,12 +967,28 @@ impl SemaResult {
     /// Panics only on an internal invariant violation (missing named type).
     #[must_use]
     pub fn size_align(&self, ty: TypeId) -> (u64, u64) {
+        let layout = self.types.layout();
         match self.types.get(ty) {
             Type::Error | Type::Void => (0, 1),
             Type::Boolean => (1, 1),
-            Type::Integer { bytes, .. } | Type::Float { bytes } => {
+            Type::Integer { bytes, .. } => {
                 let size = u64::from(*bytes);
-                (size, size)
+                // 64-bit integers on i686 are aligned to 4 bytes (§13).
+                let align = if *bytes == 8 && layout.integer64_align == 4 {
+                    4
+                } else {
+                    size
+                };
+                (size, align)
+            }
+            Type::Float { bytes } => {
+                let size = u64::from(*bytes);
+                let align = if *bytes == 8 && layout.float64_align == 4 {
+                    4
+                } else {
+                    size
+                };
+                (size, align)
             }
             Type::Array {
                 dimensions,
@@ -983,12 +999,17 @@ impl SemaResult {
                 (element_size * count, element_align)
             }
             Type::Vla { length, .. } => {
+                let pointer = u64::from(layout.pointer_size);
                 let (length_size, length_align) = self.size_align(*length);
-                let align = 8.max(length_align);
-                let size = round_up_size(8 + length_size, align);
+                let align = pointer.max(length_align);
+                let offset = round_up_size(pointer, length_align.max(1));
+                let size = round_up_size(offset + length_size, align);
                 (size, align)
             }
-            Type::Pointer { .. } | Type::Function { .. } => (8, 8),
+            Type::Pointer { .. } | Type::Function { .. } => {
+                let pointer = u64::from(layout.pointer_size);
+                (pointer, pointer)
+            }
             Type::Named(index) => {
                 let definition = &self.type_defs[*index as usize];
                 (definition.size, definition.align)
@@ -1119,13 +1140,28 @@ pub fn analyze(
     sources: &SourceManager,
     engine: &mut DiagnosticEngine,
 ) -> SemaResult {
+    analyze_with_layout(
+        ast,
+        sources,
+        engine,
+        crate::sema::types::TargetLayout::HOST64,
+    )
+}
+
+/// Runs semantic analysis for an explicit target data layout.
+pub fn analyze_with_layout(
+    ast: &mut Ast,
+    sources: &SourceManager,
+    engine: &mut DiagnosticEngine,
+    layout: crate::sema::types::TargetLayout,
+) -> SemaResult {
     let node_count = ast.nodes.len();
     let mut sema = Sema {
         ast,
         sources,
         engine,
         result: SemaResult {
-            types: TypeStore::new(),
+            types: TypeStore::with_layout(layout),
             node_types: vec![None; node_count],
             resolutions: vec![None; node_count],
             ..SemaResult::default()
@@ -1542,6 +1578,11 @@ impl<'a> Sema<'a> {
         self.check_constructor_chains();
     }
 
+    /// Pointer size used for built-in class/interface reference layout (§3.4).
+    fn builtin_pointer_size(&self) -> u64 {
+        u64::from(self.result.types.pointer_size())
+    }
+
     /// Pushes a synthetic class declaration (used by the Built-In Library).
     fn push_builtin_class(
         &mut self,
@@ -1586,12 +1627,12 @@ impl<'a> Sema<'a> {
             tag_type: None,
             payload_offset: 0,
             payload_size: 0,
-            instance_size: 16,
-            instance_align: 8,
+            instance_size: 2 * self.builtin_pointer_size(),
+            instance_align: self.builtin_pointer_size(),
             enum_members: Vec::new(),
             underlying: None,
-            size: 8,
-            align: 8,
+            size: self.builtin_pointer_size(),
+            align: self.builtin_pointer_size(),
         });
         let type_id = self.result.types.intern(Type::Named(index));
         self.declare(name.to_string(), Symbol::Type(type_id), Span::default());
@@ -1704,8 +1745,8 @@ impl<'a> Sema<'a> {
             instance_align: 1,
             enum_members: Vec::new(),
             underlying: None,
-            size: 8,
-            align: 8,
+            size: self.builtin_pointer_size(),
+            align: self.builtin_pointer_size(),
         });
         let type_id = self.result.types.intern(Type::Named(index));
         self.declare(name.to_string(), Symbol::Type(type_id), Span::default());
@@ -1767,8 +1808,8 @@ impl<'a> Sema<'a> {
             instance_align: 1,
             enum_members: Vec::new(),
             underlying: None,
-            size: 8,
-            align: 8,
+            size: self.builtin_pointer_size(),
+            align: self.builtin_pointer_size(),
         });
         let type_id = self.result.types.intern(Type::Named(index));
         self.declare(name.to_string(), Symbol::Type(type_id), Span::default());
@@ -2004,12 +2045,12 @@ impl<'a> Sema<'a> {
                 tag_type: None,
                 payload_offset: 0,
                 payload_size: 0,
-                instance_size: 16,
-                instance_align: 8,
+                instance_size: 2 * self.builtin_pointer_size(),
+                instance_align: self.builtin_pointer_size(),
                 enum_members: Vec::new(),
                 underlying: None,
-                size: 8,
-                align: 8,
+                size: self.builtin_pointer_size(),
+                align: self.builtin_pointer_size(),
             });
             let type_id = self.result.types.intern(Type::Named(index));
             self.declare(name.to_string(), Symbol::Type(type_id), Span::default());
@@ -2049,18 +2090,19 @@ impl<'a> Sema<'a> {
                     let Type::Named(index) = self.result.types.get(type_id) else {
                         continue;
                     };
+                    let pointer_size = self.builtin_pointer_size();
                     let definition = &mut self.result.type_defs[*index as usize];
                     definition.fields = vec![FieldInfo {
                         name: "InnerException".to_string(),
                         ty: optional_exception,
-                        offset: 16,
+                        offset: 2 * pointer_size,
                         accessibility: crate::ast::Accessibility::Public,
                         readonly: false,
                         scoped: Vec::new(),
                     }];
                     definition.field_initializers = vec![None];
-                    definition.instance_size = 32;
-                    definition.instance_align = 8;
+                    definition.instance_size = 4 * pointer_size;
+                    definition.instance_align = pointer_size;
                 }
             }
             // IAllocator: the heap allocation protocol (§15.2).

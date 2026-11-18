@@ -90,10 +90,44 @@ impl Type {
     }
 }
 
+/// Target data-layout facts the semantic analysis needs for sizes/alignment
+/// (§3.2, §13).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TargetLayout {
+    /// Pointer size in bytes.
+    pub pointer_size: u8,
+    /// Alignment of 64-bit integers.
+    pub integer64_align: u8,
+    /// Alignment of 64-bit floats.
+    pub float64_align: u8,
+}
+
+impl TargetLayout {
+    /// 64-bit targets (x86_64, aarch64, riscv64).
+    pub const HOST64: Self = Self {
+        pointer_size: 8,
+        integer64_align: 8,
+        float64_align: 8,
+    };
+    /// i686 System V: 32-bit pointers, 8-byte integers/floats aligned to 4.
+    pub const I686: Self = Self {
+        pointer_size: 4,
+        integer64_align: 4,
+        float64_align: 4,
+    };
+    /// ARM 32-bit AAPCS: 32-bit pointers, 8-byte integers/floats aligned to 8.
+    pub const ARM32: Self = Self {
+        pointer_size: 4,
+        integer64_align: 8,
+        float64_align: 8,
+    };
+}
+
 /// Interned types.
 #[derive(Debug)]
 pub struct TypeStore {
     types: Vec<Type>,
+    layout: TargetLayout,
 }
 
 impl Default for TypeStore {
@@ -106,9 +140,28 @@ impl TypeStore {
     /// Creates a store containing the built-in error, empty and boolean types.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_layout(TargetLayout::HOST64)
+    }
+
+    /// Creates a store for a specific target layout.
+    #[must_use]
+    pub fn with_layout(layout: TargetLayout) -> Self {
         Self {
             types: vec![Type::Error, Type::Void, Type::Boolean],
+            layout,
         }
+    }
+
+    /// Returns the target layout used for sizes/alignment.
+    #[must_use]
+    pub const fn layout(&self) -> TargetLayout {
+        self.layout
+    }
+
+    /// Pointer size in bytes.
+    #[must_use]
+    pub const fn pointer_size(&self) -> u8 {
+        self.layout.pointer_size
     }
 
     /// Interns `ty`, returning its id.

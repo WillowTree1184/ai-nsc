@@ -72,6 +72,9 @@ fn configure_module_target(module: &Module<'_>, triple_text: &str) -> Result<(),
         "x86_64" | "x86_64h" | "i686" => {
             Target::initialize_x86(&InitializationConfig::default());
         }
+        "arm" | "armv7" | "armv7a" | "armv6" => {
+            Target::initialize_arm(&InitializationConfig::default());
+        }
         "aarch64" | "arm64" => {
             Target::initialize_aarch64(&InitializationConfig::default());
         }
@@ -80,7 +83,7 @@ fn configure_module_target(module: &Module<'_>, triple_text: &str) -> Result<(),
         }
         other => {
             return Err(format!(
-                "unsupported target architecture '{other}': this build supports 64-bit x86_64, aarch64 and riscv64"
+                "unsupported target architecture '{other}': this build supports x86 (64/32), aarch64, arm32 and riscv64"
             ));
         }
     }
@@ -1876,7 +1879,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .get(&binding)
                     .ok_or_else(|| "missing catch binding slot".to_string())?;
                 let payload = self
-                    .load_pointer_at(exception_slot, 8)?
+                    .load_pointer_at(exception_slot, self.pointer_byte_offset(1))?
                     .into_pointer_value();
                 let target = catch.ty.ok_or_else(|| "catch type missing".to_string())?;
                 let is_reference = matches!(self.sema.types.get(target), Type::Named(index) if matches!(self.sema.type_defs[*index as usize].kind, TypeDefKind::Class | TypeDefKind::Interface));

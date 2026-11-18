@@ -58,6 +58,8 @@ pub struct Options {
     pub output: Option<PathBuf>,
     /// Value of `--target`, if given.
     pub target: Option<String>,
+    /// Cross-compilation sysroot passed to clang (`--sysroot`).
+    pub sysroot: Option<PathBuf>,
     /// Optimization level from `-O0..-O3`.
     pub optimization_level: u8,
     /// Emit debug information (`-g`).
@@ -86,6 +88,7 @@ COMMANDS:
 OPTIONS:
   -o <path>           Output path
   --target <triple>   Target triple (default: host)
+  --sysroot <path>    Target sysroot used when cross-linking
   -O0/-O1/-O2/-O3     Optimization level (default: -O0)
   -g                  Emit debug information
   --dump-tokens       Print the token stream
@@ -130,6 +133,13 @@ pub fn parse_args(args: &[OsString]) -> Result<Options, String> {
                 options.output = Some(PathBuf::from(value));
                 index += 1;
             }
+            "--sysroot" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "missing value for '--sysroot'".to_string())?;
+                options.sysroot = Some(PathBuf::from(value));
+                index += 1;
+            }
             "--target" => {
                 let value = args
                     .get(index + 1)
@@ -140,6 +150,8 @@ pub fn parse_args(args: &[OsString]) -> Result<Options, String> {
             _ => {
                 if let Some(level) = argument.strip_prefix("-O") {
                     options.optimization_level = parse_optimization_level(level)?;
+                } else if let Some(path) = argument.strip_prefix("--sysroot=") {
+                    options.sysroot = Some(PathBuf::from(path));
                 } else if let Some(triple) = argument.strip_prefix("--target=") {
                     options.target = Some(triple.to_string());
                 } else if argument.starts_with('-') {
@@ -205,8 +217,10 @@ pub fn run_with_args(args: &[OsString]) -> i32 {
     if let Some(target) = &options.target {
         let runnable_32_bit =
             target.starts_with("i686") && crate::HOST_TRIPLE.starts_with("x86_64");
+        let cross_build_with_sysroot = options.sysroot.is_some() && matches!(action, Action::Build);
         if target != crate::HOST_TRIPLE
             && !runnable_32_bit
+            && !cross_build_with_sysroot
             && matches!(action, Action::Build | Action::Run)
         {
             eprintln!(
@@ -435,6 +449,17 @@ fn run_clang(ir: &str, output: &Path, compile_only: bool, options: &Options) -> 
     }
     if let Some(target) = &options.target {
         command.arg(format!("--target={target}"));
+    }
+    if let Some(sysroot) = &options.sysroot {
+        command.arg(format!("--sysroot={}", sysroot.display()));
+    }
+    // The host GNU ld cannot link ARM objects; LLVM's lld is target-aware.
+    if options
+        .target
+        .as_deref()
+        .is_some_and(|target| target.starts_with("arm"))
+    {
+        command.arg("-fuse-ld=lld");
     }
     command.arg(format!("-O{}", options.optimization_level));
     command.arg("-o").arg(output);

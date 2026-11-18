@@ -1727,3 +1727,131 @@ fixed Main(): integer(4)
     let _ = std::fs::remove_dir_all(&directory);
     assert_eq!(status.code(), Some(42));
 }
+
+#[test]
+fn i686_target_handles_traps() {
+    if std::env::consts::ARCH != "x86_64" || !std::path::Path::new("/usr/lib32/libc.so.6").exists()
+    {
+        return;
+    }
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-i686trap-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let source_path = directory.join("program.ns");
+    std::fs::write(
+        &source_path,
+        "\
+fixed Main(): integer(4)
+{
+    local result: integer(4) = 0;
+    local code: integer(4) = 42;
+    trap
+    {
+        throw code;
+        result = 1;
+    }
+    catch value: integer(4)
+    {
+        result = value;
+    }
+    return result;
+}",
+    )
+    .expect("write");
+    let executable = directory.join("program");
+    let output = ai_nsc()
+        .args([
+            "build",
+            "--target=i686-unknown-linux-gnu",
+            "-o",
+            executable.to_str().expect("utf-8 path"),
+            source_path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("run ai-nsc");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let status = std::process::Command::new(&executable)
+        .status()
+        .expect("run 32-bit program");
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(status.code(), Some(42));
+}
+
+#[test]
+fn armv7_target_builds_and_runs_heap_classes() {
+    let qemu = std::env::var("AINSC_QEMU_ARM").unwrap_or_else(|_| "qemu-arm".to_string());
+    let sysroot = std::path::Path::new("/usr/arm-linux-gnueabihf");
+    if !sysroot.join("lib/ld-linux-armhf.so.3").exists()
+        || !std::path::Path::new("/usr/bin/ld.lld").exists()
+        || std::process::Command::new(&qemu)
+            .arg("--version")
+            .output()
+            .is_err()
+    {
+        return;
+    }
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-armv7-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let source_path = directory.join("program.ns");
+    std::fs::write(
+        &source_path,
+        "\
+class Box
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Box, value: integer(4)) { this.Value = value; }
+        public fixed Get(this: &Box): integer(4) { return this.Value; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    heap box: Box = Box(40);
+    return box.Get() + 2;
+}",
+    )
+    .expect("write");
+    let executable = directory.join("program");
+    let output = ai_nsc()
+        .args([
+            "build",
+            "--target=armv7-unknown-linux-gnueabihf",
+            "--sysroot=/",
+            "-o",
+            executable.to_str().expect("utf-8 path"),
+            source_path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("run ai-nsc");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let status = std::process::Command::new(&qemu)
+        .arg("-L")
+        .arg(sysroot)
+        .arg(&executable)
+        .status()
+        .expect("run arm program");
+    let _ = std::fs::remove_dir_all(&directory);
+    assert_eq!(status.code(), Some(42));
+}

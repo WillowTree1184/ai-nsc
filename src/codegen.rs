@@ -3874,6 +3874,10 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             // An array cast to a pointer refers to the array's own storage and a
             // pointer cast to an array refers to the pointee (§3.6.1), so both
             // stay addressable instead of producing a copy.
+            NodeKind::Unary(unary) if unary.op == UnaryOp::Dereference => {
+                let value = self.gen_expr(unary.operand)?;
+                Ok(Some(value.into_pointer_value()))
+            }
             NodeKind::Cast(cast) => {
                 let source = self.type_of(cast.value);
                 let target = self.type_of(node);
@@ -5155,7 +5159,12 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .build_load(llvm_type, operand.into_pointer_value(), "deref")
                     .map_err(|error| format!("cannot dereference: {error}"))
             }
-            UnaryOp::Reference => Err("reference expressions are not lowered yet".to_string()),
+            UnaryOp::Reference => {
+                let address = self
+                    .gen_lvalue(unary.operand)?
+                    .ok_or_else(|| "reference operand is not addressable".to_string())?;
+                Ok(address.into())
+            }
         }
     }
 

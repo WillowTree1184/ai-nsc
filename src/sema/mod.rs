@@ -1033,14 +1033,16 @@ impl<'a> Sema<'a> {
         }
     }
 
-    /// Resolves a canonical platform name to a `PlatformKind` value.
+    /// Resolves a canonical platform name to a `PlatformKind` value (§15.3).
+    /// Canonical names are matched byte-exactly and are case-sensitive; `Other`
+    /// has no canonical name, so unknown names map to `None` (the query answers
+    /// false rather than reporting an error).
     pub(crate) fn platform_kind_from_name(name: &str) -> Option<u32> {
-        match name.to_ascii_lowercase().as_str() {
-            "other" => Some(0),
-            "windows" => Some(1),
-            "linux" => Some(2),
-            "macos" => Some(3),
-            "freebsd" => Some(4),
+        match name {
+            "Windows" => Some(1),
+            "Linux" => Some(2),
+            "MacOS" => Some(3),
+            "FreeBSD" => Some(4),
             _ => None,
         }
     }

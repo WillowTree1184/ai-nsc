@@ -2472,7 +2472,10 @@ impl<'a> Sema<'a> {
                     NodeKind::StringLiteral(literal) => {
                         let decoded = literal::decode_string(&literal.raw).ok()?;
                         let name = String::from_utf8_lossy(&decoded.bytes).into_owned();
-                        Some(Self::platform_kind_from_name(&name)? == Self::host_platform_kind())
+                        Some(
+                            Self::platform_kind_from_name(&name)
+                                .is_some_and(|kind| kind == Self::host_platform_kind()),
+                        )
                     }
                     NodeKind::MemberAccess(access) => {
                         let Some(Symbol::Type(type_id)) = self.try_resolve_name(access.base) else {
@@ -3464,6 +3467,7 @@ impl<'a> Sema<'a> {
                 _ => self.error(self.span_of(node), "expression is not assignable"),
             },
             NodeKind::Index(_) | NodeKind::MemberAccess(_) | NodeKind::PointerMemberAccess(_) => {}
+            NodeKind::Unary(unary) if unary.op == UnaryOp::Dereference => {}
             _ => self.error(self.span_of(node), "expression is not assignable"),
         }
     }
@@ -5001,8 +5005,26 @@ impl<'a> Sema<'a> {
                 Some(ty)
             }
             UnaryOp::Reference => {
-                self.unsupported(self.span_of(node), "reference expressions");
-                None
+                let ty = self.check_expr(unary.operand, None)?;
+                let addressable = matches!(
+                    self.node_kind(unary.operand),
+                    NodeKind::Name(_)
+                        | NodeKind::This
+                        | NodeKind::MemberAccess(_)
+                        | NodeKind::PointerMemberAccess(_)
+                        | NodeKind::Index(_)
+                ) || matches!(
+                    self.node_kind(unary.operand),
+                    NodeKind::Unary(inner) if inner.op == UnaryOp::Dereference
+                );
+                if !addressable {
+                    self.error(
+                        self.span_of(node),
+                        "unary '&' requires an addressable operand",
+                    );
+                    return None;
+                }
+                Some(self.result.types.pointer(Some(ty)))
             }
             UnaryOp::Dereference => {
                 let ty = self.check_expr(unary.operand, None)?;
@@ -5993,6 +6015,46 @@ impl<'a> Sema<'a> {
         Some(type_id)
     }
 
+    /// Checks a `NOLAA.*` heap lifetime control call (§15.3). These are compiler
+    /// hints and lower to no code.
+    fn check_nolaa_call(
+        &mut self,
+        node: NodeId,
+        name: &str,
+        arguments: &[Argument],
+    ) -> Option<TypeId> {
+        let span = self.span_of(node);
+        let expected = match name {
+            "Abandon" | "AssumeNoDemandNext" => 1,
+            "Bind" => 2,
+            _ => {
+                self.error(span, format!("unknown compiler API 'NOLAA.{name}'"));
+                return None;
+            }
+        };
+        if arguments.len() != expected {
+            self.error(span, format!("'NOLAA.{name}' takes {expected} argument(s)"));
+            return None;
+        }
+        for argument in arguments {
+            let ty = self.check_expr(argument.value, None)?;
+            let convertible = match self.types_of(ty) {
+                Type::Pointer { .. } | Type::Function { .. } => true,
+                Type::Named(index) => matches!(
+                    self.result.type_defs[index as usize].kind,
+                    TypeDefKind::Class | TypeDefKind::Interface
+                ),
+                _ => false,
+            };
+            if !convertible {
+                self.error(self.span_of(argument.value), "expected a pointer argument");
+                return None;
+            }
+        }
+        self.result.resolutions[node as usize] = Some(Resolution::CompileTimeNoOp);
+        Some(TypeId::VOID)
+    }
+
     /// Evaluates `Platform.Is(...)` against the compilation target (§15.3).
     fn check_platform_is(&mut self, node: NodeId, arguments: &[Argument]) -> Option<TypeId> {
         let span = self.span_of(node);
@@ -6005,13 +6067,9 @@ impl<'a> Sema<'a> {
             NodeKind::StringLiteral(literal) => match literal::decode_string(&literal.raw) {
                 Ok(decoded) => {
                     let name = String::from_utf8_lossy(&decoded.bytes).into_owned();
-                    match Self::platform_kind_from_name(&name) {
-                        Some(kind) => kind == Self::host_platform_kind(),
-                        None => {
-                            self.error(self.span_of(argument.value), "unknown platform name");
-                            return None;
-                        }
-                    }
+                    // Names outside the canonical set answer false (§15.3).
+                    Self::platform_kind_from_name(&name)
+                        .is_some_and(|kind| kind == Self::host_platform_kind())
                 }
                 Err(message) => {
                     self.error(self.span_of(argument.value), message);
@@ -6191,6 +6249,10 @@ impl<'a> Sema<'a> {
             if name == "Is" {
                 return self.check_platform_is(node, &call.arguments);
             }
+        }
+        // Heap lifetime analysis controls are advisory no-ops at run time (§15.3).
+        if let Some(name) = builtin_namespace_call(self.ast, call.callee, "NOLAA") {
+            return self.check_nolaa_call(node, &name, &call.arguments);
         }
         // Compile-time diagnostics: `Compiler.LogNote/LogWarning/LogError/Assert`
         // (§15.3).

@@ -2641,3 +2641,30 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 7);
 }
+
+#[test]
+fn reference_expressions_nolaa_and_canonical_platform_names() {
+    let source = "\
+fixed Bump(location: pointer integer(4))
+{
+    *location = *location + 1;
+}
+
+fixed Main(): integer(4)
+{
+    local counter: integer(4) = 10;
+    local address: pointer integer(4) = &counter;
+    local score: integer(4) = 0;
+    if (*address == 10) { score += 1; }
+    Bump(address);
+    if (counter == 11) { score += 2; }
+    NOLAA.Abandon(address);
+    NOLAA.AssumeNoDemandNext(address);
+    NOLAA.Bind(address, address);
+    if (Platform.Is(\"Linux\")) { score += 4; }
+    if (!Platform.Is(\"linux\")) { score += 8; }
+    if (!Platform.Is(PlatformKind.Other)) { score += 16; }
+    return score;
+}";
+    assert_eq!(run_program(source), 31);
+}

@@ -320,3 +320,4 @@ report an error (§4.8).
 | 99 | MED | §11.4 | Compile-time for-over-range loops unsupported | fixed (347f9a7: range for execution at top level and in interpreted functions, scoped binding, break/continue) |
 | 100 | MED | §11.3 | '#(...)' rejected calls to ordinary compile-time functions | fixed (bb08e7d: compile-time-evaluable predicate, function interpretation, float-to-integer constant folding) |
 | 101 | LOW | §13 | Layout sizing hardcoded 8-byte pointers (blocked 32-bit targets) | partial (a4d857b: TargetLayout plumbing for pointers/integer64/float64 alignment; default host unchanged, 32-bit triples still diagnosed) |
+| 102 | MED | §11.4 | Compile-time execution was limited to the hand-written integer interpreter | partial (2100738: MCJIT evaluator for integer functions up to 64 bits, launcher-less module generation, JIT tests; semantic-analysis wiring pending) |

@@ -55,6 +55,17 @@ pub fn parse(file: FileId, source: &str, tokens: &[Token]) -> ParseResult {
     }
 }
 
+/// Parses `source` into an existing AST, appending its top-level declarations.
+///
+/// Multiple input files share one AST so that semantic analysis and code
+/// generation see a single program (§11.2).
+pub fn parse_into(ast: &mut Ast, file: FileId, source: &str, tokens: &[Token]) -> Vec<ParseError> {
+    let mut parser = Parser::with_ast(file, source, tokens, std::mem::take(ast));
+    parser.parse_file();
+    *ast = parser.ast;
+    parser.errors
+}
+
 pub(crate) struct Parser<'a> {
     pub(crate) file: FileId,
     pub(crate) source: &'a str,
@@ -66,12 +77,16 @@ pub(crate) struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     pub(crate) fn new(file: FileId, source: &'a str, tokens: &'a [Token]) -> Self {
+        Self::with_ast(file, source, tokens, Ast::new(file))
+    }
+
+    pub(crate) fn with_ast(file: FileId, source: &'a str, tokens: &'a [Token], ast: Ast) -> Self {
         Self {
             file,
             source,
             tokens,
             position: 0,
-            ast: Ast::new(file),
+            ast,
             errors: Vec::new(),
         }
     }

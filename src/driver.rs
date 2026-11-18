@@ -11,7 +11,7 @@ use std::process::Command;
 
 use crate::diagnostics::{DiagnosticEngine, Severity};
 use crate::source::SourceManager;
-use crate::{codegen, lexer, parser, sema, HOST_TRIPLE, LLVM_VERSION, VERSION};
+use crate::{ast, codegen, lexer, parser, sema, HOST_TRIPLE, LLVM_VERSION, VERSION};
 
 /// What the user asked the compiler to do.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -225,62 +225,69 @@ fn compile(options: &Options) -> i32 {
         eprintln!("ai-nsc: no input files");
         return 1;
     }
-    if options.inputs.len() > 1 {
-        eprintln!("ai-nsc: multiple input files are not supported yet");
-        return 1;
-    }
-    let input = &options.inputs[0];
+    let first_input = &options.inputs[0];
 
     let mut sources = SourceManager::new();
-    let file = match sources.load_file(input) {
-        Ok(file) => file,
-        Err(error) => {
-            eprintln!("ai-nsc: cannot read '{}': {error}", input.display());
-            return 1;
-        }
-    };
-    let source = sources.text(file).unwrap_or_default().to_string();
-
     let mut diagnostics = DiagnosticEngine::new();
     match options.color {
         Some(color) => diagnostics.set_color(color),
         None => diagnostics.set_color(io::stderr().is_terminal()),
     }
 
-    // ---- lexer ---------------------------------------------------------
-    let lexed = lexer::tokenize(file, &source);
-    for error in &lexed.errors {
-        diagnostics.report_stderr(&sources, Severity::Error, Some(error.span), &error.message);
-    }
-    if !lexed.errors.is_empty() {
-        return 1;
-    }
-    if options.dump_tokens {
-        for token in &lexed.tokens {
-            println!(
-                "{:?} {}..{} {:?}",
-                token.kind,
-                token.span.start,
-                token.span.end,
-                token.text(&source)
-            );
+    // Multiple input files form one program: each file is lexed and parsed into
+    // the shared AST in input order (§11.2).
+    let mut ast = ast::Ast::new(crate::source::FileId::INVALID);
+    let mut failed = false;
+    for input in &options.inputs {
+        let file = match sources.load_file(input) {
+            Ok(file) => file,
+            Err(error) => {
+                eprintln!("ai-nsc: cannot read '{}': {error}", input.display());
+                return 1;
+            }
+        };
+        let source = sources.text(file).unwrap_or_default().to_string();
+
+        // ---- lexer -----------------------------------------------------
+        let lexed = lexer::tokenize(file, &source);
+        for error in &lexed.errors {
+            diagnostics.report_stderr(&sources, Severity::Error, Some(error.span), &error.message);
+        }
+        if !lexed.errors.is_empty() {
+            failed = true;
+            continue;
+        }
+        if options.dump_tokens {
+            for token in &lexed.tokens {
+                println!(
+                    "{:?} {}..{} {:?}",
+                    token.kind,
+                    token.span.start,
+                    token.span.end,
+                    token.text(&source)
+                );
+            }
+        }
+
+        // ---- parser ----------------------------------------------------
+        let errors = parser::parse_into(&mut ast, file, &source, &lexed.tokens);
+        for error in &errors {
+            diagnostics.report_stderr(&sources, Severity::Error, Some(error.span), &error.message);
+        }
+        if !errors.is_empty() {
+            failed = true;
         }
     }
-
-    // ---- parser --------------------------------------------------------
-    let mut parsed = parser::parse(file, &source, &lexed.tokens);
-    for error in &parsed.errors {
-        diagnostics.report_stderr(&sources, Severity::Error, Some(error.span), &error.message);
-    }
-    if !parsed.errors.is_empty() {
+    if failed {
         return 1;
     }
     if options.dump_ast {
-        println!("{:#?}", parsed.ast);
+        println!("{ast:#?}");
     }
 
     // ---- semantic analysis --------------------------------------------
-    let sema_result = sema::analyze(&mut parsed.ast, &sources, &mut diagnostics);
+    let mut parsed = ast;
+    let sema_result = sema::analyze(&mut parsed, &sources, &mut diagnostics);
     if sema_result.error_count > 0 {
         return 1;
     }
@@ -292,7 +299,7 @@ fn compile(options: &Options) -> i32 {
     let codegen_options = codegen::CodegenOptions {
         optimization_level: options.optimization_level,
     };
-    let ir = match codegen::generate(&parsed.ast, &sema_result, &codegen_options) {
+    let ir = match codegen::generate(&parsed, &sema_result, &codegen_options) {
         Ok(ir) => ir,
         Err(message) => {
             diagnostics.report_stderr(&sources, Severity::Error, None, &message);
@@ -300,7 +307,7 @@ fn compile(options: &Options) -> i32 {
         }
     };
 
-    let default_stem = input.file_stem().map_or_else(
+    let default_stem = first_input.file_stem().map_or_else(
         || "a".to_string(),
         |stem| stem.to_string_lossy().into_owned(),
     );
@@ -349,7 +356,7 @@ fn compile(options: &Options) -> i32 {
             let executable = std::env::temp_dir().join(format!(
                 "ainsc-run-{}-{}",
                 std::process::id(),
-                input.file_stem().map_or_else(
+                first_input.file_stem().map_or_else(
                     || "program".to_string(),
                     |stem| stem.to_string_lossy().into_owned()
                 )

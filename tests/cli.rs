@@ -771,3 +771,43 @@ fixed Main(): integer(4)
     );
     assert!(stderr.contains("compile-time constants"), "{stderr}");
 }
+
+#[test]
+fn multiple_input_files_form_one_program() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-multi-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let library = directory.join("library.ns");
+    let program = directory.join("program.ns");
+    std::fs::write(
+        &library,
+        "fixed Triple(value: integer(4)): integer(4)\n{\n    return value * 3;\n}",
+    )
+    .expect("write library");
+    std::fs::write(
+        &program,
+        "fixed Main(): integer(4)\n{\n    return Triple(4);\n}",
+    )
+    .expect("write program");
+    let output = ai_nsc()
+        .args([
+            "run",
+            program.to_str().expect("utf-8 path"),
+            library.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    // The exit code is Main's return value (12), so a non-zero status is expected.
+    assert_eq!(
+        output.status.code(),
+        Some(12),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

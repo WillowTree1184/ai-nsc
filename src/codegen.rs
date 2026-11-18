@@ -66,15 +66,18 @@ fn configure_module_target(module: &Module<'_>, triple_text: &str) -> Result<(),
     use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetTriple};
     let architecture = triple_text.split('-').next().unwrap_or("");
     match architecture {
-        "x86_64" | "i386" | "i486" | "i586" | "i686" | "x86" => {
+        "x86_64" | "x86_64h" => {
             Target::initialize_x86(&InitializationConfig::default());
         }
-        "aarch64" | "arm64" | "arm" | "armeb" => {
+        "aarch64" | "arm64" => {
             Target::initialize_aarch64(&InitializationConfig::default());
+        }
+        "riscv64" => {
+            Target::initialize_riscv(&InitializationConfig::default());
         }
         other => {
             return Err(format!(
-                "unsupported target architecture '{other}': this build supports x86 and aarch64"
+                "unsupported target architecture '{other}': this build supports 64-bit x86_64, aarch64 and riscv64"
             ));
         }
     }

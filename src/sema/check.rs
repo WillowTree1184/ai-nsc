@@ -2252,6 +2252,7 @@ impl<'a> Sema<'a> {
         let mut setter_wanted = false;
         let mut getter_body: Option<FunctionBody> = None;
         let mut setter_body: Option<FunctionBody> = None;
+        let mut setter_value_name = "value".to_string();
         for member in &declaration.members {
             let implementation = match (member.expression, member.body) {
                 (Some(expression), None) => match self.node_kind(expression).clone() {
@@ -2295,12 +2296,32 @@ impl<'a> Sema<'a> {
                     }
                 },
             };
-            if backing_local.is_some() && implementation.is_some() && member.expression.is_some() {
-                self.unsupported(
-                    member.span,
-                    "explicit member implementations in function-scope accessors",
-                );
-                return;
+            if let (Some(expression), Some(_)) = (member.expression, backing_local) {
+                // Explicit member implementations of a local-backed accessor run
+                // with the backing variable bound to a by-reference parameter
+                // (§3.8.2), so their signatures must be compatible.
+                if let NodeKind::FunctionLiteral(literal) = self.node_kind(expression) {
+                    if member.is_getter && !literal.parameters.is_empty() {
+                        self.error(
+                            member.span,
+                            "a free accessor getter must not declare parameters",
+                        );
+                        return;
+                    }
+                    if !member.is_getter {
+                        if literal.parameters.len() != 1 {
+                            self.error(
+                                member.span,
+                                "a free accessor setter takes exactly one parameter",
+                            );
+                            return;
+                        }
+                        let name = &literal.parameters[0].name;
+                        if !name.is_empty() {
+                            setter_value_name = name.clone();
+                        }
+                    }
+                }
             }
             if member.is_getter {
                 getter_wanted = true;
@@ -2343,8 +2364,11 @@ impl<'a> Sema<'a> {
         }
         let mut getter = None;
         let mut setter = None;
+        let backing_name = backing_local
+            .and_then(|local| self.local_info(local).map(|info| info.name.clone()))
+            .unwrap_or_else(|| "backing".to_string());
         let backing_parameter = ParameterInfo {
-            name: "backing".to_string(),
+            name: backing_name,
             ty,
             by_ref: true,
             default: None,
@@ -2371,7 +2395,7 @@ impl<'a> Sema<'a> {
                 parameters.push(backing_parameter);
             }
             parameters.push(ParameterInfo {
-                name: "value".to_string(),
+                name: setter_value_name.clone(),
                 ty,
                 by_ref: false,
                 default: None,

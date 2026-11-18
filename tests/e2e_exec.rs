@@ -4046,3 +4046,28 @@ fixed Main(): integer(4)
     // setter stores 10, getter reads it back
     assert_eq!(run_program(source), 10);
 }
+
+#[test]
+fn local_backed_accessors_support_explicit_members() {
+    let source = "\
+fixed Run(): integer(4)
+{
+    local storage: integer(4) = 3;
+    accessor Value: integer(4) => storage
+    {
+        get = () integer(4) => storage + 1;
+        set(value) { storage = value * 2; }
+    }
+
+    local before: integer(4) = Value;
+    Value = 5;
+    return before * 10 + storage;
+}
+
+fixed Main(): integer(4)
+{
+    return Run();
+}";
+    // getter sees 3 (4), setter writes 10, result 4*10 + 10
+    assert_eq!(run_program(source), 50);
+}

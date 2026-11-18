@@ -454,6 +454,7 @@ impl<'a> Sema<'a> {
                         self.result.globals.push(GlobalInfo {
                             accessibility: field.modifiers.accessibility,
                             scoped: static_scoped,
+                            verbatim: field.modifiers.verbatim,
                             name: field.name.clone(),
                             scope,
                             ty,
@@ -1018,6 +1019,7 @@ impl<'a> Sema<'a> {
         self.result.globals.push(GlobalInfo {
             accessibility: crate::ast::Accessibility::Public,
             scoped: Vec::new(),
+            verbatim: declaration.modifiers.verbatim,
             name: declaration.name.clone(),
             scope,
             ty,
@@ -2823,6 +2825,7 @@ impl<'a> Sema<'a> {
         self.result.globals.push(GlobalInfo {
             accessibility: crate::ast::Accessibility::Public,
             scoped: Vec::new(),
+            verbatim: declaration.modifiers.verbatim,
             name: declaration.name.clone(),
             scope,
             ty,
@@ -2871,6 +2874,7 @@ impl<'a> Sema<'a> {
             self.result.globals.push(GlobalInfo {
                 accessibility: crate::ast::Accessibility::Public,
                 scoped: Vec::new(),
+                verbatim: declaration.modifiers.verbatim,
                 name: item.name.clone(),
                 scope,
                 ty,
@@ -3735,7 +3739,13 @@ impl<'a> Sema<'a> {
 
     fn check_statement(&mut self, node: NodeId) {
         match self.node_kind(node).clone() {
-            NodeKind::Block(_) | NodeKind::VerbatimBlock(_) => self.check_block(node),
+            NodeKind::Block(_) => self.check_block(node),
+            NodeKind::VerbatimBlock(inner) => {
+                let previous = self.in_verbatim;
+                self.in_verbatim = true;
+                self.check_block(inner);
+                self.in_verbatim = previous;
+            }
             NodeKind::Local(declaration) => self.check_local_statement(node, &declaration),
             NodeKind::Fixed(declaration) => self.check_fixed_statement(node, &declaration),
             NodeKind::Set(statement) => {
@@ -3939,6 +3949,13 @@ impl<'a> Sema<'a> {
                 self.resolve_use_statement(&statement);
             }
             NodeKind::CompileTimeBlock(block) => {
+                if self.in_verbatim {
+                    self.error(
+                        self.span_of(node),
+                        "verbatim forbids compile-time evaluation (§9.8)",
+                    );
+                    return;
+                }
                 // Locals declared here are compile-time constants (§11.4).
                 self.compile_time_constants
                     .push(std::collections::HashMap::new());
@@ -3946,6 +3963,13 @@ impl<'a> Sema<'a> {
                 self.compile_time_constants.pop();
             }
             NodeKind::CompileTimeIf(statement) => {
+                if self.in_verbatim {
+                    self.error(
+                        self.span_of(node),
+                        "verbatim forbids compile-time evaluation (§9.8)",
+                    );
+                    return;
+                }
                 self.check_expr(statement.condition, Some(TypeId::BOOLEAN));
                 let taken = self
                     .eval_compile_time_bool(statement.condition, 0)
@@ -4046,7 +4070,9 @@ impl<'a> Sema<'a> {
             };
             // Inside a compile-time block the declared value is a compile-time
             // constant usable by later constant expressions (§11.4).
-            if !self.compile_time_constants.is_empty() {
+            if !self.compile_time_constants.is_empty() && self.in_verbatim {
+                self.error(item.span, "verbatim forbids compile-time evaluation (§9.8)");
+            } else if !self.compile_time_constants.is_empty() {
                 if let Some(initializer) = item.init {
                     self.suppress_errors += 1;
                     let constant = self.eval_const_int(initializer);
@@ -5132,6 +5158,13 @@ impl<'a> Sema<'a> {
             }
             NodeKind::ArrayLiteral(literal) => self.check_array_literal(node, &literal, expected),
             NodeKind::CompileTimeExpr(inner) => {
+                if self.in_verbatim {
+                    self.error(
+                        self.span_of(node),
+                        "verbatim forbids compile-time evaluation (§9.8)",
+                    );
+                    return None;
+                }
                 let ty = self.check_expr(inner, expected);
                 // A '#(...)' expression must be evaluable at compile time (§11.2).
                 if !self.is_compile_time_constant(inner) {
@@ -7443,6 +7476,22 @@ impl<'a> Sema<'a> {
     }
 
     fn check_call(&mut self, node: NodeId, call: &CallExpr) -> Option<TypeId> {
+        if self.in_verbatim {
+            for namespace in ["Platform", "Compiler", "NOLAA"] {
+                if builtin_namespace_call(self.ast, call.callee, namespace).is_some() {
+                    self.error(
+                        self.span_of(node),
+                        "verbatim forbids compile-time evaluation (§9.8)",
+                    );
+                }
+            }
+            if builtin_size_of_type_argument(self.ast, call.callee).is_some() {
+                self.error(
+                    self.span_of(node),
+                    "verbatim forbids compile-time evaluation (§9.8)",
+                );
+            }
+        }
         for argument in &call.arguments {
             self.note_heap_escape(argument.value);
         }

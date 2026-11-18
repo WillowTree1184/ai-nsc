@@ -3425,3 +3425,21 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 8);
 }
+
+#[test]
+fn verbatim_targets_keep_their_semantics() {
+    let source = "\
+verbatim fixed GlobalValue: integer(4) = 1 + 2;
+
+fixed Main(): integer(4)
+{
+    verbatim
+    {
+        local sum: integer(4) = 1 + 2;
+        local product: integer(4) = sum * 3;
+        return product + GlobalValue;
+    }
+}";
+    // (1+2)*3 + (1+2)
+    assert_eq!(run_program(source), 12);
+}

@@ -94,6 +94,7 @@ pub fn generate(ast: &Ast, sema: &SemaResult, options: &CodegenOptions) -> Resul
         closure_globals: HashMap::new(),
         default_allocator_instance: None,
         default_allocator_class: None,
+        current_function_verbatim: false,
         current_env_slot: None,
         builtin_exceptions: HashMap::new(),
     };
@@ -154,6 +155,8 @@ struct Generator<'ctx, 'a> {
     default_allocator_instance: Option<GlobalValue<'ctx>>,
     /// Class index of the platform `DefaultAllocator`.
     default_allocator_class: Option<u32>,
+    /// Whether the function being generated contains a `verbatim` block (§9.8).
+    current_function_verbatim: bool,
     /// Slot holding the current literal's closure environment pointer.
     current_env_slot: Option<PointerValue<'ctx>>,
     builtin_exceptions: HashMap<u32, GlobalValue<'ctx>>,
@@ -675,7 +678,14 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 self.globals.insert(index, global);
                 continue;
             }
-            match init.and_then(|node| self.const_scalar(node)) {
+            // Verbatim initializers must not be compile-time evaluated (§9.8).
+            let verbatim = self.sema.globals[index as usize].verbatim;
+            let scalar = if verbatim {
+                None
+            } else {
+                init.and_then(|node| self.const_scalar(node))
+            };
+            match scalar {
                 Some(value) => {
                     global.set_initializer(&value);
                     global.set_constant(fixed);
@@ -757,6 +767,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             };
             self.current_function = index;
             self.current_return = return_type;
+            self.current_function_verbatim = false;
             self.local_slots.clear();
             self.current_this_slot = None;
             self.current_env_slot = None;
@@ -1019,6 +1030,11 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                         .map_err(|error| format!("cannot return: {error}"))?;
                 }
             }
+            if self.current_function_verbatim {
+                // `optnone` keeps the verbatim function out of optimisation (§9.8).
+                let attribute = self.context.create_string_attribute("optnone", "");
+                function.add_attribute(inkwell::attributes::AttributeLoc::Function, attribute);
+            }
         }
         Ok(())
     }
@@ -1203,7 +1219,12 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
     fn gen_block_contents(&mut self, block: NodeId) -> Result<(), String> {
         let statements = match self.ast.node(block).kind.clone() {
             NodeKind::Block(statements) => statements,
-            NodeKind::VerbatimBlock(inner) => return self.gen_block_contents(inner),
+            NodeKind::VerbatimBlock(inner) => {
+                // Verbatim code must not be optimized away (§9.8): the enclosing
+                // function gets the `optnone` attribute.
+                self.current_function_verbatim = true;
+                return self.gen_block_contents(inner);
+            }
             _ => return Err("expected a block".to_string()),
         };
         for statement in statements {

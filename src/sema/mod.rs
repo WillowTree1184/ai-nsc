@@ -590,6 +590,8 @@ pub struct GlobalInfo {
     pub name: String,
     /// Base accessibility of the storage (§9.1).
     pub accessibility: crate::ast::Accessibility,
+    /// Whether the storage is declared `verbatim` (§9.8).
+    pub verbatim: bool,
     /// Accessibility clipping targets (§9.5).
     pub scoped: Vec<ScopedInfo>,
     /// Module path.
@@ -1063,6 +1065,7 @@ pub fn analyze(
         in_function_body: false,
         expected_array_element: None,
         top_level_constants: HashMap::new(),
+        in_verbatim: false,
     };
     sema.run();
     sema.result.error_count = sema.engine.error_count();
@@ -1130,6 +1133,8 @@ pub(crate) struct Sema<'a> {
     /// Compile-time variables produced by top-level `#{}` blocks, in execution
     /// order (§11.2, §11.4).
     pub(crate) top_level_constants: HashMap<String, (i128, TypeId)>,
+    /// Whether the code being checked is inside a `verbatim` target (§9.8).
+    pub(crate) in_verbatim: bool,
 }
 
 impl<'a> Sema<'a> {
@@ -1987,6 +1992,7 @@ impl<'a> Sema<'a> {
                 self.result.globals.push(GlobalInfo {
                     accessibility: crate::ast::Accessibility::Public,
                     scoped: Vec::new(),
+                    verbatim: false,
                     name: "DefaultAllocator".to_string(),
                     scope: Vec::new(),
                     ty: allocator,

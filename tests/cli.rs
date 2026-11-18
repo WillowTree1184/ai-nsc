@@ -1136,3 +1136,51 @@ fn top_level_compile_time_variables_cross_files() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn verbatim_functions_are_not_optimized() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-verbatim-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(
+        &path,
+        "fixed Main(): integer(4)\n{\n    verbatim\n    {\n        local sum: integer(4) = 1 + 2;\n        return sum;\n    }\n}",
+    )
+    .expect("write program");
+    let output = ai_nsc()
+        .args(["emit-ir", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        stdout.contains("optnone"),
+        "expected optnone in IR:\n{stdout}"
+    );
+}
+
+#[test]
+fn verbatim_forbids_compile_time_evaluation() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    verbatim
+    {
+        local value: integer(4) = #(1 + 2);
+    }
+    return 0;
+}",
+    );
+    assert!(
+        stderr.contains("verbatim forbids compile-time evaluation"),
+        "{stderr}"
+    );
+}

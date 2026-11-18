@@ -4839,3 +4839,23 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 42);
 }
+
+#[test]
+fn cross_module_lazy_two_phase_forward_bindings_work() {
+    let source = "\
+module M
+{
+#if Enabled
+{
+    fixed Value: integer(4) = 7;
+}
+}
+
+#{ fixed Enabled: boolean = true; }
+
+fixed Main(): integer(4)
+{
+    return M.Value;
+}";
+    assert_eq!(run_program(source), 7);
+}

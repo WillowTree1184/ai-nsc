@@ -2298,6 +2298,16 @@ impl<'a> Parser<'a> {
                 }),
             ));
         }
+        if self.eat(TokenKind::LeftParen) {
+            // `#( expression )` as a statement is a compile-time expression
+            // statement (§11.4); the value is discarded but its compile-time
+            // effects/ordering matter to two-phase evaluation (§11.7).
+            let inner = self.parse_expression()?;
+            self.expect(TokenKind::RightParen, "')' after '#'");
+            let span = self.span_between(start_token, self.position);
+            let expression = self.ast.push(span, NodeKind::CompileTimeExpr(inner));
+            return Some(self.ast.push(span, NodeKind::ExpressionStmt(expression)));
+        }
         let block = self.parse_block()?;
         let span = self.span_between(start_token, self.position);
         Some(self.ast.push(span, NodeKind::CompileTimeBlock(block)))

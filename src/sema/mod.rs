@@ -1220,6 +1220,9 @@ pub fn analyze_with_options(
         in_function_body: false,
         expected_array_element: None,
         top_level_constants: HashMap::new(),
+        two_phase_future_fixed: std::collections::HashSet::new(),
+        two_phase_future_locals: std::collections::HashSet::new(),
+        two_phase_pending: Vec::new(),
         in_verbatim: false,
         compile_time_depth: 0,
         compile_time_expression_depth: 0,
@@ -1227,6 +1230,7 @@ pub fn analyze_with_options(
         in_constant_initializer: false,
         compile_call_depth: 0,
         top_level_blocks: Vec::new(),
+        top_level_units: Vec::new(),
         unknown_compile_time_names: std::collections::HashSet::new(),
         jit_allowed,
         freestanding,
@@ -1243,6 +1247,15 @@ pub fn analyze_with_options(
     sema.run();
     sema.result.error_count = sema.engine.error_count();
     sema.result
+}
+
+/// A deferred top-level/module `#if`, together with the scope that must receive
+/// its selected branch's declarations (§11.7).
+#[derive(Clone, Debug)]
+struct PendingCompileTimeIf {
+    node: NodeId,
+    scope_stack: Vec<usize>,
+    scope_path: Vec<String>,
 }
 
 /// Control flow produced by a compile-time statement (§11.4).
@@ -1314,6 +1327,14 @@ pub(crate) struct Sema<'a> {
     /// Compile-time variables produced by top-level `#{}` blocks, in execution
     /// order (§11.2, §11.4).
     pub(crate) top_level_constants: HashMap<String, (i128, TypeId)>,
+    /// Immutable bindings produced by `#{}` blocks anywhere in the program,
+    /// used to detect forward dependencies for lazy two-phase evaluation (§11.7).
+    two_phase_future_fixed: std::collections::HashSet<String>,
+    /// `local` bindings produced by `#{}` blocks; these may not be forward
+    /// dependencies (§11.7).
+    two_phase_future_locals: std::collections::HashSet<String>,
+    /// Deferred top-level/module `#if` conditions awaiting settlement.
+    two_phase_pending: Vec<PendingCompileTimeIf>,
     /// Whether the code being checked is inside a `verbatim` target (§9.8).
     pub(crate) in_verbatim: bool,
     /// Nesting depth of `#{}` compile-time blocks (§11.7).
@@ -1331,6 +1352,9 @@ pub(crate) struct Sema<'a> {
     pub(crate) compile_call_depth: usize,
     /// Top-level `#{}` blocks in execution order (§11.2).
     pub(crate) top_level_blocks: Vec<NodeId>,
+    /// Top-level `#{}` blocks and `#()` expression statements in source order
+    /// (§11.2, §11.4).
+    pub(crate) top_level_units: Vec<NodeId>,
     /// Compile-time variable names whose final values are not known yet.
     pub(crate) unknown_compile_time_names: std::collections::HashSet<String>,
     /// Whether host JIT execution may be used for compile-time code (§11.4).
@@ -1591,9 +1615,19 @@ impl<'a> Sema<'a> {
         self.declare_builtin_variants();
         self.declare_builtin_exceptions();
         // Pass 1: declare modules and named types so that signatures can refer
-        // to them regardless of declaration order (§6.3).
+        // to them regardless of declaration order (§6.3). Lazy two-phase `#if`
+        // evaluation needs the immutable bindings of the whole program, so the
+        // future candidate set is collected before declaration collection
+        // (§11.7).
         let roots = self.ast.roots.clone();
+        let (future_fixed, future_locals) = self.collect_future_compile_time_bindings(&roots);
+        self.two_phase_future_fixed = future_fixed;
+        self.two_phase_future_locals = future_locals;
         self.declare_types(&roots, true);
+        if !self.two_phase_pending.is_empty() {
+            self.settle_two_phase_ifs();
+        }
+        self.two_phase_pending.clear();
 
         // Pass 2: resolve field types, layouts, enumeration values and
         // function/global signatures.
@@ -2475,30 +2509,6 @@ impl<'a> Sema<'a> {
     /// Pass 1: walk the declaration structure creating module scopes and named
     /// type stubs.
     fn declare_types(&mut self, nodes: &[NodeId], top_level: bool) {
-        // §11.7: when a top-level `#if` depends on a not-yet-produced immutable
-        // compile-time binding (`fixed` constant in a later `#{}`), declaration
-        // selection is deferred to a lazy settlement phase instead of failing.
-        let (future_fixed, future_locals) = if top_level {
-            self.collect_future_compile_time_bindings(nodes)
-        } else {
-            (
-                std::collections::HashSet::new(),
-                std::collections::HashSet::new(),
-            )
-        };
-        let lazy = top_level
-            && nodes.iter().any(|&node| {
-                let NodeKind::CompileTimeIf(statement) = self.node_kind(node) else {
-                    return false;
-                };
-                let (fixed, local) = self.condition_forward_bindings(
-                    statement.condition,
-                    &future_fixed,
-                    &future_locals,
-                );
-                !fixed.is_empty() || !local.is_empty()
-            });
-        let mut pending = Vec::new();
         for &node in nodes {
             match self.node_kind(node) {
                 NodeKind::Module(declaration) => {
@@ -2536,14 +2546,16 @@ impl<'a> Sema<'a> {
                     self.declare_named_type(node, declaration.name.clone(), TypeDefKind::Union)
                 }
                 NodeKind::CompileTimeIf(statement) => {
-                    if lazy {
-                        // `local` bindings are never valid forward dependencies,
-                        // even in lazy mode (§11.7).
-                        let (_, local_dependencies) = self.condition_forward_bindings(
-                            statement.condition,
-                            &future_fixed,
-                            &future_locals,
-                        );
+                    if top_level {
+                        // §11.7: defer conditions that depend on a not-yet
+                        // produced immutable binding; reject `local` forward
+                        // dependencies immediately.
+                        let (fixed_dependencies, local_dependencies) = self
+                            .condition_forward_bindings(
+                                statement.condition,
+                                &self.two_phase_future_fixed.clone(),
+                                &self.two_phase_future_locals.clone(),
+                            );
                         if !local_dependencies.is_empty() {
                             self.error(
                                 self.span_of(statement.condition),
@@ -2554,20 +2566,16 @@ impl<'a> Sema<'a> {
                             );
                             continue;
                         }
-                        // Settled after every unconditional `#{}` has executed
-                        // (startup phase, §11.7).
-                        pending.push(node);
-                        continue;
+                        if !fixed_dependencies.is_empty() {
+                            self.two_phase_pending.push(PendingCompileTimeIf {
+                                node,
+                                scope_stack: self.scope_stack.clone(),
+                                scope_path: self.scope_path.clone(),
+                            });
+                            continue;
+                        }
                     }
                     let condition = statement.condition;
-                    if let Some((name, _)) = self.first_forward_local(condition, &future_locals) {
-                        self.error(
-                            self.span_of(condition),
-                            format!(
-                                "the compile-time 'local' '{name}' may not be a forward dependency (§11.7)"
-                            ),
-                        );
-                    }
                     let taken = self
                         .eval_compile_time_bool(condition, 0)
                         .unwrap_or_else(|| {
@@ -2588,7 +2596,14 @@ impl<'a> Sema<'a> {
                 }
                 NodeKind::CompileTimeBlock(block) => {
                     self.top_level_blocks.push(node);
+                    self.top_level_units.push(node);
                     self.execute_top_level_compile_time(node, block);
+                }
+                NodeKind::ExpressionStmt(expression)
+                    if matches!(self.node_kind(expression), NodeKind::CompileTimeExpr(_)) =>
+                {
+                    self.top_level_units.push(node);
+                    self.execute_top_level_compile_time_expression(node);
                 }
                 _ => {}
             }
@@ -2604,9 +2619,6 @@ impl<'a> Sema<'a> {
             ) {
                 self.declare_type_body_modules(node);
             }
-        }
-        if lazy && !pending.is_empty() {
-            self.settle_two_phase_ifs(&pending, &future_fixed, &future_locals);
         }
     }
 
@@ -2726,22 +2738,6 @@ impl<'a> Sema<'a> {
         (fixed, locals)
     }
 
-    fn first_forward_local(
-        &self,
-        condition: NodeId,
-        future_locals: &std::collections::HashSet<String>,
-    ) -> Option<(String, NodeId)> {
-        let mut names = Vec::new();
-        self.collect_condition_names(condition, &mut names);
-        names.into_iter().find_map(|(name, node)| {
-            if future_locals.contains(&name) && !self.compile_time_binding_available(&name) {
-                Some((name, node))
-            } else {
-                None
-            }
-        })
-    }
-
     fn compile_time_binding_available(&self, name: &str) -> bool {
         self.top_level_constants.contains_key(name)
             || self
@@ -2776,30 +2772,28 @@ impl<'a> Sema<'a> {
     }
 
     /// Settles deferred top-level `#if` conditions (settlement phase, §11.7).
-    fn settle_two_phase_ifs(
-        &mut self,
-        pending: &[NodeId],
-        future_fixed: &std::collections::HashSet<String>,
-        future_locals: &std::collections::HashSet<String>,
-    ) {
-        let mut remaining: Vec<NodeId> = pending.to_vec();
-        while !remaining.is_empty() {
+    fn settle_two_phase_ifs(&mut self) {
+        loop {
+            if self.two_phase_pending.is_empty() {
+                break;
+            }
+            let batch = std::mem::take(&mut self.two_phase_pending);
+            let mut deferred = Vec::new();
             let mut progressed = false;
-            let mut index = 0;
-            while index < remaining.len() {
-                let node = remaining[index];
+            for entry in batch {
+                let node = entry.node;
                 if self.result.compile_time_conditions.contains_key(&node) {
-                    remaining.remove(index);
                     continue;
                 }
                 let NodeKind::CompileTimeIf(statement) = self.node_kind(node).clone() else {
-                    remaining.remove(index);
                     continue;
                 };
+                let future_fixed = self.two_phase_future_fixed.clone();
+                let future_locals = self.two_phase_future_locals.clone();
                 let (fixed_dependencies, local_dependencies) = self.condition_forward_bindings(
                     statement.condition,
-                    future_fixed,
-                    future_locals,
+                    &future_fixed,
+                    &future_locals,
                 );
                 if !local_dependencies.is_empty() {
                     self.error(
@@ -2809,12 +2803,11 @@ impl<'a> Sema<'a> {
                             local_dependencies[0]
                         ),
                     );
-                    remaining.remove(index);
                     continue;
                 }
                 if !fixed_dependencies.is_empty() {
                     // A later settlement round may produce these bindings.
-                    index += 1;
+                    deferred.push(entry);
                     continue;
                 }
                 self.suppress_errors += 1;
@@ -2831,9 +2824,15 @@ impl<'a> Sema<'a> {
                             .unwrap_or_default()
                     };
                     // Collect declarations and execute the selected branch's
-                    // compile-time blocks exactly once (§11.7 settlement).
+                    // compile-time blocks exactly once in the scope where the
+                    // `#if` appeared (§11.7 settlement).
+                    let saved_stack = self.scope_stack.clone();
+                    let saved_path = self.scope_path.clone();
+                    self.scope_stack = entry.scope_stack;
+                    self.scope_path = entry.scope_path;
                     self.declare_types(&members, true);
-                    remaining.remove(index);
+                    self.scope_stack = saved_stack;
+                    self.scope_path = saved_path;
                     progressed = true;
                     continue;
                 }
@@ -2841,13 +2840,22 @@ impl<'a> Sema<'a> {
                     self.span_of(statement.condition),
                     "the '#if' condition must be a compile-time constant",
                 );
-                remaining.remove(index);
             }
-            if !progressed && !remaining.is_empty() {
-                for node in &remaining {
-                    let span = match self.node_kind(*node) {
+            if !self.two_phase_pending.is_empty() {
+                // Nested `#if`s encountered while declaring a selected branch
+                // joined the queue; settle them before giving up on deferred
+                // conditions.
+                self.two_phase_pending.extend(deferred);
+                continue;
+            }
+            if deferred.is_empty() {
+                break;
+            }
+            if !progressed {
+                for entry in &deferred {
+                    let span = match self.node_kind(entry.node) {
                         NodeKind::CompileTimeIf(statement) => self.span_of(statement.condition),
-                        _ => self.span_of(*node),
+                        _ => self.span_of(entry.node),
                     };
                     self.error(
                         span,
@@ -2856,8 +2864,8 @@ impl<'a> Sema<'a> {
                 }
                 break;
             }
+            self.two_phase_pending = deferred;
         }
-        let _ = future_locals;
     }
 
     /// Executes a compile-time assignment (`X = value` / `X += value`) in a
@@ -2951,13 +2959,19 @@ impl<'a> Sema<'a> {
         self.top_level_constants.clear();
         self.compile_time_phase_b = true;
         self.compile_time_deferred = false;
-        let blocks = self.top_level_blocks.clone();
-        for node in blocks {
-            let block = match self.node_kind(node) {
-                NodeKind::CompileTimeBlock(block) => block,
-                _ => continue,
-            };
-            self.execute_top_level_compile_time(node, block);
+        let units = self.top_level_units.clone();
+        for node in units {
+            match self.node_kind(node) {
+                NodeKind::CompileTimeBlock(block) => {
+                    self.execute_top_level_compile_time(node, block);
+                }
+                NodeKind::ExpressionStmt(expression)
+                    if matches!(self.node_kind(expression), NodeKind::CompileTimeExpr(_)) =>
+                {
+                    self.execute_top_level_compile_time_expression(node);
+                }
+                _ => {}
+            }
         }
         self.compile_time_phase_b = false;
         self.compile_time_deferred = false;
@@ -3068,6 +3082,26 @@ impl<'a> Sema<'a> {
         if matches!(flow, CompileTimeFlow::Break | CompileTimeFlow::Continue) {
             self.error(
                 self.span_of(node),
+                "'break'/'continue' outside a compile-time loop",
+            );
+        }
+    }
+
+    /// Executes a top-level `#( expression )` statement (§11.2, §11.4). Pure
+    /// non-API expressions are evaluated in the second pass after declarations
+    /// are resolved; compiler API calls run in the declaration pass.
+    fn execute_top_level_compile_time_expression(&mut self, statement: NodeId) {
+        if self.compile_time_aborted {
+            return;
+        }
+        if !self.compile_time_phase_b {
+            self.compile_time_deferred = false;
+        }
+        let flow = self.execute_compile_time_statements(&[statement], false);
+        self.compile_time_deferred = false;
+        if matches!(flow, CompileTimeFlow::Break | CompileTimeFlow::Continue) {
+            self.error(
+                self.span_of(statement),
                 "'break'/'continue' outside a compile-time loop",
             );
         }

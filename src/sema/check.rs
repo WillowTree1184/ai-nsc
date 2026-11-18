@@ -6053,7 +6053,10 @@ impl<'a> Sema<'a> {
             }
             NodeKind::ExpressionStmt(expression) => {
                 self.check_expr(expression, None);
-                if !matches!(self.node_kind(expression), NodeKind::Call(_)) {
+                if !matches!(
+                    self.node_kind(expression),
+                    NodeKind::Call(_) | NodeKind::CompileTimeExpr(_)
+                ) {
                     self.error(
                         self.span_of(node),
                         "only a function call may be used as a statement",

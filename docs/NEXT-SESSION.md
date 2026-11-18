@@ -5,8 +5,8 @@
 - Branch `main`; last feature commit `6b57c46` (Draft 1.152 lazy two-phase).
   `git status` is clean.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  — **336 tests green** (41 lib unit including the lexer longest-match test, 97 CLI,
-  2 codegen/LLVM, 1 MCJIT probe, 2 JIT compile-time evaluation, 181 end-to-end
+  — **338 tests green** (41 lib unit including the lexer longest-match test, 98 CLI,
+  2 codegen/LLVM, 1 MCJIT probe, 2 JIT compile-time evaluation, 182 end-to-end
   execution, 10 parser, 2 spec-example conformance). The spec-conformance tests
   read `Draft 1.152.md`: all 91 `novasharp` examples parse, and every whole-program
   example that passes semantic analysis is compiled end to end.
@@ -30,16 +30,18 @@
   (`Type.SizeOf`, `Compiler.Log*`/`Assert`, `Platform.Is`, `NOLAA.*`). Containers
   are intentionally not provided (§15.2 does not define them).
 - Docs: `docs/COVERAGE.md` maps every spec section to ✅/🟡/⛔ with evidence and
-  deliberate deviations; `docs/AUDIT.md` tracks the 130 reproduced defects (all
+  deliberate deviations; `docs/AUDIT.md` tracks the 131 reproduced defects (all
   fixed or marked partial with the fixing commit). Draft 1.152 changes are covered:
   `as` conversions, circular shifts, directional ranges, inferred `for` binding
   types, `@` markers, `for` without a binding, contextual keyword names.
 - Draft 1.152 changes: lazy two-phase `#if` evaluation (§11.7) is implemented
   (immutable `fixed` forward bindings, settlement rounds, locked branches,
   no-progress diagnostics; oscillation/fixed-point detection was removed by the
-  draft and is intentionally absent).
-- Remaining gaps: top-level `#()` startup statements and cross-module forward
-  immutable bindings are not executed/resolved yet; keyword shadowing that disables a keyword meaning
+  draft and is intentionally absent). Top-level `#()` statements execute in the
+  phase-A/phase-B ordering and forward bindings are shared across modules.
+  Residual limitation: non-API top-level `#()` expressions run in the second
+  pass rather than the startup pass.
+- Remaining gaps: keyword shadowing that disables a keyword meaning
   (§2.4/§6.4); compiler-defined platform extension names (§11.8.3 permits but
   does not require them, so only the standard names are matched). Compile-time
   API scoping, `Type.SizeOf` pointer width, accessor `this` rules and

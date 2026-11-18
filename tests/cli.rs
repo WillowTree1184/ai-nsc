@@ -2585,3 +2585,22 @@ fn compile_time_if_inside_a_block_must_settle_immediately() {
         "{stderr}"
     );
 }
+
+#[test]
+fn top_level_compile_time_expression_statements_are_accepted() {
+    let stderr = check_source_ok(
+        "\
+#(1 + 2);
+
+#if 1 == 1
+{
+}
+
+fixed Main(): integer(4)
+{
+    #(3 * 4);
+    return 0;
+}",
+    );
+    assert!(!stderr.contains("unexpected"), "{stderr}");
+}

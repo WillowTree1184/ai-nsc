@@ -2737,6 +2737,7 @@ impl<'a> Sema<'a> {
             self.loop_labels.clear();
             self.heap_units.clear();
             self.heap_unit_locals.clear();
+            self.early_dispose_warned.clear();
             self.push_scope();
             if environment {
                 // Captured names are visible inside the literal (§2.7.9).
@@ -4489,6 +4490,17 @@ impl<'a> Sema<'a> {
     fn check_symbol_expr(&mut self, node: NodeId, name: &str, symbol: Symbol) -> Option<TypeId> {
         match symbol {
             Symbol::Local(local) => {
+                if self.disposed_locals.contains(&local) && self.early_dispose_warned.insert(local)
+                {
+                    // Using a value after `dispose` is an early dispose (§12.2).
+                    let local_name = self
+                        .local_info(local)
+                        .map_or_else(|| name.to_string(), |info| info.name.clone());
+                    self.warn(
+                        self.span_of(node),
+                        format!("'{local_name}' is used after 'dispose' (early dispose)"),
+                    );
+                }
                 self.result.resolutions[node as usize] = Some(Resolution::Local(local));
                 self.local_info(local).map(|info| info.ty)
             }

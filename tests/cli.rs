@@ -840,3 +840,32 @@ fn never_disposed_heap_allocation_warns_without_failing() {
         "expected a never-disposed warning: {stderr}"
     );
 }
+
+#[test]
+fn use_after_dispose_warns_about_early_dispose() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-early-dispose-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(
+        &path,
+        "structure Node\n{\n    public Value: integer(4);\n}\n\nfixed Main(): integer(4)\n{\n    heap early: Node = Node();\n    early.Value = 2;\n    dispose(early);\n    return early.Value;\n}",
+    )
+    .expect("write program");
+    let output = ai_nsc()
+        .args(["check", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains("early dispose"),
+        "expected an early-dispose warning: {stderr}"
+    );
+}

@@ -944,6 +944,7 @@ pub fn analyze(
         constant_instantiations: HashMap::new(),
         heap_units: Vec::new(),
         heap_unit_locals: HashMap::new(),
+        early_dispose_warned: std::collections::HashSet::new(),
     };
     sema.run();
     sema.result.error_count = sema.engine.error_count();
@@ -996,6 +997,8 @@ pub(crate) struct Sema<'a> {
     pub(crate) heap_units: Vec<HeapUnit>,
     /// Index into `heap_units` for each heap local.
     pub(crate) heap_unit_locals: HashMap<u32, usize>,
+    /// Locals already reported for use-after-dispose (§12.2).
+    pub(crate) early_dispose_warned: std::collections::HashSet<u32>,
 }
 
 impl<'a> Sema<'a> {

@@ -5091,10 +5091,7 @@ impl<'a> Sema<'a> {
                 let ty = self.check_expr(unary.operand, expected)?;
                 if let Some(method) = self.find_operator(ty, ty, OperatorKind::Negate) {
                     let span = self.span_of(node);
-                    let Some(method) = self.specialize_operator(method, &[unary.operand], span)
-                    else {
-                        return None;
-                    };
+                    let method = self.specialize_operator(method, &[unary.operand], span)?;
                     self.result.resolutions[node as usize] = Some(Resolution::Operator { method });
                     return self.result.functions[method as usize]
                         .return_type

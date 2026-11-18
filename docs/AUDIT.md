@@ -267,3 +267,4 @@ report an error (§4.8).
 | 46 | HIGH | §5.6 | `for` over `IIterator`/`IIterable` targets missing | fixed (ea017f6: iterator/iterable traversal with Next()/Value/Null, accessor conversion, break/continue) |
 | 47 | MED | §15.2 | Built-In Library containers (array/list style iterables) absent | open |
 | 48 | MED | §9.1-§9.4 | Accessibility modifiers not enforced on member access | partial (bb38cab: fields, methods, constructors, accessors and static fields enforce public/private/protected; function-value access rights (§9.1) remain open) |
+| 49 | MED | §9.6 | `readonly` field assignment not enforced | fixed (d3942bf: assignment limited to constructors of the declaring/derived types) |

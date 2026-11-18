@@ -274,3 +274,4 @@ report an error (§4.8).
 | 53 | MED | §8.4 | Methods required a first by-reference this; extension functions without this rejected | fixed (b844817: this of target type detected anywhere, class targets without '&', extension-scoped functions registered; value-type targets still require '&') |
 | 54 | MED | §9.14 | `aligned(N)` validation and union offset semantics incomplete | fixed (01e1fa2: structure default alignment/packing, field overrides, union member offsets unadjusted, invalid targets diagnosed) |
 | 55 | MED | §9.5 | `scoped(...)` accessibility clipping unimplemented | fixed (eaedf73 type/operator targets; 46d31aa member-name targets with override and sealed semantics) |
+| 56 | MED | §5.3, §2.7.9 | Nested function definitions and '&function' pointers unsupported | fixed (4437802: nested functions as capturing literals bound to constants; function pointer address/deref calls) |

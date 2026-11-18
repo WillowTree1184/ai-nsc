@@ -164,6 +164,7 @@ impl<'a> Sema<'a> {
             generic_env: HashMap::new(),
             environment: false,
             captures: Vec::new(),
+            constant_values: HashMap::new(),
             locals: Vec::new(),
             span,
         });
@@ -543,10 +544,116 @@ impl<'a> Sema<'a> {
             generic_env: environment,
             environment: false,
             captures: Vec::new(),
+            constant_values: HashMap::new(),
             locals: Vec::new(),
             span: self.span_of(cloned),
         });
         self.function_instantiations.insert(key, index);
+        Some(index)
+    }
+
+    /// Instantiates a `#`-parameter template for one constant argument tuple
+    /// (§11.5). Parameter names bound to compile-time constants are recorded in
+    /// `constant_values` so compile-time expressions in the body can use them.
+    pub(crate) fn instantiate_constant_function(
+        &mut self,
+        template_index: u32,
+        constants: &[i128],
+        span: Span,
+    ) -> Option<u32> {
+        let (node, scope, decl_scope, name, exposed_symbol, generic_env, template_node) = {
+            let template = &self.result.functions[template_index as usize];
+            (
+                template.node,
+                template.scope.clone(),
+                template.decl_scope,
+                template.name.clone(),
+                template.exposed_symbol.clone(),
+                template.generic_env.clone(),
+                template.node,
+            )
+        };
+        let key = (template_node, constants.to_vec());
+        if let Some(existing) = self.constant_instantiations.get(&key) {
+            return Some(*existing);
+        }
+        let cloned = self.clone_declaration(node);
+        let NodeKind::Fixed(declaration) = self.node_kind(cloned).clone() else {
+            self.error(
+                span,
+                "internal error: constant function declaration not found",
+            );
+            return None;
+        };
+        let Some(ty_node) = declaration.ty else {
+            self.error(self.span_of(cloned), "a function requires a type");
+            return None;
+        };
+        let NodeKind::FunctionType(function) = self.node_kind(ty_node).clone() else {
+            self.error(self.span_of(cloned), "a function requires a function type");
+            return None;
+        };
+        let Some(Initializer::Block(body)) = declaration.init else {
+            self.error(self.span_of(cloned), "a function requires a body");
+            return None;
+        };
+        self.generic_env.push(generic_env.clone());
+        let resolved = self.resolve_parameters(&function).map(|parameters| {
+            let return_type = function.return_type.and_then(|ty| self.resolve_type(ty));
+            (parameters, return_type)
+        });
+        self.generic_env.pop();
+        let (resolved_parameters, return_type) = resolved?;
+        let mut constant_values = HashMap::new();
+        let mut constant_index = 0usize;
+        for parameter in &resolved_parameters {
+            if parameter.compile_time {
+                let Some(value) = constants.get(constant_index) else {
+                    self.error(span, "internal error: missing constant argument");
+                    return None;
+                };
+                constant_values.insert(parameter.name.clone(), *value);
+                constant_index += 1;
+            }
+        }
+        let mut spellings: Vec<String> = resolved_parameters
+            .iter()
+            .map(|parameter| self.spelling(parameter.ty))
+            .collect();
+        for value in constants {
+            spellings.push(format!("#{value}"));
+        }
+        let mangled = exposed_symbol
+            .clone()
+            .unwrap_or_else(|| mangle_function(&scope, &name, &spellings));
+        let index = self.result.functions.len() as u32;
+        self.result.functions.push(FunctionInfo {
+            name,
+            scope,
+            node: cloned,
+            body: Some(FunctionBody::Block(body)),
+            parameters: resolved_parameters,
+            method_of: None,
+            static_owner: None,
+            is_virtual: false,
+            is_override: false,
+            is_sealed: false,
+            is_abstract: false,
+            return_type,
+            mangled,
+            exposed_symbol,
+            generic_parameters: Vec::new(),
+            generic_arguments: Vec::new(),
+            template: Some(template_index),
+            decl_scope,
+            generic_env,
+            environment: false,
+            captures: Vec::new(),
+            constant_values,
+            locals: Vec::new(),
+            span: self.span_of(cloned),
+        });
+        self.constant_instantiations.insert(key, index);
         Some(index)
     }
 

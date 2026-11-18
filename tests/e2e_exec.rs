@@ -2668,3 +2668,35 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 31);
 }
+
+#[test]
+fn compile_time_constant_parameters_monomorphize() {
+    let source = "\
+fixed Apply(#value: integer(4)): integer(4)
+{
+    #{
+        return value + 1;
+    }
+}
+
+fixed Make(#count: integer(4)): integer(4)
+{
+    local buffer: array(count) integer(4);
+    buffer[count - 1] = count;
+    return buffer[count - 1];
+}
+
+fixed Scaled(#factor: integer(4), plain: integer(4)): integer(4)
+{
+    #{
+        return factor * plain;
+    }
+}
+
+fixed Main(): integer(4)
+{
+    return Apply(1) + Apply(5) + Make(6) + Scaled(2, 4);
+}";
+    // 2 + 6 + 6 + 8
+    assert_eq!(run_program(source), 22);
+}

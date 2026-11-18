@@ -797,6 +797,7 @@ impl<'a> Sema<'a> {
                 ty: parameter_type,
                 by_ref: parameter.by_ref,
                 default: parameter.default,
+                compile_time: parameter.compile_time,
             });
         }
         let return_type = function.return_type.and_then(|ty| self.resolve_type(ty));
@@ -837,6 +838,7 @@ impl<'a> Sema<'a> {
             generic_env,
             environment: false,
             captures: Vec::new(),
+            constant_values: HashMap::new(),
             locals: Vec::new(),
             span: self.span_of(node),
         });
@@ -1020,6 +1022,7 @@ impl<'a> Sema<'a> {
             generic_env,
             environment: false,
             captures: Vec::new(),
+            constant_values: HashMap::new(),
             locals: Vec::new(),
             span: self.span_of(node),
         });
@@ -1232,6 +1235,7 @@ impl<'a> Sema<'a> {
                             ty: return_ty,
                             by_ref: false,
                             default: None,
+                            compile_time: false,
                         });
                         setter = self.create_operator_method(
                             owner,
@@ -1334,6 +1338,7 @@ impl<'a> Sema<'a> {
                                 ty: *parameter,
                                 by_ref: false,
                                 default: None,
+                                compile_time: false,
                             })
                             .collect::<Vec<_>>(),
                         function_return,
@@ -1512,6 +1517,7 @@ impl<'a> Sema<'a> {
                 ty,
                 by_ref: false,
                 default: None,
+                compile_time: false,
             });
         }
         Some(resolved)
@@ -1535,6 +1541,7 @@ impl<'a> Sema<'a> {
                 ty: owner,
                 by_ref: true,
                 default: None,
+                compile_time: false,
             });
         }
         all_parameters.extend(parameters.iter().cloned());
@@ -1575,6 +1582,7 @@ impl<'a> Sema<'a> {
             generic_env,
             environment: false,
             captures: Vec::new(),
+            constant_values: HashMap::new(),
             locals: Vec::new(),
             span,
         });
@@ -1745,6 +1753,7 @@ impl<'a> Sema<'a> {
             ty: owner,
             by_ref: true,
             default: None,
+            compile_time: false,
         }];
         if !is_getter {
             parameters.push(ParameterInfo {
@@ -1752,6 +1761,7 @@ impl<'a> Sema<'a> {
                 ty,
                 by_ref: false,
                 default: None,
+                compile_time: false,
             });
         }
         let return_type = if is_getter { Some(ty) } else { None };
@@ -1792,6 +1802,7 @@ impl<'a> Sema<'a> {
             generic_env,
             environment: false,
             captures: Vec::new(),
+            constant_values: HashMap::new(),
             locals: Vec::new(),
             span,
         });
@@ -2128,6 +2139,7 @@ impl<'a> Sema<'a> {
             ty: pointer,
             by_ref: false,
             default: None,
+            compile_time: false,
         }];
         for (binding_name, binding_type_node) in bindings {
             let binding_type = self.resolve_type(binding_type_node)?;
@@ -2136,6 +2148,7 @@ impl<'a> Sema<'a> {
                 ty: binding_type,
                 by_ref: false,
                 default: None,
+                compile_time: false,
             });
         }
         Some(expanded)
@@ -2151,10 +2164,6 @@ impl<'a> Sema<'a> {
                 parameters.extend(expanded);
                 continue;
             }
-            if parameter.compile_time {
-                self.unsupported(parameter.span, "compile-time ('#') parameters");
-                return None;
-            }
             let Some(parameter_type_node) = parameter.ty else {
                 self.error(parameter.span, "parameter requires a type");
                 return None;
@@ -2169,6 +2178,7 @@ impl<'a> Sema<'a> {
                 ty: parameter_type,
                 by_ref: parameter.by_ref,
                 default: parameter.default,
+                compile_time: parameter.compile_time,
             });
         }
         Some(parameters)
@@ -2195,11 +2205,18 @@ impl<'a> Sema<'a> {
         let index = self.result.functions.len() as u32;
         let generic_env = self.captured_generic_env();
         let decl_scope = self.current_scope();
+        // Functions with `#` parameters are templates: only their
+        // specializations are checked and lowered (§11.5).
+        let is_constant_template = parameters.iter().any(|parameter| parameter.compile_time);
         self.result.functions.push(FunctionInfo {
             name: name.clone(),
             scope,
             node,
-            body: Some(FunctionBody::Block(body)),
+            body: if is_constant_template {
+                None
+            } else {
+                Some(FunctionBody::Block(body))
+            },
             parameters,
             method_of,
             static_owner: None,
@@ -2217,6 +2234,7 @@ impl<'a> Sema<'a> {
             generic_env,
             environment: false,
             captures: Vec::new(),
+            constant_values: HashMap::new(),
             locals: Vec::new(),
             span: self.span_of(node),
         });
@@ -2494,25 +2512,33 @@ impl<'a> Sema<'a> {
                     _ => None,
                 }
             }
-            NodeKind::Name(name) => match self.lookup(&name.name).cloned() {
-                Some(Symbol::Global(global)) => {
-                    let (fixed, init) = {
-                        let info = &self.result.globals[global as usize];
-                        (info.fixed, info.init)
-                    };
-                    if !fixed {
-                        return None;
-                    }
-                    let init = init?;
-                    match self.node_kind(init).clone() {
-                        NodeKind::BooleanLiteral(_) | NodeKind::Unary(_) | NodeKind::Binary(_) => {
-                            self.eval_compile_time_bool(init, depth + 1)
+            NodeKind::Name(name) => match self
+                .constant_env
+                .iter()
+                .rev()
+                .find_map(|environment| environment.get(&name.name).copied())
+            {
+                Some(value) => Some(value != 0),
+                None => match self.lookup(&name.name).cloned() {
+                    Some(Symbol::Global(global)) => {
+                        let (fixed, init) = {
+                            let info = &self.result.globals[global as usize];
+                            (info.fixed, info.init)
+                        };
+                        if !fixed {
+                            return None;
                         }
-                        _ => None,
+                        let init = init?;
+                        match self.node_kind(init).clone() {
+                            NodeKind::BooleanLiteral(_)
+                            | NodeKind::Unary(_)
+                            | NodeKind::Binary(_) => self.eval_compile_time_bool(init, depth + 1),
+                            _ => None,
+                        }
                     }
-                }
-                Some(Symbol::Local(_)) => None,
-                _ => None,
+                    Some(Symbol::Local(_)) => None,
+                    _ => None,
+                },
             },
             _ => None,
         }
@@ -2583,6 +2609,13 @@ impl<'a> Sema<'a> {
                 })
             }
             NodeKind::Name(name) => {
+                // Compile-time constant parameters are compile-time bindings
+                // (§11.5).
+                for environment in self.constant_env.iter().rev() {
+                    if let Some(value) = environment.get(&name.name) {
+                        return Some(*value);
+                    }
+                }
                 // Compile-time block locals act as constants (§11.4).
                 for scope in self.compile_time_constants.iter().rev() {
                     if let Some(value) = scope.get(&name.name) {
@@ -2697,6 +2730,7 @@ impl<'a> Sema<'a> {
             let static_owner = self.result.functions[current].static_owner;
             let environment = self.result.functions[current].environment;
             let captures = self.result.functions[current].captures.clone();
+            let constant_values = self.result.functions[current].constant_values.clone();
             self.current_function = Some(current as u32);
             self.loop_labels.clear();
             self.push_scope();
@@ -2706,6 +2740,9 @@ impl<'a> Sema<'a> {
                 for capture in &captures {
                     self.declare(capture.name.clone(), Symbol::Local(capture.local), span);
                 }
+            }
+            if !constant_values.is_empty() {
+                self.constant_env.push(constant_values.clone());
             }
             self.generic_env.push(generic_env);
             // Static fields of the owning class are in scope in a static method
@@ -2751,6 +2788,9 @@ impl<'a> Sema<'a> {
                     self.check_expr(expression, None);
                 }
                 FunctionBody::BackingGet { .. } | FunctionBody::BackingSet { .. } => {}
+            }
+            if !constant_values.is_empty() {
+                self.constant_env.pop();
             }
             if environment {
                 self.pop_scope();
@@ -5504,6 +5544,7 @@ impl<'a> Sema<'a> {
                 ty,
                 by_ref: parameter.by_ref,
                 default: None,
+                compile_time: false,
             });
         }
         let return_type = literal.return_type.and_then(|ty| self.resolve_type(ty));
@@ -5604,6 +5645,7 @@ impl<'a> Sema<'a> {
             generic_env,
             environment: true,
             captures,
+            constant_values: HashMap::new(),
             locals: capture_locals,
             span: span_of_function,
         });
@@ -6732,8 +6774,58 @@ impl<'a> Sema<'a> {
         arguments: &[Argument],
     ) -> Option<TypeId> {
         let span = self.span_of(node);
-        let mut exact = Vec::new();
+        // Functions with `#` parameters are templates: specialize them per
+        // constant argument tuple (§11.5).
+        let mut candidates = Vec::with_capacity(overloads.len());
+        let mut saw_constant_template = false;
         for &candidate in overloads {
+            let function = &self.result.functions[candidate as usize];
+            if function.is_template() && function.generic_parameters.is_empty() {
+                saw_constant_template = true;
+                let parameters = function.parameters.clone();
+                self.suppress_errors += 1;
+                let mapped = self.match_call_arguments(&parameters, arguments, span);
+                let mut constants = Vec::new();
+                let mut ok = mapped.is_some();
+                if let Some(mapped) = &mapped {
+                    for (parameter, value) in parameters.iter().zip(mapped.iter()) {
+                        if !parameter.compile_time {
+                            continue;
+                        }
+                        if !self.is_compile_time_constant(*value) {
+                            ok = false;
+                            break;
+                        }
+                        match self.eval_const_int(*value) {
+                            Some(constant) => constants.push(constant),
+                            None => {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+                self.suppress_errors -= 1;
+                if ok {
+                    if let Some(instance) =
+                        self.instantiate_constant_function(candidate, &constants, span)
+                    {
+                        candidates.push(instance);
+                    }
+                }
+            } else {
+                candidates.push(candidate);
+            }
+        }
+        if candidates.is_empty() && saw_constant_template && self.suppress_errors == 0 {
+            self.error(
+                span,
+                "the arguments of a compile-time ('#') parameter must be compile-time constants",
+            );
+            return None;
+        }
+        let mut exact = Vec::new();
+        for &candidate in &candidates {
             let parameters = self.result.functions[candidate as usize].parameters.clone();
             self.suppress_errors += 1;
             let mapped = self.match_call_arguments(&parameters, arguments, span);
@@ -6756,7 +6848,7 @@ impl<'a> Sema<'a> {
             0 => {
                 // Second phase: implicit conversions (enumeration -> underlying).
                 let mut convertible = Vec::new();
-                for &candidate in overloads {
+                for &candidate in &candidates {
                     let parameters = self.result.functions[candidate as usize].parameters.clone();
                     self.suppress_errors += 1;
                     let mapped = self.match_call_arguments(&parameters, arguments, span);
@@ -6781,8 +6873,8 @@ impl<'a> Sema<'a> {
                 } else if convertible.is_empty() {
                     // Re-run the mapping without suppression on the single
                     // overload so malformed argument lists are reported precisely.
-                    if overloads.len() == 1 {
-                        let parameters = self.result.functions[overloads[0] as usize]
+                    if candidates.len() == 1 {
+                        let parameters = self.result.functions[candidates[0] as usize]
                             .parameters
                             .clone();
                         self.match_call_arguments(&parameters, arguments, span);

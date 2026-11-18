@@ -680,19 +680,6 @@ fixed Main(): integer(4)
 }
 
 #[test]
-fn compile_time_parameters_are_diagnosed() {
-    let stderr = check_source(
-        "\
-fixed Repeat(# count: integer(4)): integer(4)
-{
-    return count;
-}
-fixed Main(): integer(4) { return 0; }",
-    );
-    assert!(stderr.contains("compile-time ('#') parameters"), "{stderr}");
-}
-
-#[test]
 fn compile_time_assertion_failure_is_reported() {
     let stderr = check_source(
         "\
@@ -762,4 +749,25 @@ fixed Main(): integer(4)
 }",
     );
     assert!(stderr.contains("missing argument"), "{stderr}");
+}
+
+#[test]
+fn compile_time_parameter_requires_a_constant_argument() {
+    let stderr = check_source(
+        "\
+fixed Runtime(): integer(4) { return 7; }
+
+fixed Apply(#value: integer(4)): integer(4)
+{
+    #{
+        return value + 1;
+    }
+}
+
+fixed Main(): integer(4)
+{
+    return Apply(Runtime());
+}",
+    );
+    assert!(stderr.contains("compile-time constants"), "{stderr}");
 }

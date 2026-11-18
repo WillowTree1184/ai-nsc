@@ -273,6 +273,8 @@ pub struct ParameterInfo {
     pub by_ref: bool,
     /// Default-value expression used when a call omits the argument (§8.2).
     pub default: Option<NodeId>,
+    /// Whether the argument must be a compile-time constant (§11.5).
+    pub compile_time: bool,
 }
 
 /// A function definition (`fixed Name : function(...) T { ... }`, §8.1).
@@ -323,6 +325,9 @@ pub struct FunctionInfo {
     pub environment: bool,
     /// Variables captured from the enclosing function (function literals).
     pub captures: Vec<CaptureInfo>,
+    /// Compile-time constants bound to `#` parameters of this specialization
+    /// (§11.5).
+    pub constant_values: HashMap<String, i128>,
     /// Locals declared in the body, in declaration order.
     pub locals: Vec<LocalInfo>,
     /// Span of the declaration, for diagnostics.
@@ -335,6 +340,11 @@ impl FunctionInfo {
     #[must_use]
     pub fn is_template(&self) -> bool {
         !self.generic_parameters.is_empty()
+            || (self.template.is_none()
+                && self
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.compile_time))
     }
 }
 
@@ -913,6 +923,8 @@ pub fn analyze(
         compile_time_constants: Vec::new(),
         initializer_depth: 0,
         bodies_checked: 0,
+        constant_env: Vec::new(),
+        constant_instantiations: HashMap::new(),
     };
     sema.run();
     sema.result.error_count = sema.engine.error_count();
@@ -956,6 +968,11 @@ pub(crate) struct Sema<'a> {
     /// Number of function bodies already type-checked, so later passes can pick
     /// up literals discovered in initializers (§2.7.9).
     pub(crate) bodies_checked: usize,
+    /// Compile-time constant bindings of `#` parameters (§11.5), innermost last.
+    pub(crate) constant_env: Vec<HashMap<String, i128>>,
+    /// Specializations of constant-parameter templates, keyed by declaration and
+    /// constant argument tuple.
+    pub(crate) constant_instantiations: HashMap<(NodeId, Vec<i128>), u32>,
 }
 
 impl<'a> Sema<'a> {

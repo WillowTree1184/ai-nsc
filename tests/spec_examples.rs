@@ -91,3 +91,65 @@ fn every_spec_example_parses() {
         failures.join("\n\n")
     );
 }
+
+/// Whole-program spec examples that pass semantic analysis are compiled end to
+/// end and must produce an executable without diagnostics.
+#[test]
+fn sema_clean_spec_programs_compile() {
+    use ainsc::diagnostics::DiagnosticEngine;
+    use ainsc::sema;
+    use std::process::Command;
+
+    let spec = std::fs::read_to_string(spec_path()).expect("read the language specification");
+    let examples = nova_examples(&spec);
+    let directory =
+        std::env::temp_dir().join(format!("ainsc-spec-programs-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+
+    let mut checked = 0usize;
+    let mut failures = Vec::new();
+    for (line, source) in &examples {
+        if !source.contains("fixed Main") {
+            continue;
+        }
+        let mut sources = SourceManager::new();
+        let file = sources.add_buffer(format!("spec-{line}.ns"), source.clone());
+        let lexed = lexer::tokenize(file, source);
+        if !lexed.errors.is_empty() {
+            continue;
+        }
+        let mut parsed = parser::parse(file, source, &lexed.tokens);
+        if !parsed.errors.is_empty() {
+            continue;
+        }
+        let mut diagnostics = DiagnosticEngine::new();
+        let result = sema::analyze(&mut parsed.ast, &sources, &mut diagnostics);
+        if result.error_count > 0 {
+            // Examples with elided bodies ("// ...") or demonstration-only code.
+            continue;
+        }
+        let path = directory.join(format!("spec-{line}.ns"));
+        std::fs::write(&path, source).expect("write spec program");
+        let output = Command::new(env!("CARGO_BIN_EXE_ai-nsc"))
+            .args(["build", path.to_str().expect("utf-8 path")])
+            .output()
+            .expect("run ai-nsc");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !output.status.success() || stderr.contains("error") {
+            failures.push(format!("spec line {line}: {stderr}"));
+        }
+        checked += 1;
+    }
+    let _ = std::fs::remove_dir_all(&directory);
+
+    assert!(
+        checked >= 15,
+        "expected at least 15 sema-clean whole-program examples, found {checked}"
+    );
+    assert!(
+        failures.is_empty(),
+        "{} sema-clean spec programs failed to compile:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}

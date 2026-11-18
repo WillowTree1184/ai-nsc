@@ -57,7 +57,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §3.7.6 unions: overlap layout, member offsets via `aligned`, member construction | ✅ | union e2e tests |
 | §3.7.7 base lists: one class + interfaces, generic bases | ✅ | generics/bases tests |
 | §3.8.1 fields, initializers (type-checked in declaring scope), readonly, accessibility | ✅ | field/initializer/readonly/accessibility tests |
-| §3.8.2 accessors: extension/interface accessors, free accessors at module/function scope, backing get/set, expression/block bodies, static accessor alias | ✅ | accessor e2e tests; free accessors with default backing or explicit member function constants |
+| §3.8.2 accessors: extension/interface accessors, free accessors at module/function scope, backing get/set, expression/block bodies, static accessor alias | ✅ | accessor e2e tests; free accessors at module/function scope (local backings by reference) |
 | §3.8.3 extensions: members, extension-scoped functions, generic extension targets | ✅ | extension e2e tests |
 | §4.1–4.4 value/parenthesized/cast/access expressions | ✅ | parser + e2e |
 | §4.4.3 index access (arrays, VLA, indexer operators) | ✅ | bounds check raises `OutOfRangeException` |

@@ -257,3 +257,4 @@ report an error (§4.8).
 | 36 | HIGH | §2.7.9, §4.5 | Function values, function literals and indirect calls missing | fixed (648dbc3 named-function values/literals/indirect calls; 242b0ad capturing closures: closure objects with code+environment, by-value capture, escaping and nested closures) |
 | 37 | HIGH | §4.5, §8.2 | Named arguments and default parameter values missing | fixed (12e923c: position/name mapping, defaults, diagnostics, works for functions/methods/static methods/constructors) |
 | 38 | MED | §9.7, §4.3 | `implicitable` conversion operators were never invoked implicitly | fixed (dc370e6: implicit invocation in assignments/initializers/arguments/returns; explicit cast still required for non-implicitable operators) |
+| 39 | MED | §15.2 | Built-in exceptions lacked `InnerException` and constructors | fixed (fb5529f: inherited `InnerException: Optional<Exception>`, Null default, `Exception(innerException:)` constructor, statics initialized) |

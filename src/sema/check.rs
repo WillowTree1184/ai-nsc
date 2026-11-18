@@ -812,9 +812,13 @@ impl<'a> Sema<'a> {
                         let is_function = declaration.ty.is_some_and(|ty| {
                             matches!(self.node_kind(ty), NodeKind::FunctionType(_))
                         });
-                        if is_function {
+                        let has_block_body =
+                            matches!(declaration.init, Some(Initializer::Block(_)));
+                        if is_function && has_block_body {
                             self.create_static_method(member, &declaration, target);
                         } else {
+                            // Static function-valued constants use an expression
+                            // initializer (e.g. a function literal) (§9.15).
                             self.create_static_constant(member, &declaration, target);
                         }
                     } else {

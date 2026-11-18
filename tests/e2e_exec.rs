@@ -3930,3 +3930,32 @@ fixed Main(): integer(4)
     // 7 + 7 + 107 + 1 + 2
     assert_eq!(run_program(source), 124);
 }
+
+#[test]
+fn static_function_valued_constants_are_values() {
+    let source = "\
+class Registry
+{
+    extension
+    {
+        public static fixed Doubler: function(value: integer(4)) integer(4) = (value: integer(4)) integer(4) => value * 2;
+
+        public static fixed Triple(value: integer(4)): integer(4)
+        {
+            return value * 3;
+        }
+    }
+}
+
+fixed Apply(operation: function(value: integer(4)) integer(4), value: integer(4)): integer(4)
+{
+    return operation(value);
+}
+
+fixed Main(): integer(4)
+{
+    return Registry.Doubler(3) + Registry.Triple(2) + Apply(Registry.Doubler, 5);
+}";
+    // 6 + 6 + 10
+    assert_eq!(run_program(source), 22);
+}

@@ -299,3 +299,4 @@ report an error (§4.8).
 | 78 | LOW | §3.8.3 | Array target bindings accepted non-cardinal types | fixed (ba3d59c: cardinal-only validation) |
 | 79 | MED | §5.5 | Bodyless `linkable` external symbols unsupported; linkable symbol literals kept their quotes | fixed (2478833: external function declarations, decoded symbol names, libc `abs` e2e) |
 | 80 | MED | §3.7.3 | Interface inheritance (interface extends interface) unsupported | fixed (9e12cb9: base interfaces, flattened method lists, transitive class expansion, deferred implementation verification, receiver conversions) |
+| 81 | MED | §9.15 | Static function-valued constants rejected ('static method requires a body') | fixed (e1815d6: expression-initialized static function constants as values, callable and passable) |

@@ -2244,3 +2244,30 @@ fixed Main(): integer(4)
         "stdout: {stdout}"
     );
 }
+
+#[test]
+fn by_reference_operator_operands_must_be_addressable() {
+    let stderr = check_source(
+        "\
+structure V
+{
+    public X: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &V, x: integer(4)) { this.X = x; }
+        operator +(a: &V, b: &V): V { return V(a.X + b.X); }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    return V(1) + V(2) + 3;
+}",
+    );
+    assert!(
+        stderr.contains("requires an addressable operand"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("must not be by-reference"), "{stderr}");
+}

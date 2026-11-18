@@ -2330,10 +2330,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         // A user-defined `operator ??` produces the decision value; otherwise the
         // operand itself is the decision.
         let value = match info.operator {
-            Some(method) => {
-                let operand = self.gen_expr(coalesce.value)?;
-                self.gen_operator_call(method, vec![operand])?
-            }
+            Some(method) => self.gen_operator_call_nodes(method, &[coalesce.value])?,
             None => self.gen_expr(coalesce.value)?,
         };
         let decision_slot = self
@@ -3085,6 +3082,18 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 }
             };
             let target_type = self.type_of(statement.target);
+            if let Some(method) = self.sema.compound_operators.get(&node).copied() {
+                if self.sema.functions[method as usize]
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.by_ref)
+                {
+                    return Err(
+                        "a by-reference operator cannot implement an accessor compound assignment"
+                            .to_string(),
+                    );
+                }
+            }
             let result = if let Some(method) = self.sema.compound_operators.get(&node).copied() {
                 self.gen_operator_call(method, vec![current, value])?
             } else {
@@ -3098,6 +3107,20 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .ok_or_else(|| "assignment target is not addressable".to_string())?;
         let target_type = self.type_of(statement.target);
         let llvm_type = self.llvm_type(target_type)?;
+        if let Some(method) = self.sema.compound_operators.get(&node).copied() {
+            if self.sema.functions[method as usize]
+                .parameters
+                .iter()
+                .any(|parameter| parameter.by_ref)
+            {
+                let result =
+                    self.gen_operator_call_nodes(method, &[statement.target, statement.value])?;
+                self.builder
+                    .build_store(pointer, result)
+                    .map_err(|error| format!("cannot assign: {error}"))?;
+                return Ok(());
+            }
+        }
         // The RHS is evaluated before the current value is read (§5.7).
         let value = self.gen_coerced_expr(statement.value)?;
         let current = self
@@ -5025,12 +5048,54 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         method: u32,
         arguments: Vec<BasicValueEnum<'ctx>>,
     ) -> Result<BasicValueEnum<'ctx>, String> {
+        if self.sema.functions[method as usize]
+            .parameters
+            .iter()
+            .any(|parameter| parameter.by_ref)
+        {
+            return Err(
+                "a by-reference operator parameter requires addressable operands in this context"
+                    .to_string(),
+            );
+        }
+        let arguments = arguments.into_iter().map(Into::into).collect();
+        self.gen_operator_call_values(method, arguments)
+    }
+
+    /// Calls an operator passing operand expressions so that by-reference
+    /// parameters receive the operand address (§4.9, §8.3).
+    fn gen_operator_call_nodes(
+        &mut self,
+        method: u32,
+        operands: &[NodeId],
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let parameters = self.sema.functions[method as usize].parameters.clone();
+        if parameters.len() != operands.len() {
+            return Err("operator operand count mismatch".to_string());
+        }
+        let mut arguments = Vec::with_capacity(operands.len());
+        for (parameter, operand) in parameters.iter().zip(operands.iter()) {
+            if parameter.by_ref {
+                let address = self.gen_lvalue(*operand)?.ok_or_else(|| {
+                    "a by-reference operator parameter requires an addressable operand".to_string()
+                })?;
+                arguments.push(address.into());
+            } else {
+                arguments.push(self.gen_coerced_expr(*operand)?.into());
+            }
+        }
+        self.gen_operator_call_values(method, arguments)
+    }
+
+    fn gen_operator_call_values(
+        &mut self,
+        method: u32,
+        arguments: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>>,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
         let function = *self
             .functions
             .get(&method)
             .ok_or_else(|| "missing operator implementation".to_string())?;
-        let arguments: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
-            arguments.into_iter().map(Into::into).collect();
         let call = self
             .builder
             .build_call(function, &arguments, "operator")
@@ -6581,8 +6646,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
     ) -> Result<BasicValueEnum<'ctx>, String> {
         if let Some(Resolution::Operator { method }) = self.sema.resolutions[node as usize].clone()
         {
-            let operand = self.gen_expr(unary.operand)?;
-            return self.gen_operator_call(method, vec![operand]);
+            return self.gen_operator_call_nodes(method, &[unary.operand]);
         }
         self.gen_unary_expr_impl(node, unary)
     }
@@ -6673,14 +6737,10 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
     ) -> Result<BasicValueEnum<'ctx>, String> {
         match self.sema.resolutions[node as usize].clone() {
             Some(Resolution::Operator { method }) => {
-                let left = self.gen_expr(binary.left)?;
-                let right = self.gen_expr(binary.right)?;
-                return self.gen_operator_call(method, vec![left, right]);
+                return self.gen_operator_call_nodes(method, &[binary.left, binary.right]);
             }
             Some(Resolution::DerivedNotEqual { method }) => {
-                let left = self.gen_expr(binary.left)?;
-                let right = self.gen_expr(binary.right)?;
-                let result = self.gen_operator_call(method, vec![left, right])?;
+                let result = self.gen_operator_call_nodes(method, &[binary.left, binary.right])?;
                 return self.negate_boolean(result);
             }
             Some(Resolution::DerivedComparison { ordering, equality }) => {

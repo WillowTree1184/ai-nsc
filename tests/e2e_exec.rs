@@ -4688,3 +4688,61 @@ fixed Main(): integer(4)
     // 1 + 2 + 3
     assert_eq!(run_program(source), 6);
 }
+
+#[test]
+fn by_reference_operator_parameters_receive_operand_addresses() {
+    // §4.9 allows `&` parameters; operands must be addressable and mutations are
+    // visible in the caller's operand.
+    let source = "\
+structure V
+{
+    public X: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &V, x: integer(4)) { this.X = x; }
+        operator +(a: &V, b: &V): V
+        {
+            a.X = a.X + b.X;
+            return V(a.X);
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local a = V(1);
+    local b = V(2);
+    local c = a + b;
+    return a.X * 10 + c.X;   // 33
+}";
+    assert_eq!(run_program(source), 33);
+}
+
+#[test]
+fn compound_assignment_uses_by_reference_operators() {
+    let source = "\
+structure V
+{
+    public X: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &V, x: integer(4)) { this.X = x; }
+        operator +(a: &V, b: &V): V
+        {
+            a.X = a.X + b.X;
+            return V(a.X);
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local a = V(1);
+    local b = V(2);
+    a += b;
+    return a.X;   // 3
+}";
+    assert_eq!(run_program(source), 3);
+}

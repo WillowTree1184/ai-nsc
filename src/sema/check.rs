@@ -2106,13 +2106,6 @@ impl<'a> Sema<'a> {
                 self.error(parameter.span, "operator parameters require a type");
                 return None;
             };
-            if parameter.by_ref {
-                self.error(
-                    parameter.span,
-                    "operator parameters must not be by-reference",
-                );
-                return None;
-            }
             let ty = self.resolve_type(parameter_type_node)?;
             let name = parameter
                 .name
@@ -2125,7 +2118,7 @@ impl<'a> Sema<'a> {
             resolved.push(ParameterInfo {
                 name,
                 ty,
-                by_ref: false,
+                by_ref: parameter.by_ref,
                 default: None,
                 compile_time: false,
             });
@@ -8778,7 +8771,34 @@ impl<'a> Sema<'a> {
 
     /// Specializes a constant-parameter operator for the given operand
     /// expressions (§11.5); non-template operators are returned unchanged.
+    /// Whether an expression can have its address taken (and therefore be
+    /// passed to a by-reference parameter, §8.3).
+    fn is_addressable(&self, node: NodeId) -> bool {
+        matches!(
+            self.node_kind(node),
+            NodeKind::Name(_)
+                | NodeKind::This
+                | NodeKind::MemberAccess(_)
+                | NodeKind::PointerMemberAccess(_)
+                | NodeKind::Index(_)
+        ) || matches!(
+            self.node_kind(node),
+            NodeKind::Unary(inner) if inner.op == UnaryOp::Dereference
+        )
+    }
+
     fn specialize_operator(&mut self, method: u32, operands: &[NodeId], span: Span) -> Option<u32> {
+        // By-reference operator parameters require addressable operands (§8.3).
+        let parameters = self.result.functions[method as usize].parameters.clone();
+        for (parameter, operand) in parameters.iter().zip(operands.iter()) {
+            if parameter.by_ref && !self.is_addressable(*operand) {
+                self.error(
+                    span,
+                    "a by-reference operator parameter requires an addressable operand (§4.9)",
+                );
+                return None;
+            }
+        }
         let is_template = {
             let function = &self.result.functions[method as usize];
             function.template.is_none()

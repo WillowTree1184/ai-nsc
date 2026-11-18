@@ -311,3 +311,4 @@ report an error (§4.8).
 | 90 | MED | §2.7.1, §3.2 | Minimum integer literal rejected; NaN float-to-integer cast produced poison | fixed (1e12fa6: minimum-literal typing under negation, deterministic NaN conversion) |
 | 91 | MED | §4.9.24, §4.9.25 | Logical operators rejected implicitly boolean-convertible operands | fixed (59fcfea: implicitable conversion recorded and applied, short-circuit preserved) |
 | 92 | MED | §4.9.27 | Conditional expression rejected valid base/derived branch orders | fixed (eff0f8c: symmetric common-type computation, context type precedence, branch coercions) |
+| 93 | MED | §3.6.1 | Nested array spellings interned as distinct types | fixed (035ef15: array interning flattens nested dimensions; literals/declarations unify) |

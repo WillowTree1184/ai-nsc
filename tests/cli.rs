@@ -2530,3 +2530,58 @@ fixed Main(): integer(4)
         "{descending}"
     );
 }
+
+#[test]
+fn lazy_two_phase_rejects_local_forward_dependencies() {
+    let stderr = check_source(
+        "\
+#if Enabled
+{
+}
+
+#{
+    local Enabled: boolean = true;
+}",
+    );
+    assert!(
+        stderr.contains("'local' 'Enabled' may not be a forward dependency"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn lazy_two_phase_reports_mutual_forward_dependencies() {
+    let stderr = check_source(
+        "\
+#if A
+{
+    #{ fixed B: boolean = true; }
+}
+
+#if B
+{
+    #{ fixed A: boolean = true; }
+}",
+    );
+    assert!(stderr.contains("cannot make progress"), "{stderr}");
+}
+
+#[test]
+fn compile_time_if_inside_a_block_must_settle_immediately() {
+    let stderr = check_source(
+        "\
+#{
+    #if Later
+    {
+    }
+}
+
+#{
+    fixed Later: boolean = true;
+}",
+    );
+    assert!(
+        stderr.contains("'#if' condition must be a compile-time constant"),
+        "{stderr}"
+    );
+}

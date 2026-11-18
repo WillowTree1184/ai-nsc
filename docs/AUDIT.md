@@ -1,7 +1,7 @@
 # Spec conformance audit — defect register
 
 Working list of reproduced conformance defects against
-`docs/grammar/Draft 1.151.md`. The audit was a read-only review of the compiler at
+`docs/grammar/Draft 1.152.md`. The audit was a read-only review of the compiler at
 commit `51bd259` (the commit before generics landed): each item was found by reading
 the implementation against the specification and then reproducing it by compiling
 small `.ns` programs. Rows marked `fixed (a5cc9cf)` were re-checked against their
@@ -348,3 +348,4 @@ report an error (§4.8).
 | 127 | MED | §5.5/§11.4 | External `linkable` calls could not execute at compile time and compile-time loops had an artificial iteration cap | fixed (host target: JIT trampoline executes external symbols such as printf at compile time via the host C library; fixed constant calls are cached; cross targets keep the compile-time-library diagnostic; iteration caps removed so an intentional `#{ while true { ... } }` is genuinely nonterminating per the specification) |
 | 128 | MED | §1/§5.4 | UEFI was not a build target | fixed (x86_64 UEFI builds a freestanding PE32+ EFI application: Windows-MSVC COFF backend workaround, generated efi_main thunk, lld-link EFI subsystem, no host libc; platform DefaultAllocator is absent so allocators are the developer's responsibility; qemu+OVMF boot test) |
 | 129 | HIGH | §4.3/§4.9/§5.9.5 | Draft 1.151 changed `Cast<T>(x)` to `x as T`, added circular shift operators and directional range operators, and allowed inferred `for` binding types | fixed (lexer/parser/AST/sema/codegen: `as` at the `is` precedence, `<<<`/`>>>`/`<<<=`/`>>>=` with width-modulo rotation, `..<`/`..<=`/`..>`/`..>=` with direction-specific defaults and conditions, inferred array/iterator/range binding types; legacy `Cast` kept as a compatibility extension) |
+| 130 | HIGH | §11.2/§11.4/§11.7 | Draft 1.152 replaced the fixed-point/oscillation two-phase model of 1.151 with lazy two-phase evaluation (immutable forward bindings only, settlement rounds, no candidate buffering) | fixed (top-level/module `#if` deferral when a condition references a `fixed` constant produced by a later `#{}`; unconditional `#{}` startup execution; dependency-round settlement that locks each branch once and executes its `#{}`; `local`/mutable forward dependencies diagnosed; mutual dependencies report no-progress; boolean `fixed` constants in `#{}` supported; compile-time errors still terminate immediately) |

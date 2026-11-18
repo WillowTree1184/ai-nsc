@@ -5,10 +5,10 @@
 - Branch `main`; last feature commit `5425cd3` (trial Draft 1.151 adaptation).
   `git status` is clean.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  — **332 tests green** (40 lib unit including 4 AST-clone tests, 94 CLI,
+  — **336 tests green** (41 lib unit including the lexer longest-match test, 97 CLI,
   2 codegen/LLVM, 1 MCJIT probe, 2 JIT compile-time evaluation, 181 end-to-end
   execution, 10 parser, 2 spec-example conformance). The spec-conformance tests
-  read `Draft 1.151.md`: all 91 `novasharp` examples parse, and every whole-program
+  read `Draft 1.152.md`: all 91 `novasharp` examples parse, and every whole-program
   example that passes semantic analysis is compiled end to end.
 - Targets: x86_64/aarch64/riscv64; **i686** build+run on x86_64 hosts (verified
   end to end) and **armv7** cross-linked with `--sysroot` + lld and executed under
@@ -31,11 +31,15 @@
   are intentionally not provided (§15.2 does not define them).
 - Docs: `docs/COVERAGE.md` maps every spec section to ✅/🟡/⛔ with evidence and
   deliberate deviations; `docs/AUDIT.md` tracks the 129 reproduced defects (all
-  fixed or marked partial with the fixing commit). Draft 1.151 changes are covered:
+  fixed or marked partial with the fixing commit). Draft 1.152 changes are covered:
   `as` conversions, circular shifts, directional ranges, inferred `for` binding
   types, `@` markers, `for` without a binding, contextual keyword names.
-- Draft 1.151 remaining gaps: two-phase conditional compilation (§11.7 candidate
-  rounds/fixed point) is not implemented; keyword shadowing that disables a keyword meaning
+- Draft 1.152 changes: lazy two-phase `#if` evaluation (§11.7) is implemented
+  (immutable `fixed` forward bindings, settlement rounds, locked branches,
+  no-progress diagnostics; oscillation/fixed-point detection was removed by the
+  draft and is intentionally absent).
+- Remaining gaps: top-level `#()` startup statements and cross-module forward
+  immutable bindings are not executed/resolved yet; keyword shadowing that disables a keyword meaning
   (§2.4/§6.4); compiler-defined platform extension names (§11.8.3 permits but
   does not require them, so only the standard names are matched). Compile-time
   API scoping, `Type.SizeOf` pointer width, accessor `this` rules and

@@ -4820,3 +4820,22 @@ fixed Main(): integer(4)
     // 1 + 3 + 4 + 2 + 1 + 3
     assert_eq!(run_program(source), 14);
 }
+
+#[test]
+fn lazy_two_phase_forward_fixed_constants_work() {
+    let source = "\
+#if Enabled
+{
+    fixed Value: integer(4) = 42;
+}
+
+#{
+    fixed Enabled: boolean = true;
+}
+
+fixed Main(): integer(4)
+{
+    return Value;
+}";
+    assert_eq!(run_program(source), 42);
+}

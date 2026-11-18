@@ -1593,7 +1593,7 @@ impl<'a> Sema<'a> {
         // Pass 1: declare modules and named types so that signatures can refer
         // to them regardless of declaration order (§6.3).
         let roots = self.ast.roots.clone();
-        self.declare_types(&roots);
+        self.declare_types(&roots, true);
 
         // Pass 2: resolve field types, layouts, enumeration values and
         // function/global signatures.
@@ -2474,7 +2474,31 @@ impl<'a> Sema<'a> {
 
     /// Pass 1: walk the declaration structure creating module scopes and named
     /// type stubs.
-    fn declare_types(&mut self, nodes: &[NodeId]) {
+    fn declare_types(&mut self, nodes: &[NodeId], top_level: bool) {
+        // §11.7: when a top-level `#if` depends on a not-yet-produced immutable
+        // compile-time binding (`fixed` constant in a later `#{}`), declaration
+        // selection is deferred to a lazy settlement phase instead of failing.
+        let (future_fixed, future_locals) = if top_level {
+            self.collect_future_compile_time_bindings(nodes)
+        } else {
+            (
+                std::collections::HashSet::new(),
+                std::collections::HashSet::new(),
+            )
+        };
+        let lazy = top_level
+            && nodes.iter().any(|&node| {
+                let NodeKind::CompileTimeIf(statement) = self.node_kind(node) else {
+                    return false;
+                };
+                let (fixed, local) = self.condition_forward_bindings(
+                    statement.condition,
+                    &future_fixed,
+                    &future_locals,
+                );
+                !fixed.is_empty() || !local.is_empty()
+            });
+        let mut pending = Vec::new();
         for &node in nodes {
             match self.node_kind(node) {
                 NodeKind::Module(declaration) => {
@@ -2487,7 +2511,7 @@ impl<'a> Sema<'a> {
                     self.scope_stack.push(module_scope);
                     self.scope_path.push(declaration.name.clone());
                     let members = declaration.members.clone();
-                    self.declare_types(&members);
+                    self.declare_types(&members, top_level);
                     self.scope_path.pop();
                     self.scope_stack.pop();
                 }
@@ -2512,7 +2536,38 @@ impl<'a> Sema<'a> {
                     self.declare_named_type(node, declaration.name.clone(), TypeDefKind::Union)
                 }
                 NodeKind::CompileTimeIf(statement) => {
+                    if lazy {
+                        // `local` bindings are never valid forward dependencies,
+                        // even in lazy mode (§11.7).
+                        let (_, local_dependencies) = self.condition_forward_bindings(
+                            statement.condition,
+                            &future_fixed,
+                            &future_locals,
+                        );
+                        if !local_dependencies.is_empty() {
+                            self.error(
+                                self.span_of(statement.condition),
+                                format!(
+                                    "the compile-time 'local' '{}' may not be a forward dependency (§11.7)",
+                                    local_dependencies[0]
+                                ),
+                            );
+                            continue;
+                        }
+                        // Settled after every unconditional `#{}` has executed
+                        // (startup phase, §11.7).
+                        pending.push(node);
+                        continue;
+                    }
                     let condition = statement.condition;
+                    if let Some((name, _)) = self.first_forward_local(condition, &future_locals) {
+                        self.error(
+                            self.span_of(condition),
+                            format!(
+                                "the compile-time 'local' '{name}' may not be a forward dependency (§11.7)"
+                            ),
+                        );
+                    }
                     let taken = self
                         .eval_compile_time_bool(condition, 0)
                         .unwrap_or_else(|| {
@@ -2525,10 +2580,10 @@ impl<'a> Sema<'a> {
                     self.result.compile_time_conditions.insert(node, taken);
                     if taken {
                         let members = self.block_statements(statement.then_block);
-                        self.declare_types(&members);
+                        self.declare_types(&members, top_level);
                     } else if let Some(else_block) = statement.else_block {
                         let members = self.block_statements(else_block);
-                        self.declare_types(&members);
+                        self.declare_types(&members, top_level);
                     }
                 }
                 NodeKind::CompileTimeBlock(block) => {
@@ -2550,6 +2605,259 @@ impl<'a> Sema<'a> {
                 self.declare_type_body_modules(node);
             }
         }
+        if lazy && !pending.is_empty() {
+            self.settle_two_phase_ifs(&pending, &future_fixed, &future_locals);
+        }
+    }
+
+    /// Collects `fixed`/`local` names declared inside `#{}` blocks reachable from
+    /// the top level, including blocks inside conditional branches (§11.7).
+    fn collect_future_compile_time_bindings(
+        &self,
+        nodes: &[NodeId],
+    ) -> (
+        std::collections::HashSet<String>,
+        std::collections::HashSet<String>,
+    ) {
+        let mut fixed = std::collections::HashSet::new();
+        let mut locals = std::collections::HashSet::new();
+        for &node in nodes {
+            self.collect_future_bindings_in_node(node, false, &mut fixed, &mut locals);
+        }
+        (fixed, locals)
+    }
+
+    fn collect_future_bindings_in_node(
+        &self,
+        node: NodeId,
+        inside_block: bool,
+        fixed: &mut std::collections::HashSet<String>,
+        locals: &mut std::collections::HashSet<String>,
+    ) {
+        match self.node_kind(node) {
+            NodeKind::Module(declaration) => {
+                for &member in &declaration.members {
+                    self.collect_future_bindings_in_node(member, false, fixed, locals);
+                }
+            }
+            NodeKind::CompileTimeIf(statement) => {
+                for block in [Some(statement.then_block), statement.else_block]
+                    .into_iter()
+                    .flatten()
+                {
+                    for statement in self.block_statements(block) {
+                        self.collect_future_bindings_in_node(
+                            statement,
+                            inside_block,
+                            fixed,
+                            locals,
+                        );
+                    }
+                }
+            }
+            NodeKind::CompileTimeBlock(block) => {
+                for statement in self.block_statements(block) {
+                    self.collect_future_bindings_in_node(statement, true, fixed, locals);
+                }
+            }
+            NodeKind::Fixed(declaration) if inside_block => {
+                if declaration.init.is_some() {
+                    fixed.insert(declaration.name.clone());
+                }
+            }
+            NodeKind::Local(declaration) if inside_block => {
+                for item in &declaration.items {
+                    locals.insert(item.name.clone());
+                }
+            }
+            NodeKind::Block(statements) => {
+                for statement in statements {
+                    self.collect_future_bindings_in_node(statement, inside_block, fixed, locals);
+                }
+            }
+            NodeKind::If(statement) => {
+                for branch in &statement.branches {
+                    for inner in self.block_statements(branch.body) {
+                        self.collect_future_bindings_in_node(inner, inside_block, fixed, locals);
+                    }
+                }
+                if let Some(else_block) = statement.else_block {
+                    for inner in self.block_statements(else_block) {
+                        self.collect_future_bindings_in_node(inner, inside_block, fixed, locals);
+                    }
+                }
+            }
+            NodeKind::While(statement) => {
+                for inner in self.block_statements(statement.body) {
+                    self.collect_future_bindings_in_node(inner, inside_block, fixed, locals);
+                }
+            }
+            NodeKind::For(statement) => {
+                for inner in self.block_statements(statement.body) {
+                    self.collect_future_bindings_in_node(inner, inside_block, fixed, locals);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The forward-dependency bindings referenced by a `#if` condition: names not
+    /// currently available that a later `#{}` produces as `fixed`/`local`.
+    fn condition_forward_bindings(
+        &self,
+        condition: NodeId,
+        future_fixed: &std::collections::HashSet<String>,
+        future_locals: &std::collections::HashSet<String>,
+    ) -> (Vec<String>, Vec<String>) {
+        let mut names = Vec::new();
+        self.collect_condition_names(condition, &mut names);
+        let mut fixed = Vec::new();
+        let mut locals = Vec::new();
+        for (name, _) in names {
+            if self.compile_time_binding_available(&name) {
+                continue;
+            }
+            if future_fixed.contains(&name) {
+                fixed.push(name);
+            } else if future_locals.contains(&name) {
+                locals.push(name);
+            }
+        }
+        (fixed, locals)
+    }
+
+    fn first_forward_local(
+        &self,
+        condition: NodeId,
+        future_locals: &std::collections::HashSet<String>,
+    ) -> Option<(String, NodeId)> {
+        let mut names = Vec::new();
+        self.collect_condition_names(condition, &mut names);
+        names.into_iter().find_map(|(name, node)| {
+            if future_locals.contains(&name) && !self.compile_time_binding_available(&name) {
+                Some((name, node))
+            } else {
+                None
+            }
+        })
+    }
+
+    fn compile_time_binding_available(&self, name: &str) -> bool {
+        self.top_level_constants.contains_key(name)
+            || self
+                .constant_env
+                .iter()
+                .any(|environment| environment.contains_key(name))
+            || self.lookup(name).is_some()
+    }
+
+    fn collect_condition_names(&self, node: NodeId, out: &mut Vec<(String, NodeId)>) {
+        match self.node_kind(node) {
+            NodeKind::Name(name) => out.push((name.name.clone(), node)),
+            NodeKind::Unary(unary) => self.collect_condition_names(unary.operand, out),
+            NodeKind::Binary(binary) => {
+                self.collect_condition_names(binary.left, out);
+                self.collect_condition_names(binary.right, out);
+            }
+            NodeKind::Cast(cast) => self.collect_condition_names(cast.value, out),
+            NodeKind::Is(expression) => self.collect_condition_names(expression.value, out),
+            NodeKind::CompileTimeExpr(inner) | NodeKind::VerbatimExpression(inner) => {
+                self.collect_condition_names(inner, out);
+            }
+            NodeKind::Call(call) => {
+                self.collect_condition_names(call.callee, out);
+                for argument in &call.arguments {
+                    self.collect_condition_names(argument.value, out);
+                }
+            }
+            NodeKind::MemberAccess(access) => self.collect_condition_names(access.base, out),
+            _ => {}
+        }
+    }
+
+    /// Settles deferred top-level `#if` conditions (settlement phase, §11.7).
+    fn settle_two_phase_ifs(
+        &mut self,
+        pending: &[NodeId],
+        future_fixed: &std::collections::HashSet<String>,
+        future_locals: &std::collections::HashSet<String>,
+    ) {
+        let mut remaining: Vec<NodeId> = pending.to_vec();
+        while !remaining.is_empty() {
+            let mut progressed = false;
+            let mut index = 0;
+            while index < remaining.len() {
+                let node = remaining[index];
+                if self.result.compile_time_conditions.contains_key(&node) {
+                    remaining.remove(index);
+                    continue;
+                }
+                let NodeKind::CompileTimeIf(statement) = self.node_kind(node).clone() else {
+                    remaining.remove(index);
+                    continue;
+                };
+                let (fixed_dependencies, local_dependencies) = self.condition_forward_bindings(
+                    statement.condition,
+                    future_fixed,
+                    future_locals,
+                );
+                if !local_dependencies.is_empty() {
+                    self.error(
+                        self.span_of(statement.condition),
+                        format!(
+                            "the compile-time 'local' '{}' may not be a forward dependency (§11.7)",
+                            local_dependencies[0]
+                        ),
+                    );
+                    remaining.remove(index);
+                    continue;
+                }
+                if !fixed_dependencies.is_empty() {
+                    // A later settlement round may produce these bindings.
+                    index += 1;
+                    continue;
+                }
+                self.suppress_errors += 1;
+                let decision = self.eval_compile_time_bool(statement.condition, 0);
+                self.suppress_errors -= 1;
+                if let Some(taken) = decision {
+                    self.result.compile_time_conditions.insert(node, taken);
+                    let members = if taken {
+                        self.block_statements(statement.then_block)
+                    } else {
+                        statement
+                            .else_block
+                            .map(|else_block| self.block_statements(else_block))
+                            .unwrap_or_default()
+                    };
+                    // Collect declarations and execute the selected branch's
+                    // compile-time blocks exactly once (§11.7 settlement).
+                    self.declare_types(&members, true);
+                    remaining.remove(index);
+                    progressed = true;
+                    continue;
+                }
+                self.error(
+                    self.span_of(statement.condition),
+                    "the '#if' condition must be a compile-time constant",
+                );
+                remaining.remove(index);
+            }
+            if !progressed && !remaining.is_empty() {
+                for node in &remaining {
+                    let span = match self.node_kind(*node) {
+                        NodeKind::CompileTimeIf(statement) => self.span_of(statement.condition),
+                        _ => self.span_of(*node),
+                    };
+                    self.error(
+                        span,
+                        "two-phase compile-time evaluation cannot make progress: the '#if' forward dependency is never produced (§11.7)",
+                    );
+                }
+                break;
+            }
+        }
+        let _ = future_locals;
     }
 
     /// Executes a compile-time assignment (`X = value` / `X += value`) in a
@@ -2731,6 +3039,23 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Evaluates a compile-time constant initializer to its integer payload plus
+    /// type; boolean constants are folded to 0/1 with the boolean type (§11.4).
+    fn eval_compile_time_value(
+        &mut self,
+        expression: NodeId,
+        declared: Option<TypeId>,
+    ) -> Option<(i128, TypeId)> {
+        if let Some(value) = self.eval_const_int(expression) {
+            return Some((
+                value,
+                declared.unwrap_or_else(|| self.inferred_integer_type(value)),
+            ));
+        }
+        let boolean = self.eval_compile_time_bool(expression, 0)?;
+        Some((i128::from(boolean), declared.unwrap_or(TypeId::BOOLEAN)))
+    }
+
     fn execute_top_level_compile_time(&mut self, node: NodeId, block: NodeId) {
         if !self.compile_time_phase_b {
             self.compile_time_deferred = false;
@@ -2812,13 +3137,11 @@ impl<'a> Sema<'a> {
                             continue;
                         };
                         self.suppress_errors += 1;
-                        let value = self.eval_const_int(init);
-                        self.suppress_errors -= 1;
                         let declared = item.ty.and_then(|ty| self.resolve_type(ty));
+                        let value = self.eval_compile_time_value(init, declared);
+                        self.suppress_errors -= 1;
                         match value {
-                            Some(value) => {
-                                let ty =
-                                    declared.unwrap_or_else(|| self.inferred_integer_type(value));
+                            Some((value, ty)) => {
                                 self.top_level_constants
                                     .insert(item.name.clone(), (value, ty));
                                 self.unknown_compile_time_names.remove(&item.name);
@@ -2838,13 +3161,10 @@ impl<'a> Sema<'a> {
                 NodeKind::Fixed(declaration) => {
                     if let Some(Initializer::Expression(expression)) = declaration.init {
                         self.suppress_errors += 1;
-                        let value = self.eval_const_int(expression);
+                        let declared = declaration.ty.and_then(|ty| self.resolve_type(ty));
+                        let value = self.eval_compile_time_value(expression, declared);
                         self.suppress_errors -= 1;
-                        if let Some(value) = value {
-                            let ty = declaration
-                                .ty
-                                .and_then(|ty| self.resolve_type(ty))
-                                .unwrap_or_else(|| self.inferred_integer_type(value));
+                        if let Some((value, ty)) = value {
                             self.top_level_constants
                                 .insert(declaration.name.clone(), (value, ty));
                         }
@@ -3327,7 +3647,7 @@ impl<'a> Sema<'a> {
                 .insert(module.name.clone(), module_scope);
             self.scope_stack.push(module_scope);
             let nested = module.members;
-            self.declare_types(&nested);
+            self.declare_types(&nested, false);
             self.scope_stack.pop();
         }
     }

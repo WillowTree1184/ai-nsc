@@ -5,7 +5,7 @@
 //! decoded later from the token's source span (see [`crate::literal`]); the
 //! lexer only validates their surface syntax.
 //!
-//! Spec references are to `docs/grammar/Draft 1.151.md`:
+//! Spec references are to `docs/grammar/Draft 1.152.md`:
 //! - §2.2 whitespace and line terminators
 //! - §2.3 comments
 //! - §2.4 identifiers and the `@` keyword escape

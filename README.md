@@ -106,7 +106,7 @@ src/lib.rs           crate root and toolchain constants
 src/main.rs          thin binary entry point
 tests/               CLI and LLVM codegen integration tests
 docs/                architecture, roadmap, toolchain notes
-docs/grammar/        the language specification (Draft 1.151 is current)
+docs/grammar/        the language specification (Draft 1.152 is current)
 docs/spec-notes/     exhaustive per-section extraction of the spec + open questions
 runtime/             NovaSharp runtime support library (planned)
 examples/            example programs (added with the language)

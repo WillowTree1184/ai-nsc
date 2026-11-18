@@ -1,6 +1,6 @@
 # Spec coverage matrix
 
-Status against `docs/grammar/Draft 1.151.md` (trial draft). The specification is the
+Status against `docs/grammar/Draft 1.152.md` (trial draft). The specification is the
 source of truth and evolves; the matrix records what the compiler implements and
 what it diagnoses instead of miscompiling.
 
@@ -24,7 +24,7 @@ cargo test
 `cargo test` currently runs **234 tests**: 40 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
-that read `docs/grammar/Draft 1.151.md` directly:
+that read `docs/grammar/Draft 1.152.md` directly:
 
 1. every `novasharp` fence in the specification parses (80+ examples);
 2. every whole-program example that passes semantic analysis is compiled end to
@@ -78,10 +78,10 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §8 functions: parameters, defaults, by-ref, array parameter sugar, `#` compile-time constants, nested functions | ✅ | parameter/call tests; `#` on functions, methods and operators |
 | §4.9 operators: overloading/dispatch, one/two parameters, no `this`, by-reference parameters | ✅ | user-defined operators dispatch via overload resolution; parameters may be by-reference (operands must be addressable; addresses are passed so mutations are visible; compound assignments support them); match-pattern and conversion/accessor contexts that cannot provide an address report an explicit diagnostic |
 | §9 modifiers: accessibility, `scoped`, `readonly`, `implicitable`, `manual`, `abstract`/`sealed`/`virtual`/`override`, `aligned`, `static` | ✅ | all enforced; `verbatim` was removed in favour of the `@` marker (see §14.3.1) |
-| §4.3 type conversion `Expression as Type` | ✅ | `as` operator at the `is` precedence; the previous `Cast<T>(value)` syntax remains as a compatibility extension (Draft 1.151 uses `as`) |
+| §4.3 type conversion `Expression as Type` | ✅ | `as` operator at the `is` precedence; the previous `Cast<T>(value)` syntax remains as a compatibility extension (Draft 1.152 uses `as`) |
 | §4.9.15/§4.9.16 circular shifts `<<<`/`>>>` (and `<<<=`/`>>>=`) | ✅ | integer/cardinal operands, count taken modulo the operand bit width, no sign extension; runtime lowering and constant folding; compound forms supported |
 | §5.9.5 directional ranges `..<`, `..<=`, `..>`, `..>=`; inferred `for` binding types | ✅ | parser/lexer, default step from the operator direction, direction-specific loop conditions, explicit types inferred from array/iterator/range targets; array-literal range expansion honours direction; step/direction contradictions diagnosed |
-| §11.7 two-phase conditional compilation (forward dependencies, fixed point, oscillation detection) | 🟡 | the compiler performs single-pass top-level compile-time execution after declaration resolution; the optional two-phase candidate rounds are not implemented (programs depending on forward `#{}`/`#if` values get the usual ordering diagnostics) |
+| §11.7 lazy two-phase conditional evaluation | ✅ | enabled automatically when a top-level/module `#if` condition references a not-yet-produced **immutable** binding (`#{}` `fixed` constant, `#` constant parameter, generic/type/platform constant): unconditional `#{}` execute first in file/source order, deferred `#if` settle in dependency rounds and lock their selected branch once (declarations collected, branch `#{}` executed once); `local`/mutable forward dependencies are diagnosed; a round that settles nothing reports a no-progress static error (e.g. mutual dependencies); Draft 1.152 removed fixed-point/oscillation detection and candidate-error buffering, so none is implemented. Top-level `#()` startup statements and cross-module forward bindings are not executed/resolved yet. |
 | §11.8 compiler API: Type/Compiler/Platform/NOLAA, `#if` platform queries | ✅ | compile-time contexts (`#{}`, `#(...)`, `#if`) may call the API; runtime code must wrap Type/Compiler/Platform calls in `#(...)`/`#if` (NOLAA markers remain run-time statements); `Type.SizeOf` returns a pointer-width value (i686 = 4); standard platform names only (the compiler defines no extension names, permitted by §11.8.3) |
 | §14.3.1 no-optimize marker: `@(expr)`, `@{ block }`, `local @Name`, `fixed @Name`, verbatim bodies | ✅ | parsed and enforced (nested markers, `#` inside markers and constant folding of marked storages rejected; `optnone` for marked bodies; e2e tests) |
 | §5.9.5 `for` without an iteration variable (range only) | ✅ | parser/sema/codegen; range type inferred from the first non-literal expression and all range expressions must share it (literal `1` adopts `x`'s type in `for 1..x`); e2e ascending/descending/labelled-break and mixed-type diagnostics |

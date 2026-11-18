@@ -307,3 +307,4 @@ report an error (§4.8).
 | 86 | LOW | §3.8.2 | Explicit members on local-backed free accessors diagnosed | fixed (5c4d942: member bodies bound to by-reference backing parameter, value parameter naming) |
 | 87 | MED | §11.7 | Compile-time code could read regular runtime locals silently | fixed (47799f9: boundary diagnostic for non-compile-time locals; block locals/constants/# parameters allowed) |
 | 88 | MED | §3.7.1, §7 | Modules inside type bodies unsupported | fixed (4bb904a: scoped identifier organization, nested modules, qualified access through the type name) |
+| 89 | HIGH | §4.9.14 | Right shift used arithmetic shift for signed operands (runtime and constant folding) | fixed (a407fcb: logical zero-filling shift within operand width, both code generation and folding) |

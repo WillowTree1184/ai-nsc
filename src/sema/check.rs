@@ -2735,6 +2735,8 @@ impl<'a> Sema<'a> {
             let constant_values = self.result.functions[current].constant_values.clone();
             self.current_function = Some(current as u32);
             self.loop_labels.clear();
+            self.heap_units.clear();
+            self.heap_unit_locals.clear();
             self.push_scope();
             if environment {
                 // Captured names are visible inside the literal (§2.7.9).
@@ -2790,6 +2792,22 @@ impl<'a> Sema<'a> {
                     self.check_expr(expression, None);
                 }
                 FunctionBody::BackingGet { .. } | FunctionBody::BackingSet { .. } => {}
+            }
+            // NOLAA never-disposed warning (§12.2): conservative — units that
+            // escaped the function (returned, passed on or stored) are exempt.
+            let pending: Vec<(Span, String)> = self
+                .heap_units
+                .iter()
+                .filter(|unit| !unit.manual && !unit.disposed && !unit.abandoned && !unit.escaped)
+                .map(|unit| {
+                    (
+                        unit.span,
+                        format!("heap allocation '{}' is never disposed", unit.name),
+                    )
+                })
+                .collect();
+            for (span, message) in pending {
+                self.warn(span, message);
             }
             if !constant_values.is_empty() {
                 self.constant_env.pop();
@@ -3255,6 +3273,9 @@ impl<'a> Sema<'a> {
                 }
             }
             NodeKind::Return(statement) => {
+                if let Some(value) = statement.value {
+                    self.note_heap_escape(value);
+                }
                 if matches!(self.trap_contexts.last(), Some(TrapContextKind::Finally)) {
                     self.error(
                         self.span_of(node),
@@ -3584,6 +3605,26 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Records that a heap allocation may escape the function through `node`
+    /// (§12.2), suppressing the never-disposed warning.
+    fn note_heap_escape(&mut self, node: NodeId) {
+        let name = match self.node_kind(node) {
+            NodeKind::Name(name) => name.name.clone(),
+            NodeKind::Unary(unary) if unary.op == UnaryOp::Reference => {
+                let NodeKind::Name(name) = self.node_kind(unary.operand) else {
+                    return;
+                };
+                name.name.clone()
+            }
+            _ => return,
+        };
+        if let Some(Symbol::Local(local)) = self.lookup(&name).cloned() {
+            if let Some(index) = self.heap_unit_locals.get(&local).copied() {
+                self.heap_units[index].escaped = true;
+            }
+        }
+    }
+
     fn check_heap_statement(&mut self, node: NodeId, declaration: &HeapDecl) {
         if declaration.size.is_some() {
             self.unsupported(
@@ -3625,6 +3666,15 @@ impl<'a> Sema<'a> {
             Storage::Heap,
             self.span_of(node),
         );
+        self.heap_unit_locals.insert(local, self.heap_units.len());
+        self.heap_units.push(HeapUnit {
+            name: declaration.name.clone(),
+            span: self.span_of(node),
+            manual: declaration.modifiers.manual,
+            disposed: false,
+            abandoned: false,
+            escaped: false,
+        });
         self.result.local_declarations.insert(node, vec![local]);
     }
 
@@ -3647,6 +3697,9 @@ impl<'a> Sema<'a> {
                                 self.span_of(statement.target),
                                 format!("'{}' is disposed more than once", name.name),
                             );
+                        }
+                        if let Some(index) = self.heap_unit_locals.get(&local).copied() {
+                            self.heap_units[index].disposed = true;
                         }
                         self.result.resolutions[statement.target as usize] =
                             Some(Resolution::Local(local));
@@ -6080,6 +6133,15 @@ impl<'a> Sema<'a> {
             self.error(span, format!("'NOLAA.{name}' takes {expected} argument(s)"));
             return None;
         }
+        if name == "Abandon" {
+            if let NodeKind::Name(argument) = self.node_kind(arguments[0].value) {
+                if let Some(Symbol::Local(local)) = self.lookup(&argument.name).cloned() {
+                    if let Some(index) = self.heap_unit_locals.get(&local).copied() {
+                        self.heap_units[index].abandoned = true;
+                    }
+                }
+            }
+        }
         for argument in arguments {
             let ty = self.check_expr(argument.value, None)?;
             let convertible = match self.types_of(ty) {
@@ -6287,6 +6349,9 @@ impl<'a> Sema<'a> {
     }
 
     fn check_call(&mut self, node: NodeId, call: &CallExpr) -> Option<TypeId> {
+        for argument in &call.arguments {
+            self.note_heap_escape(argument.value);
+        }
         // Compiler API: `Platform.Is(PlatformKind)` / `Platform.Is("name")`
         // evaluates against the compilation target (§15.3).
         if let Some(name) = builtin_namespace_call(self.ast, call.callee, "Platform") {

@@ -493,6 +493,23 @@ pub struct LocalInfo {
     pub span: Span,
 }
 
+/// One heap allocation unit tracked for NOLAA diagnostics (§12.2).
+#[derive(Clone, Debug)]
+pub(crate) struct HeapUnit {
+    /// Variable name.
+    pub(crate) name: String,
+    /// Declaration span.
+    pub(crate) span: Span,
+    /// Whether the unit was declared `manual`.
+    pub(crate) manual: bool,
+    /// Whether an explicit `dispose` was seen.
+    pub(crate) disposed: bool,
+    /// Whether the unit was abandoned through `NOLAA.Abandon`.
+    pub(crate) abandoned: bool,
+    /// Whether the pointer escaped the function (argument, return, store...).
+    pub(crate) escaped: bool,
+}
+
 /// A module-level variable or constant.
 #[derive(Debug)]
 pub struct GlobalInfo {
@@ -925,6 +942,8 @@ pub fn analyze(
         bodies_checked: 0,
         constant_env: Vec::new(),
         constant_instantiations: HashMap::new(),
+        heap_units: Vec::new(),
+        heap_unit_locals: HashMap::new(),
     };
     sema.run();
     sema.result.error_count = sema.engine.error_count();
@@ -973,6 +992,10 @@ pub(crate) struct Sema<'a> {
     /// Specializations of constant-parameter templates, keyed by declaration and
     /// constant argument tuple.
     pub(crate) constant_instantiations: HashMap<(NodeId, Vec<i128>), u32>,
+    /// Heap allocation units of the function body being checked (§12.2).
+    pub(crate) heap_units: Vec<HeapUnit>,
+    /// Index into `heap_units` for each heap local.
+    pub(crate) heap_unit_locals: HashMap<u32, usize>,
 }
 
 impl<'a> Sema<'a> {

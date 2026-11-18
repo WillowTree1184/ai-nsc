@@ -811,3 +811,32 @@ fn multiple_input_files_form_one_program() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn never_disposed_heap_allocation_warns_without_failing() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-nolaa-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(
+        &path,
+        "structure Node\n{\n    public Value: integer(4);\n}\n\nfixed Main(): integer(4)\n{\n    heap leaked: Node = Node();\n    leaked.Value = 4;\n    return leaked.Value;\n}",
+    )
+    .expect("write program");
+    let output = ai_nsc()
+        .args(["check", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stderr: {stderr}");
+    assert!(
+        stderr.contains("never disposed"),
+        "expected a never-disposed warning: {stderr}"
+    );
+}

@@ -262,6 +262,8 @@ pub struct TypeDef {
     pub operators: Vec<OperatorInfo>,
     /// Interfaces this class implements (§3.7.3/§3.7.7).
     pub interfaces: Vec<TypeId>,
+    /// Interfaces this interface extends (§3.7.3).
+    pub interface_bases: Vec<TypeId>,
     /// Per-interface dispatch tables: implementation method id per interface
     /// method slot, in interface declaration order.
     pub interface_dispatch: Vec<(TypeId, Vec<u32>)>,
@@ -1431,6 +1433,11 @@ impl<'a> Sema<'a> {
         // Resolve `scoped` member-name targets now that all members exist (§9.5).
         self.resolve_pending_scoped();
 
+        // Interface inheritance needs every interface's members resolved
+        // (§3.7.3): flatten inherited method lists, expand class interface lists
+        // and verify implementations.
+        self.finalize_interface_inheritance();
+
         // Pass 3: check bodies and initializers.
         self.finalize_variant_union_layouts();
         self.build_vtables();
@@ -1476,6 +1483,7 @@ impl<'a> Sema<'a> {
             operators: Vec::new(),
             interfaces: Vec::new(),
             interface_dispatch: Vec::new(),
+            interface_bases: Vec::new(),
             sealed: false,
             is_abstract,
             is_static: false,
@@ -1532,6 +1540,7 @@ impl<'a> Sema<'a> {
             operators: Vec::new(),
             interfaces: Vec::new(),
             interface_dispatch: Vec::new(),
+            interface_bases: Vec::new(),
             sealed: false,
             is_abstract: false,
             is_static: false,
@@ -1584,6 +1593,7 @@ impl<'a> Sema<'a> {
             operators: Vec::new(),
             interfaces: Vec::new(),
             interface_dispatch: Vec::new(),
+            interface_bases: Vec::new(),
             sealed: false,
             is_abstract: true,
             is_static: false,
@@ -1644,6 +1654,7 @@ impl<'a> Sema<'a> {
             operators: Vec::new(),
             interfaces: Vec::new(),
             interface_dispatch: Vec::new(),
+            interface_bases: Vec::new(),
             sealed: false,
             is_abstract: true,
             is_static: false,
@@ -1882,6 +1893,7 @@ impl<'a> Sema<'a> {
                 operators: Vec::new(),
                 interfaces: Vec::new(),
                 interface_dispatch: Vec::new(),
+                interface_bases: Vec::new(),
                 sealed: false,
                 is_abstract: false,
                 is_static: false,
@@ -2229,6 +2241,7 @@ impl<'a> Sema<'a> {
                 operators: Vec::new(),
                 interfaces: Vec::new(),
                 interface_dispatch: Vec::new(),
+                interface_bases: Vec::new(),
                 sealed: false,
                 is_abstract: false,
                 is_static: false,
@@ -2452,6 +2465,7 @@ impl<'a> Sema<'a> {
             operators: Vec::new(),
             interfaces: Vec::new(),
             interface_dispatch: Vec::new(),
+            interface_bases: Vec::new(),
             sealed: false,
             is_abstract: false,
             is_static: false,

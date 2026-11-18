@@ -3882,3 +3882,51 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 12);
 }
+
+#[test]
+fn interfaces_inherit_members_from_base_interfaces() {
+    let source = "\
+interface IBase
+{
+    extension
+    {
+        public fixed Id(this: &IBase): integer(4);
+    }
+}
+
+interface IDerived: IBase
+{
+    extension
+    {
+        public fixed Name(this: &IDerived): integer(4);
+    }
+}
+
+class Thing: IDerived
+{
+    private Value: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Thing, value: integer(4)) { this.Value = value; }
+        public fixed Id(this: &Thing): integer(4) { return this.Value; }
+        public fixed Name(this: &Thing): integer(4) { return this.Value + 100; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local thing: Thing = Thing(7);
+    local derived: IDerived = thing;
+    local asBase: IBase = thing;
+    local score: integer(4) = 0;
+    score += asBase.Id();
+    score += derived.Id();
+    score += derived.Name();
+    if (thing is IBase) { score += 1; }
+    if (thing is IDerived) { score += 2; }
+    return score;
+}";
+    // 7 + 7 + 107 + 1 + 2
+    assert_eq!(run_program(source), 124);
+}

@@ -645,9 +645,7 @@ impl<'a> Sema<'a> {
             }
         }
         self.resolve_pending_accessors();
-        if is_class {
-            self.verify_interface_implementations(type_id);
-        }
+        let _ = is_class;
     }
 
     pub(crate) fn types_of(&self, ty: TypeId) -> Type {
@@ -1384,6 +1382,104 @@ impl<'a> Sema<'a> {
         self.result.type_defs[class_index as usize].interface_dispatch = dispatch;
     }
 
+    /// Flattens interface inheritance, expands class interface lists and verifies
+    /// implementations once every declaration is resolved (§3.7.3).
+    pub(crate) fn finalize_interface_inheritance(&mut self) {
+        let interfaces: Vec<u32> = self
+            .result
+            .type_defs
+            .iter()
+            .enumerate()
+            .filter(|(_, definition)| {
+                definition.kind == TypeDefKind::Interface
+                    && definition.generic_parameters.is_empty()
+            })
+            .map(|(index, _)| index as u32)
+            .collect();
+        for index in interfaces {
+            let interface = self.result.types.intern(Type::Named(index));
+            self.flatten_interface_method_list(interface, &mut Vec::new());
+        }
+        let classes: Vec<u32> = self
+            .result
+            .type_defs
+            .iter()
+            .enumerate()
+            .filter(|(_, definition)| {
+                definition.kind == TypeDefKind::Class && definition.generic_parameters.is_empty()
+            })
+            .map(|(index, _)| index as u32)
+            .collect();
+        for index in classes {
+            let class_type = self.result.types.intern(Type::Named(index));
+            self.expand_class_interfaces(index);
+            self.verify_interface_implementations(class_type);
+        }
+    }
+
+    /// Appends the flattened method list of every base interface to `interface`'s
+    /// own methods, so dispatch tables and calls see inherited members
+    /// (§3.7.3).
+    fn flatten_interface_method_list(&mut self, interface: TypeId, visiting: &mut Vec<TypeId>) {
+        if visiting.contains(&interface) {
+            return;
+        }
+        let Type::Named(index) = self.types_of(interface) else {
+            return;
+        };
+        if self.result.type_defs[index as usize].vtable_ready {
+            return;
+        }
+        visiting.push(interface);
+        let bases = self.result.type_defs[index as usize]
+            .interface_bases
+            .clone();
+        let mut method_list = Vec::new();
+        for base in bases {
+            self.flatten_interface_method_list(base, visiting);
+            if let Type::Named(base_index) = self.types_of(base) {
+                for method in &self.result.type_defs[base_index as usize].method_list {
+                    if !method_list.contains(method) {
+                        method_list.push(*method);
+                    }
+                }
+            }
+        }
+        for method in &self.result.type_defs[index as usize].method_list {
+            if !method_list.contains(method) {
+                method_list.push(*method);
+            }
+        }
+        self.result.type_defs[index as usize].method_list = method_list;
+        self.result.type_defs[index as usize].vtable_ready = true;
+        visiting.pop();
+    }
+
+    /// Expands a class's interface list with the transitive bases of every
+    /// listed interface (§3.7.3), so `is` checks and conversions work for base
+    /// interfaces too.
+    fn expand_class_interfaces(&mut self, class_index: u32) {
+        let mut expanded: Vec<TypeId> = Vec::new();
+        let mut stack = self.result.type_defs[class_index as usize]
+            .interfaces
+            .clone();
+        while let Some(interface) = stack.pop() {
+            if expanded.contains(&interface) {
+                continue;
+            }
+            expanded.push(interface);
+            if let Type::Named(index) = self.types_of(interface) {
+                stack.extend(
+                    self.result.type_defs[index as usize]
+                        .interface_bases
+                        .iter()
+                        .copied(),
+                );
+            }
+        }
+        self.result.type_defs[class_index as usize].interfaces = expanded;
+    }
+
     pub(crate) fn resolve_interface(&mut self, node: NodeId) {
         let NodeKind::Interface(declaration) = self.node_kind(node) else {
             return;
@@ -1391,11 +1487,14 @@ impl<'a> Sema<'a> {
         let Some(type_id) = self.type_id_for_node(node) else {
             return;
         };
+        let mut interface_bases = Vec::new();
         for base in &declaration.bases {
             if let Some(base_type) = self.resolve_type(*base) {
                 if matches!(self.types_of(base_type), Type::Named(index) if self.result.type_defs[index as usize].kind == TypeDefKind::Interface)
                 {
-                    self.unsupported(self.span_of(*base), "interface inheritance");
+                    if !interface_bases.contains(&base_type) {
+                        interface_bases.push(base_type);
+                    }
                 } else {
                     self.error(
                         self.span_of(*base),
@@ -1403,6 +1502,9 @@ impl<'a> Sema<'a> {
                     );
                 }
             }
+        }
+        if let Type::Named(index) = self.types_of(type_id) {
+            self.result.type_defs[index as usize].interface_bases = interface_bases;
         }
         let members = declaration.members.clone();
         for member in members {
@@ -3944,6 +4046,29 @@ impl<'a> Sema<'a> {
                 let definition = &self.result.type_defs[index as usize];
                 if definition.interfaces.contains(&to) {
                     return true;
+                }
+                // A derived interface converts implicitly to its base
+                // interfaces (§3.7.3).
+                if definition.kind == TypeDefKind::Interface {
+                    let mut pending = definition.interface_bases.clone();
+                    let mut guard = 0;
+                    while let Some(base) = pending.pop() {
+                        guard += 1;
+                        if guard > 64 {
+                            break;
+                        }
+                        if base == to {
+                            return true;
+                        }
+                        if let Type::Named(base_index) = self.type_of(base) {
+                            pending.extend(
+                                self.result.type_defs[base_index as usize]
+                                    .interface_bases
+                                    .iter()
+                                    .copied(),
+                            );
+                        }
+                    }
                 }
                 current = definition.base;
             }
@@ -8706,6 +8831,32 @@ impl<'a> Sema<'a> {
             let Type::Named(index) = self.result.types.get(ty) else {
                 break;
             };
+            // Interface members are looked up through the inherited interfaces
+            // as well (§3.7.3).
+            if self.result.type_defs[*index as usize].kind == TypeDefKind::Interface {
+                let mut pending: Vec<TypeId> = self.result.type_defs[*index as usize]
+                    .interface_bases
+                    .clone();
+                let mut seen: Vec<TypeId> = vec![ty];
+                while let Some(base) = pending.pop() {
+                    if seen.contains(&base) {
+                        continue;
+                    }
+                    seen.push(base);
+                    if let Type::Named(base_index) = self.result.types.get(base) {
+                        let base_index = *base_index;
+                        let base_definition = &self.result.type_defs[base_index as usize];
+                        if let Some(overloads) = base_definition.methods.get(name) {
+                            for method in overloads {
+                                if !methods.contains(method) {
+                                    methods.push(*method);
+                                }
+                            }
+                        }
+                        pending.extend(base_definition.interface_bases.iter().copied());
+                    }
+                }
+            }
             let definition = &self.result.type_defs[*index as usize];
             if let Some(list) = definition.methods.get(name) {
                 // Methods of the most derived class hide base declarations of
@@ -8720,6 +8871,10 @@ impl<'a> Sema<'a> {
 
     fn is_this_compatible(&self, actual: TypeId, expected: TypeId) -> bool {
         if actual == expected {
+            return true;
+        }
+        // Method receivers accept base classes and base interfaces (§3.7.3).
+        if self.is_assignable(actual, expected) {
             return true;
         }
         let mut current = Some(actual);

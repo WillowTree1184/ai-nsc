@@ -3382,3 +3382,25 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 15);
 }
+
+#[test]
+fn range_array_literals_infer_element_types() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local total: integer(4) = 0;
+    for i: integer(4) in {[0..!5]}
+    {
+        total += i;
+    }
+    local values = {[0..!4]};
+    local sum: integer(4) = 0;
+    for value: integer(1) in values
+    {
+        sum += Cast<integer(4)>(value);
+    }
+    return total + sum;
+}";
+    // (0+1+2+3+4) + (0+1+2+3)
+    assert_eq!(run_program(source), 16);
+}

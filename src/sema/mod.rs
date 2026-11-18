@@ -1061,6 +1061,7 @@ pub fn analyze(
         current_owner: None,
         current_block: NodeId::default(),
         in_function_body: false,
+        expected_array_element: None,
     };
     sema.run();
     sema.result.error_count = sema.engine.error_count();
@@ -1122,6 +1123,9 @@ pub(crate) struct Sema<'a> {
     /// Whether an array type construct is inside a function body, where runtime
     /// dimensions are allowed (VLA, §3.6.1).
     pub(crate) in_function_body: bool,
+    /// Element type expected for array literals without an explicit expected
+    /// array type (e.g. `for` targets, §5.9.5).
+    pub(crate) expected_array_element: Option<TypeId>,
 }
 
 impl<'a> Sema<'a> {

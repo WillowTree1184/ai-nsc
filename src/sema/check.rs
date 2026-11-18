@@ -4644,7 +4644,12 @@ impl<'a> Sema<'a> {
                 }
             }
             ForTarget::Expression(target) => {
+                let saved_expected = self.expected_array_element;
+                if matches!(self.node_kind(*target), NodeKind::ArrayLiteral(_)) {
+                    self.expected_array_element = Some(binding_type);
+                }
                 let target_type = self.check_expr(*target, None);
+                self.expected_array_element = saved_expected;
                 if let Some(target_type) = target_type {
                     match self.type_of(target_type) {
                         Type::Array {
@@ -8168,7 +8173,7 @@ impl<'a> Sema<'a> {
             _ => None,
         });
 
-        let mut element_type = expected_element;
+        let mut element_type = expected_element.or(self.expected_array_element);
         let mut count: u64 = 0;
 
         for element in &literal.elements {
@@ -8213,12 +8218,16 @@ impl<'a> Sema<'a> {
                     count += repeat as u64;
                 }
                 ArrayElement::Range(range) => {
-                    let Some(element_type) = element_type else {
-                        self.error(
-                            self.span_of(node),
-                            "cannot infer the element type of a range element",
-                        );
-                        return None;
+                    let element_type = match element_type {
+                        Some(element_type) => element_type,
+                        None => {
+                            // Infer from the range start expression's type.
+                            let Some(ty) = self.check_expr(range.start, None) else {
+                                return None;
+                            };
+                            element_type = Some(ty);
+                            ty
+                        }
                     };
                     if !self.is_integer(element_type) {
                         self.error(

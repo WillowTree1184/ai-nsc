@@ -298,3 +298,4 @@ report an error (§4.8).
 | 77 | HIGH | §12.2 | Heap aliases/stores were not NOLAA demands (possible use-after-free) and Early-Dispose warning was missing | fixed (6ddb3ee: alias/store demand tracking, early-dispose warning, regression tests) |
 | 78 | LOW | §3.8.3 | Array target bindings accepted non-cardinal types | fixed (ba3d59c: cardinal-only validation) |
 | 79 | MED | §5.5 | Bodyless `linkable` external symbols unsupported; linkable symbol literals kept their quotes | fixed (2478833: external function declarations, decoded symbol names, libc `abs` e2e) |
+| 80 | MED | §3.7.3 | Interface inheritance (interface extends interface) unsupported | fixed (9e12cb9: base interfaces, flattened method lists, transitive class expansion, deferred implementation verification, receiver conversions) |

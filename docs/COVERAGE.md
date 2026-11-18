@@ -51,7 +51,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §3.6.3 function types, `wildcard`, calling conventions | ✅ | function value/closures tests; C/SystemV/Win64 LLVM conventions, others diagnosed |
 | §3.7.1 classes: layout, inheritance, vtable/RTTI, construction, destructors, statics, abstract/sealed/static class | ✅ | class e2e tests, constructor-chain checks |
 | §3.7.2 structures: exact layout, `aligned(N)` packing | ✅ | layout e2e tests |
-| §3.7.3 interfaces: contracts, dispatch, RTTI, accessors, generics | ✅ | interface dispatch/RTTI tests |
+| §3.7.3 interfaces: contracts, dispatch, RTTI, accessors, generics, interface inheritance | ✅ | interface dispatch/RTTI and inheritance tests (flattened methods, transitive `is` checks) |
 | §3.7.4 enumerations: members, underlying type, casts | ✅ | enumeration e2e tests |
 | §3.7.5 variants: state layout, payload construction, `is`/match, equality | ✅ | variant e2e tests |
 | §3.7.6 unions: overlap layout, member offsets via `aligned`, member construction | ✅ | union e2e tests |

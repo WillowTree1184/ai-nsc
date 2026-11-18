@@ -1505,7 +1505,15 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             )
         };
         let decision_llvm = self.instance_llvm_type(info.decision_type)?;
-        let value = self.gen_expr(coalesce.value)?;
+        // A user-defined `operator ??` produces the decision value; otherwise the
+        // operand itself is the decision.
+        let value = match info.operator {
+            Some(method) => {
+                let operand = self.gen_expr(coalesce.value)?;
+                self.gen_operator_call(method, vec![operand])?
+            }
+            None => self.gen_expr(coalesce.value)?,
+        };
         let decision_slot = self
             .builder
             .build_alloca(decision_llvm, "decision")

@@ -2323,3 +2323,36 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(return_source), 51);
 }
+
+#[test]
+fn user_defined_decision_operator_drives_coalescing() {
+    let source = "\
+structure Gauge
+{
+    public Count: integer(4);
+
+    extension
+    {
+        operator ??(value: Gauge): Result<integer(4); integer(4)>
+        {
+            if (value.Count > 0)
+            {
+                return Result<integer(4); integer(4)>.Value(value.Count);
+            }
+            return Result<integer(4); integer(4)>.Alternative(0);
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local filled: Gauge;
+    filled.Count = 6;
+    local empty: Gauge;
+    empty.Count = 0;
+    local a: integer(4) = filled ?? 99;
+    local b: integer(4) = empty ?? 99;
+    return a + b;
+}";
+    assert_eq!(run_program(source), 105);
+}

@@ -1228,7 +1228,7 @@ impl<'a> Sema<'a> {
                 let definition = &mut self.result.type_defs[owner_index as usize];
                 definition.operators.push(OperatorInfo {
                     kind: OperatorKind::Index,
-                    method: 0,
+                    method: u32::MAX,
                     getter,
                     setter,
                 });
@@ -1380,10 +1380,7 @@ impl<'a> Sema<'a> {
             "==" => OperatorKind::Equal,
             ">" => OperatorKind::Greater,
             "<" => OperatorKind::Less,
-            "??" => {
-                self.unsupported(self.span_of(NodeId::default()), "the ?? operator");
-                return None;
-            }
+            "??" => OperatorKind::Coalesce,
             "!=" | "<=" | ">=" => {
                 self.error(
                     self.span_of(NodeId::default()),
@@ -1406,9 +1403,10 @@ impl<'a> Sema<'a> {
             );
             return None;
         }
-        if !matches!(kind, OperatorKind::Negate)
-            && !matches!(kind, OperatorKind::Conversion)
-            && parameter_count != 2
+        if !matches!(
+            kind,
+            OperatorKind::Negate | OperatorKind::Coalesce | OperatorKind::Conversion
+        ) && parameter_count != 2
         {
             self.error(
                 self.span_of(NodeId::default()),
@@ -1420,6 +1418,13 @@ impl<'a> Sema<'a> {
             self.error(
                 self.span_of(NodeId::default()),
                 "unary '-' takes exactly one parameter",
+            );
+            return None;
+        }
+        if kind == OperatorKind::Coalesce && parameter_count != 1 {
+            self.error(
+                self.span_of(NodeId::default()),
+                "'??' takes exactly one parameter",
             );
             return None;
         }
@@ -5033,11 +5038,15 @@ impl<'a> Sema<'a> {
             };
             let definition = &self.result.type_defs[index as usize];
             for operator in &definition.operators {
-                if operator.kind != kind || operator.method == 0 {
+                if operator.kind != kind || operator.method == u32::MAX {
                     continue;
                 }
                 let parameters = &self.result.functions[operator.method as usize].parameters;
-                let expected = if kind == OperatorKind::Negate { 1 } else { 2 };
+                let expected = if matches!(kind, OperatorKind::Negate | OperatorKind::Coalesce) {
+                    1
+                } else {
+                    2
+                };
                 if parameters.len() == expected
                     && self.is_assignable(ty, parameters[0].ty)
                     && (expected == 1 || self.is_assignable(other, parameters[1].ty))
@@ -5094,7 +5103,7 @@ impl<'a> Sema<'a> {
             };
             let definition = &self.result.type_defs[index as usize];
             for operator in &definition.operators {
-                if operator.kind != OperatorKind::Conversion || operator.method == 0 {
+                if operator.kind != OperatorKind::Conversion || operator.method == u32::MAX {
                     continue;
                 }
                 let function = &self.result.functions[operator.method as usize];
@@ -5295,28 +5304,75 @@ impl<'a> Sema<'a> {
     /// value and the alternative continuation.
     fn check_coalesce(&mut self, node: NodeId, coalesce: &CoalesceExpr) -> Option<TypeId> {
         let span = self.span_of(node);
-        let decision_type = self.check_expr(coalesce.value, None)?;
-        let Type::Named(index) = self.types_of(decision_type) else {
-            self.unsupported(span, "?? on types without a built-in decision");
-            return None;
+        let operand_type = self.check_expr(coalesce.value, None)?;
+        // The decision comes either from a built-in `Result`/`Optional` value or
+        // from a user-defined unary `operator ??` (§4.9.26).
+        let mut operator = None;
+        let mut decision_type = operand_type;
+        if let Type::Named(index) = self.types_of(operand_type) {
+            match self.result.type_defs[index as usize].builtin_variant {
+                Some(BuiltinVariantKind::Result | BuiltinVariantKind::Optional) => {}
+                _ => {
+                    if self.result.type_defs[index as usize].template.is_none() {
+                        match self.find_operator(operand_type, operand_type, OperatorKind::Coalesce)
+                        {
+                            Some(method) => {
+                                operator = Some(method);
+                                decision_type = self.result.functions[method as usize]
+                                    .return_type
+                                    .unwrap_or(TypeId::ERROR);
+                            }
+                            None => {
+                                self.unsupported(span, "?? on types without a decision operator");
+                                return None;
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            match self.find_operator(operand_type, operand_type, OperatorKind::Coalesce) {
+                Some(method) => {
+                    operator = Some(method);
+                    decision_type = self.result.functions[method as usize]
+                        .return_type
+                        .unwrap_or(TypeId::ERROR);
+                }
+                None => {
+                    self.unsupported(span, "?? on types without a decision operator");
+                    return None;
+                }
+            }
+        }
+        let template = match self.types_of(decision_type) {
+            Type::Named(index) => self.result.type_defs[index as usize].template,
+            _ => None,
         };
-        let Some(template) = self.result.type_defs[index as usize].template else {
-            self.unsupported(span, "user-defined ?? operators");
+        let Some(template) = template else {
+            self.error(span, "'operator ??' must return a Result value");
             return None;
         };
         let kind = self.result.type_defs[template as usize].builtin_variant;
-        let arguments = self.result.type_defs[index as usize]
+        let Type::Named(decision_index) = self.types_of(decision_type) else {
+            return None;
+        };
+        let arguments = self.result.type_defs[decision_index as usize]
             .generic_arguments
             .clone();
         let (result_type, alternative_type) = match kind {
             Some(BuiltinVariantKind::Optional) => (arguments[0], TypeId::VOID),
             Some(BuiltinVariantKind::Result) => (arguments[0], arguments[1]),
             None => {
-                self.unsupported(span, "user-defined ?? operators");
+                self.error(
+                    span,
+                    "the decision value must be a Result or Optional variant",
+                );
                 return None;
             }
         };
-        let states = self.result.type_defs[index as usize].variant_states.clone();
+        let states = self.result.type_defs[decision_index as usize]
+            .variant_states
+            .clone();
         let value_state = states
             .iter()
             .position(|state| state.name == "Value")
@@ -5379,6 +5435,7 @@ impl<'a> Sema<'a> {
                 alternative_type,
                 value_state,
                 alternative_state,
+                operator,
             },
         );
         Some(result_type)

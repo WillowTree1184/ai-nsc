@@ -377,6 +377,8 @@ pub enum OperatorKind {
     Negate,
     /// Indexer `[...]`.
     Index,
+    /// Unary decision operator `??` (§4.9.26).
+    Coalesce,
     /// Conversion operator.
     Conversion,
 }
@@ -604,6 +606,8 @@ pub struct CoalesceInfo {
     pub value_state: u32,
     /// State index of `Alternative`/`Null`.
     pub alternative_state: u32,
+    /// User-defined `operator ??` implementation, if the decision is user-made.
+    pub operator: Option<u32>,
 }
 
 /// Type information recorded for a checked `match` pattern.

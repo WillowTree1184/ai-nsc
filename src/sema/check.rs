@@ -28,7 +28,14 @@ impl<'a> Sema<'a> {
                                     .array_binding_lengths
                                     .iter()
                                     .rev()
-                                    .find_map(|lengths| lengths.get(&name.name).copied());
+                                    .find_map(|lengths| lengths.get(&name.name).copied())
+                                    .or_else(|| {
+                                        self.constant_env.iter().rev().find_map(|environment| {
+                                            environment
+                                                .get(&name.name)
+                                                .and_then(|value| u64::try_from(*value).ok())
+                                        })
+                                    });
                                 if let Some(length) = bound {
                                     dimensions.push(length);
                                     continue;
@@ -2056,7 +2063,7 @@ impl<'a> Sema<'a> {
             Type::Named(index) => self.result.type_defs[*index as usize]
                 .qualified_name
                 .clone(),
-            _ => return None,
+            _ => self.spelling(owner),
         };
         let scope: Vec<String> = owner_name.split('.').map(str::to_string).collect();
         let spellings: Vec<String> = parameters
@@ -2096,6 +2103,13 @@ impl<'a> Sema<'a> {
             locals: Vec::new(),
             span,
         });
+        if let Some(lengths) = self.array_binding_lengths.last() {
+            for (name, value) in lengths {
+                self.result.functions[index as usize]
+                    .constant_values
+                    .insert(name.clone(), *value as i128);
+            }
+        }
         if let Type::Named(owner_index) = self.result.types.get(owner).clone() {
             let definition = &mut self.result.type_defs[owner_index as usize];
             definition
@@ -2104,12 +2118,26 @@ impl<'a> Sema<'a> {
                 .or_default()
                 .push(index);
             definition.method_list.push(index);
+        } else {
+            self.result
+                .owner_methods
+                .entry(owner)
+                .or_default()
+                .push(index);
         }
         Some(index)
     }
 
     /// Finds an accessor by name along the inheritance chain.
     fn find_accessor(&self, owner: TypeId, name: &str) -> Option<(TypeId, AccessorInfo)> {
+        if let Some(accessor) = self
+            .result
+            .owner_accessors
+            .get(&owner)
+            .and_then(|accessors| accessors.iter().find(|accessor| accessor.name == name))
+        {
+            return Some((owner, accessor.clone()));
+        }
         let mut current = Some(owner);
         let mut depth = 0;
         while let Some(ty) = current {
@@ -6068,6 +6096,27 @@ impl<'a> Sema<'a> {
                 None
             }
             _ => {
+                // Array extension accessors (§3.8.3).
+                if matches!(self.result.types.get(base_type), Type::Array { .. }) {
+                    self.ensure_array_extensions(base_type);
+                    if let Some((declaring, accessor)) = self.find_accessor(base_type, &access.name)
+                    {
+                        if !self.member_accessible(accessor.accessibility, declaring)
+                            || !self.scope_allows(declaring, &accessor.scoped)
+                        {
+                            self.error(
+                                self.span_of(node),
+                                format!("'{}' is not accessible here", access.name),
+                            );
+                            return None;
+                        }
+                        self.result.resolutions[node as usize] = Some(Resolution::Accessor {
+                            getter: accessor.getter,
+                            setter: accessor.setter,
+                        });
+                        return Some(accessor.ty);
+                    }
+                }
                 self.error(
                     self.span_of(node),
                     "member access requires a structure or class value",
@@ -7007,6 +7056,14 @@ impl<'a> Sema<'a> {
         let generic_env = self.captured_generic_env();
         let decl_scope = self.current_scope();
         let span_of_function = span;
+        // Compile-time bindings are lexically visible inside function literals
+        // (§11.5).
+        let mut inherited_constants = HashMap::new();
+        for environment in &self.constant_env {
+            for (name, value) in environment {
+                inherited_constants.entry(name.clone()).or_insert(*value);
+            }
+        }
         self.result.functions.push(FunctionInfo {
             name,
             scope,
@@ -7032,7 +7089,7 @@ impl<'a> Sema<'a> {
             generic_env,
             environment: true,
             captures,
-            constant_values: HashMap::new(),
+            constant_values: inherited_constants,
             locals: capture_locals,
             span: span_of_function,
         });
@@ -7910,6 +7967,76 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Creates an accessor declared by an array extension template (§3.8.3).
+    fn create_array_extension_accessor(
+        &mut self,
+        node: NodeId,
+        declaration: &AccessorDecl,
+        owner: TypeId,
+    ) {
+        let Some(ty) = self.resolve_type(declaration.ty) else {
+            return;
+        };
+        let scoped =
+            self.resolve_scoped_targets(&declaration.modifiers, Some(owner), self.span_of(node));
+        let mut accessor = AccessorInfo {
+            accessibility: declaration.modifiers.accessibility,
+            scoped,
+            name: declaration.name.clone(),
+            ty,
+            getter: None,
+            setter: None,
+        };
+        for member in &declaration.members {
+            let implementation = match (member.expression, member.body) {
+                // `get = (this: &array(length) T) cardinal(4) => { ... }`:
+                // the function literal's block/expression is the implementation
+                // and its `this` parameter matches the hidden receiver.
+                (Some(expression), None) => match self.node_kind(expression).clone() {
+                    NodeKind::FunctionLiteral(literal) => {
+                        Some(match self.node_kind(literal.body) {
+                            NodeKind::Block(_) => FunctionBody::Block(literal.body),
+                            NodeKind::VerbatimBlock(inner) => FunctionBody::Block(inner),
+                            _ => FunctionBody::Expression(literal.body),
+                        })
+                    }
+                    _ => Some(FunctionBody::Expression(expression)),
+                },
+                (None, Some(block)) => Some(FunctionBody::Block(block)),
+                (Some(_), Some(_)) => {
+                    self.error(
+                        member.span,
+                        "an accessor member takes either an expression or a block",
+                    );
+                    None
+                }
+                (None, None) => None,
+            };
+            if implementation.is_none() {
+                self.error(member.span, "accessor member requires an implementation");
+                continue;
+            }
+            let method = self.create_accessor_method(
+                owner,
+                &declaration.name,
+                member.is_getter,
+                ty,
+                implementation,
+                member.span,
+            );
+            if member.is_getter {
+                accessor.getter = method;
+            } else {
+                accessor.setter = method;
+            }
+        }
+        self.result
+            .owner_accessors
+            .entry(owner)
+            .or_default()
+            .push(accessor);
+    }
+
     /// Instantiates the `extension for array(...)` templates that match
     /// `type_id` (§3.8.3).
     fn ensure_array_extensions(&mut self, type_id: TypeId) {
@@ -7962,17 +8089,21 @@ impl<'a> Sema<'a> {
             };
             let mut created = Vec::new();
             for member in members {
-                match self.node_kind(member).clone() {
+                // Each instance owns a deep clone of the member AST: bodies are
+                // checked per instantiation (bound length, element type), so
+                // sharing the template's nodes would alias their resolutions.
+                let cloned = self.clone_declaration(member);
+                match self.node_kind(cloned).clone() {
                     NodeKind::Fixed(declaration) => {
-                        if let Some(index) = self.create_method(member, &declaration, type_id) {
+                        if let Some(index) = self.create_method(cloned, &declaration, type_id) {
                             created.push(index);
                         }
                     }
-                    NodeKind::Accessor(_) => {
-                        self.unsupported(self.span_of(member), "array extension accessors")
+                    NodeKind::Accessor(declaration) => {
+                        self.create_array_extension_accessor(cloned, &declaration, type_id);
                     }
                     NodeKind::Operator(_) => {
-                        self.unsupported(self.span_of(member), "array extension operators")
+                        self.unsupported(self.span_of(cloned), "array extension operators")
                     }
                     _ => {}
                 }

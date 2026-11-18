@@ -3562,3 +3562,24 @@ fixed Main(): integer(4)
     // 3 + 5
     assert_eq!(run_program(source), 10);
 }
+
+#[test]
+fn array_extension_accessors_expose_the_bound_length() {
+    let source = "\
+extension for array(length: cardinal(4)) T
+{
+    public accessor Size: cardinal(4)
+    {
+        get = (this: &array(length) T) cardinal(4) => { return Cast<cardinal(4)>(length); }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local values: array(4) integer(4) = { 1, 2, 3, 4 };
+    local letters: array(7) integer(4) = { 1, 2, 3, 4, 5, 6, 7 };
+    return Cast<integer(4)>(values.Size) + Cast<integer(4)>(letters.Size);
+}";
+    // 4 + 7
+    assert_eq!(run_program(source), 11);
+}

@@ -325,3 +325,4 @@ report an error (§4.8).
 | 104 | MED | §13 | Code generation used hardcoded 8/16-byte pointer offsets | partial (9519b23: pointer_byte_offset(slots) for typeinfo/interface/exception/closure offsets; 32-bit still diagnosed because heap class layout is unverified) |
 | 105 | HIGH | §12 | Heap-allocated structure read in an expression returns nondeterministic values | fixed (b166fc1: return expressions are evaluated before end-of-lifetime disposal; value spilled only when disposals exist; regression test) |
 | 106 | HIGH | §13 | i686 interface dispatch used 8-byte vtable slot stride (segfault/typeinfo jump) | fixed (ae98012: slot addressing scales by pointer_byte_offset(1); i686 build/run enabled and tested with heap classes) |
+| 107 | HIGH | §13 | armv7 build/link unsupported and 32-bit trap payload used an 8-byte offset | fixed (78d33eb: --sysroot + lld for ARM links, ARM32 layout, pointer-sized exception payload; qemu-arm heap-class and i686 trap tests) |

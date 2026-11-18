@@ -326,3 +326,4 @@ report an error (§4.8).
 | 105 | HIGH | §12 | Heap-allocated structure read in an expression returns nondeterministic values | fixed (b166fc1: return expressions are evaluated before end-of-lifetime disposal; value spilled only when disposals exist; regression test) |
 | 106 | HIGH | §13 | i686 interface dispatch used 8-byte vtable slot stride (segfault/typeinfo jump) | fixed (ae98012: slot addressing scales by pointer_byte_offset(1); i686 build/run enabled and tested with heap classes) |
 | 107 | HIGH | §13 | armv7 build/link unsupported and 32-bit trap payload used an 8-byte offset | fixed (78d33eb: --sysroot + lld for ARM links, ARM32 layout, pointer-sized exception payload; qemu-arm heap-class and i686 trap tests) |
+| 108 | HIGH | §3.7.1 | Heap-constructed class instances had no vtable/typeinfo header (interface dispatch crash) | fixed (7c3ab3f: emit_instance_header used by heap and stack construction; host/i686/armv7 verified, regression test) |

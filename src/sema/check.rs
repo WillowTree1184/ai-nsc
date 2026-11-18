@@ -302,6 +302,19 @@ impl<'a> Sema<'a> {
             }
         }
 
+        // Every class derives from the built-in Object root unless it names a
+        // base class (§15.2).
+        if is_class && base_type.is_none() {
+            if let Some(Symbol::Type(object)) = self.lookup("Object").cloned() {
+                let class_name = match self.node_kind(node) {
+                    NodeKind::Class(declaration) => declaration.name.clone(),
+                    _ => String::new(),
+                };
+                if class_name != "Object" {
+                    base_type = Some(object);
+                }
+            }
+        }
         let sealed_class = match self.node_kind(node) {
             NodeKind::Class(declaration) => declaration.modifiers.sealed,
             NodeKind::Structure(declaration) => declaration.modifiers.sealed,
@@ -2425,6 +2438,36 @@ impl<'a> Sema<'a> {
                 }
                 _ => None,
             },
+            NodeKind::Call(call) => {
+                // Platform.Is is a compile-time constant (§15.3).
+                let name = builtin_namespace_call(self.ast, call.callee, "Platform")?;
+                if name != "Is" || call.arguments.len() != 1 {
+                    return None;
+                }
+                let argument = &call.arguments[0];
+                match self.node_kind(argument.value) {
+                    NodeKind::StringLiteral(literal) => {
+                        let decoded = literal::decode_string(&literal.raw).ok()?;
+                        let name = String::from_utf8_lossy(&decoded.bytes).into_owned();
+                        Some(Self::platform_kind_from_name(&name)? == Self::host_platform_kind())
+                    }
+                    NodeKind::MemberAccess(access) => {
+                        let Some(Symbol::Type(type_id)) = self.try_resolve_name(access.base) else {
+                            return None;
+                        };
+                        let Type::Named(index) = self.types_of(type_id) else {
+                            return None;
+                        };
+                        let definition = &self.result.type_defs[index as usize];
+                        let (_, value) = definition
+                            .enum_members
+                            .iter()
+                            .find(|(member, _)| *member == access.name)?;
+                        Some(*value as u32 == Self::host_platform_kind())
+                    }
+                    _ => None,
+                }
+            }
             NodeKind::Name(name) => match self.lookup(&name.name).cloned() {
                 Some(Symbol::Global(global)) => {
                     let (fixed, init) = {
@@ -4668,7 +4711,11 @@ impl<'a> Sema<'a> {
             }
             NodeKind::Cast(cast) => self.is_compile_time_constant(cast.value),
             NodeKind::CompileTimeExpr(inner) => self.is_compile_time_constant(inner),
-            NodeKind::Call(call) => builtin_size_of_type_argument(self.ast, call.callee).is_some(),
+            NodeKind::Call(call) => {
+                builtin_size_of_type_argument(self.ast, call.callee).is_some()
+                    || builtin_namespace_call(self.ast, call.callee, "Platform")
+                        .is_some_and(|name| name == "Is")
+            }
             NodeKind::Name(name) => match self.lookup(&name.name) {
                 Some(Symbol::Global(global)) => {
                     let info = &self.result.globals[*global as usize];
@@ -5697,6 +5744,75 @@ impl<'a> Sema<'a> {
         Some(type_id)
     }
 
+    /// Evaluates `Platform.Is(...)` against the compilation target (§15.3).
+    fn check_platform_is(&mut self, node: NodeId, arguments: &[Argument]) -> Option<TypeId> {
+        let span = self.span_of(node);
+        if arguments.len() != 1 {
+            self.error(span, "Platform.Is takes exactly one argument");
+            return None;
+        }
+        let argument = &arguments[0];
+        let matches = match self.node_kind(argument.value) {
+            NodeKind::StringLiteral(literal) => match literal::decode_string(&literal.raw) {
+                Ok(decoded) => {
+                    let name = String::from_utf8_lossy(&decoded.bytes).into_owned();
+                    match Self::platform_kind_from_name(&name) {
+                        Some(kind) => kind == Self::host_platform_kind(),
+                        None => {
+                            self.error(self.span_of(argument.value), "unknown platform name");
+                            return None;
+                        }
+                    }
+                }
+                Err(message) => {
+                    self.error(self.span_of(argument.value), message);
+                    return None;
+                }
+            },
+            NodeKind::MemberAccess(access) => {
+                // `PlatformKind.Member`
+                let Some(Symbol::Type(type_id)) = self.try_resolve_name(access.base) else {
+                    self.error(self.span_of(node), "Platform.Is expects a platform kind");
+                    return None;
+                };
+                let Type::Named(index) = self.types_of(type_id) else {
+                    return None;
+                };
+                let definition = &self.result.type_defs[index as usize];
+                if definition.kind != TypeDefKind::Enumeration {
+                    self.error(self.span_of(node), "Platform.Is expects a platform kind");
+                    return None;
+                }
+                match definition
+                    .enum_members
+                    .iter()
+                    .find(|(member, _)| *member == access.name)
+                {
+                    Some((_, value)) => *value as u32 == Self::host_platform_kind(),
+                    None => {
+                        self.error(
+                            self.span_of(node),
+                            format!("'{}' is not a platform kind", access.name),
+                        );
+                        return None;
+                    }
+                }
+            }
+            _ => {
+                self.unsupported(
+                    self.span_of(argument.value),
+                    "Platform.Is with non-constant arguments",
+                );
+                return None;
+            }
+        };
+        self.result.resolutions[node as usize] = Some(Resolution::Constant {
+            ty: TypeId::BOOLEAN,
+            value: i128::from(matches),
+        });
+        Some(TypeId::BOOLEAN)
+    }
+
     /// Handles the compile-time diagnostics API (§15.3).
     fn check_compiler_call(
         &mut self,
@@ -5820,6 +5936,13 @@ impl<'a> Sema<'a> {
     }
 
     fn check_call(&mut self, node: NodeId, call: &CallExpr) -> Option<TypeId> {
+        // Compiler API: `Platform.Is(PlatformKind)` / `Platform.Is("name")`
+        // evaluates against the compilation target (§15.3).
+        if let Some(name) = builtin_namespace_call(self.ast, call.callee, "Platform") {
+            if name == "Is" {
+                return self.check_platform_is(node, &call.arguments);
+            }
+        }
         // Compile-time diagnostics: `Compiler.LogNote/LogWarning/LogError/Assert`
         // (§15.3).
         if let Some(name) = builtin_compiler_function(self.ast, call.callee) {
@@ -6475,6 +6598,21 @@ fn builtin_compiler_function(ast: &Ast, callee: NodeId) -> Option<String> {
         return None;
     };
     if namespace.name != "Compiler" {
+        return None;
+    }
+    Some(access.name)
+}
+
+/// Detects a call `Namespace.<name>(...)` on a built-in compiler namespace
+/// (§15.3).
+fn builtin_namespace_call(ast: &Ast, callee: NodeId, namespace: &str) -> Option<String> {
+    let NodeKind::MemberAccess(access) = ast.node(callee).kind.clone() else {
+        return None;
+    };
+    let NodeKind::Name(base) = ast.node(access.base).kind.clone() else {
+        return None;
+    };
+    if base.name != namespace {
         return None;
     }
     Some(access.name)

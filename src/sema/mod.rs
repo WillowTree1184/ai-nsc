@@ -555,6 +555,13 @@ pub enum Resolution {
     },
     /// A compiler-API call that produces no run-time code (§15.3).
     CompileTimeNoOp,
+    /// A compile-time constant value (the compiler API evaluates it).
+    Constant {
+        /// Type of the constant.
+        ty: TypeId,
+        /// Integer value (booleans are 0/1).
+        value: i128,
+    },
     /// `Type.SizeOf<T>()` from the compiler API (§11.8): a compile-time size.
     SizeOf {
         /// The type whose memory size is produced.
@@ -952,6 +959,35 @@ impl<'a> Sema<'a> {
         *self.scope_stack.last().expect("scope stack is never empty")
     }
 
+    /// The host platform kind as the numeric value of `PlatformKind` (§15.2).
+    pub(crate) fn host_platform_kind() -> u32 {
+        let triple = crate::HOST_TRIPLE.to_ascii_lowercase();
+        if triple.contains("windows") {
+            1
+        } else if triple.contains("linux") {
+            2
+        } else if triple.contains("darwin") || triple.contains("macos") || triple.contains("apple")
+        {
+            3
+        } else if triple.contains("freebsd") {
+            4
+        } else {
+            0
+        }
+    }
+
+    /// Resolves a canonical platform name to a `PlatformKind` value.
+    pub(crate) fn platform_kind_from_name(name: &str) -> Option<u32> {
+        match name.to_ascii_lowercase().as_str() {
+            "other" => Some(0),
+            "windows" => Some(1),
+            "linux" => Some(2),
+            "macos" => Some(3),
+            "freebsd" => Some(4),
+            _ => None,
+        }
+    }
+
     /// The `levels`-th ancestor of `scope` (its parent for 1), if it exists.
     pub(crate) fn ancestor_scope(&self, mut scope: usize, levels: usize) -> Option<usize> {
         for _ in 0..levels {
@@ -1115,9 +1151,144 @@ impl<'a> Sema<'a> {
         self.check_constructor_chains();
     }
 
+    /// Pushes a synthetic class declaration (used by the Built-In Library).
+    fn push_builtin_class(
+        &mut self,
+        name: &str,
+        base: Option<TypeId>,
+        is_abstract: bool,
+    ) -> TypeId {
+        let index = self.result.type_defs.len() as TypeDefId;
+        let node = NodeId::MAX - 100 - index;
+        self.result.type_defs.push(TypeDef {
+            name: name.to_string(),
+            qualified_name: name.to_string(),
+            kind: TypeDefKind::Class,
+            node,
+            generic_parameters: Vec::new(),
+            generic_arguments: Vec::new(),
+            template: None,
+            decl_scope: 0,
+            static_fields: std::collections::HashMap::new(),
+            static_methods: std::collections::HashMap::new(),
+            builtin_variant: None,
+            fields: Vec::new(),
+            field_initializers: Vec::new(),
+            methods: std::collections::HashMap::new(),
+            method_list: Vec::new(),
+            accessors: Vec::new(),
+            operators: Vec::new(),
+            interfaces: Vec::new(),
+            interface_dispatch: Vec::new(),
+            sealed: false,
+            is_abstract,
+            is_static: false,
+            vtable: Vec::new(),
+            vtable_ready: true,
+            base,
+            variant_states: Vec::new(),
+            union_members: Vec::new(),
+            tag_type: None,
+            payload_offset: 0,
+            payload_size: 0,
+            instance_size: 16,
+            instance_align: 8,
+            enum_members: Vec::new(),
+            underlying: None,
+            size: 8,
+            align: 8,
+        });
+        let type_id = self.result.types.intern(Type::Named(index));
+        self.declare(name.to_string(), Symbol::Type(type_id), Span::default());
+        type_id
+    }
+
+    /// Pushes a synthetic enumeration declaration (used by the Built-In Library).
+    fn push_builtin_enumeration(
+        &mut self,
+        name: &str,
+        signed: bool,
+        bytes: u8,
+        members: &[&str],
+    ) -> TypeId {
+        let index = self.result.type_defs.len() as TypeDefId;
+        let node = NodeId::MAX - 200 - index;
+        let underlying = self.result.types.integer(signed, bytes);
+        let size = u64::from(bytes);
+        self.result.type_defs.push(TypeDef {
+            name: name.to_string(),
+            qualified_name: name.to_string(),
+            kind: TypeDefKind::Enumeration,
+            node,
+            generic_parameters: Vec::new(),
+            generic_arguments: Vec::new(),
+            template: None,
+            decl_scope: 0,
+            static_fields: std::collections::HashMap::new(),
+            static_methods: std::collections::HashMap::new(),
+            builtin_variant: None,
+            fields: Vec::new(),
+            field_initializers: Vec::new(),
+            methods: std::collections::HashMap::new(),
+            method_list: Vec::new(),
+            accessors: Vec::new(),
+            operators: Vec::new(),
+            interfaces: Vec::new(),
+            interface_dispatch: Vec::new(),
+            sealed: false,
+            is_abstract: false,
+            is_static: false,
+            vtable: Vec::new(),
+            vtable_ready: true,
+            base: None,
+            variant_states: Vec::new(),
+            union_members: Vec::new(),
+            tag_type: None,
+            payload_offset: 0,
+            payload_size: 0,
+            instance_size: 0,
+            instance_align: 1,
+            enum_members: members
+                .iter()
+                .enumerate()
+                .map(|(position, member)| ((*member).to_string(), position as i128))
+                .collect(),
+            underlying: Some(underlying),
+            size,
+            align: size,
+        });
+        let type_id = self.result.types.intern(Type::Named(index));
+        self.declare(name.to_string(), Symbol::Type(type_id), Span::default());
+        type_id
+    }
+
     /// Declares the Built-In Library exception class hierarchy (§15.2):
     /// `Exception` and the runtime exception subclasses.
     fn declare_builtin_exceptions(&mut self) {
+        // Built-In Library roots (§15.2): the Object class and the two built-in
+        // enumerations.
+        let object = self.push_builtin_class("Object", None, true);
+        self.push_builtin_enumeration(
+            "CallingConvention",
+            true,
+            4,
+            &[
+                "PlatformDefault",
+                "CDeclaration",
+                "StandardCall",
+                "FastCall",
+                "SystemVAMD64",
+                "ThisCall",
+                "VectorCall",
+                "MicrosoftX64",
+            ],
+        );
+        self.push_builtin_enumeration(
+            "PlatformKind",
+            false,
+            4,
+            &["Other", "Windows", "Linux", "MacOS", "FreeBSD"],
+        );
         const NAMES: [&str; 6] = [
             "Exception",
             "NotImplementedException",
@@ -1173,6 +1344,9 @@ impl<'a> Sema<'a> {
         }
         let exception = self.lookup("Exception").cloned();
         if let Some(Symbol::Type(exception)) = exception {
+            if let Type::Named(index) = self.result.types.get(exception) {
+                self.result.type_defs[*index as usize].base = Some(object);
+            }
             for name in &NAMES[1..] {
                 if let Some(Symbol::Type(type_id)) = self.lookup(name).cloned() {
                     if let Type::Named(index) = self.result.types.get(type_id) {

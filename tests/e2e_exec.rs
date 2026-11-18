@@ -2728,3 +2728,34 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 32);
 }
+
+#[test]
+fn compile_time_parameters_work_on_operators() {
+    let source = "\
+fixed Two: integer(4) = 2;
+fixed Five: integer(4) = 5;
+
+structure Multiplier
+{
+    public Factor: integer(4);
+
+    extension
+    {
+        operator *(left: Multiplier, #scale: integer(4)): integer(4)
+        {
+            return left.Factor * scale * 10;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local value: Multiplier;
+    value.Factor = 3;
+    local first: integer(4) = value * Two;
+    local second: integer(4) = value * Five;
+    return first + second - 200;
+}";
+    // 3*2*10 + 3*5*10 - 200 = 10
+    assert_eq!(run_program(source), 10);
+}

@@ -1490,10 +1490,6 @@ impl<'a> Sema<'a> {
     ) -> Option<Vec<ParameterInfo>> {
         let mut resolved = Vec::new();
         for (index, parameter) in parameters.iter().enumerate() {
-            if parameter.compile_time {
-                self.unsupported(parameter.span, "compile-time ('#') parameters");
-                return None;
-            }
             let Some(parameter_type_node) = parameter.ty else {
                 self.error(parameter.span, "operator parameters require a type");
                 return None;
@@ -1562,6 +1558,15 @@ impl<'a> Sema<'a> {
         let index = self.result.functions.len() as u32;
         let generic_env = self.captured_generic_env();
         let decl_scope = self.current_scope();
+        // Operators with '#' parameters are templates (§11.5).
+        let body = if all_parameters
+            .iter()
+            .any(|parameter| parameter.compile_time)
+        {
+            None
+        } else {
+            body
+        };
         self.result.functions.push(FunctionInfo {
             name: name.to_string(),
             scope,
@@ -5085,6 +5090,11 @@ impl<'a> Sema<'a> {
             UnaryOp::Negate => {
                 let ty = self.check_expr(unary.operand, expected)?;
                 if let Some(method) = self.find_operator(ty, ty, OperatorKind::Negate) {
+                    let span = self.span_of(node);
+                    let Some(method) = self.specialize_operator(method, &[unary.operand], span)
+                    else {
+                        return None;
+                    };
                     self.result.resolutions[node as usize] = Some(Resolution::Operator { method });
                     return self.result.functions[method as usize]
                         .return_type
@@ -5162,6 +5172,8 @@ impl<'a> Sema<'a> {
         op: BinaryOp,
         left: TypeId,
         right: TypeId,
+        left_node: NodeId,
+        right_node: NodeId,
     ) -> Option<TypeId> {
         let (kind, ordering) = match op {
             BinaryOp::Add => (OperatorKind::Add, None),
@@ -5180,6 +5192,8 @@ impl<'a> Sema<'a> {
         match ordering {
             Some(negated) => {
                 let method = self.find_operator(left, right, kind)?;
+                let span = self.span_of(node);
+                let method = self.specialize_operator(method, &[left_node, right_node], span)?;
                 if negated {
                     self.result.resolutions[node as usize] =
                         Some(Resolution::DerivedNotEqual { method });
@@ -5192,6 +5206,8 @@ impl<'a> Sema<'a> {
                         );
                         return None;
                     };
+                    let equality =
+                        self.specialize_operator(equality, &[left_node, right_node], span)?;
                     self.result.resolutions[node as usize] = Some(Resolution::DerivedComparison {
                         ordering: method,
                         equality,
@@ -5203,6 +5219,8 @@ impl<'a> Sema<'a> {
                 let method = self
                     .find_operator(left, right, kind)
                     .or_else(|| self.find_operator(right, left, kind))?;
+                let span = self.span_of(node);
+                let method = self.specialize_operator(method, &[left_node, right_node], span)?;
                 self.result.resolutions[node as usize] = Some(Resolution::Operator { method });
                 Some(
                     self.result.functions[method as usize]
@@ -5248,6 +5266,38 @@ impl<'a> Sema<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Specializes a constant-parameter operator for the given operand
+    /// expressions (§11.5); non-template operators are returned unchanged.
+    fn specialize_operator(&mut self, method: u32, operands: &[NodeId], span: Span) -> Option<u32> {
+        let is_template = {
+            let function = &self.result.functions[method as usize];
+            function.template.is_none()
+                && function
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.compile_time)
+        };
+        if !is_template {
+            return Some(method);
+        }
+        let parameters = self.result.functions[method as usize].parameters.clone();
+        let mut constants = Vec::new();
+        for (parameter, operand) in parameters.iter().zip(operands.iter()) {
+            if !parameter.compile_time {
+                continue;
+            }
+            if !self.is_compile_time_constant(*operand) {
+                self.error(
+                    span,
+                    "the arguments of a compile-time ('#') parameter must be compile-time constants",
+                );
+                return None;
+            }
+            constants.push(self.eval_const_int(*operand)?);
+        }
+        self.instantiate_constant_function(method, &constants, span)
     }
 
     fn find_operator(&self, owner: TypeId, other: TypeId, kind: OperatorKind) -> Option<u32> {
@@ -5471,7 +5521,14 @@ impl<'a> Sema<'a> {
                 "the illegal value literal must not be used as a comparison operand",
             );
         }
-        if let Some(result) = self.check_overloaded_binary(node, binary.op, left_type, right_type) {
+        if let Some(result) = self.check_overloaded_binary(
+            node,
+            binary.op,
+            left_type,
+            right_type,
+            binary.left,
+            binary.right,
+        ) {
             return Some(result);
         }
         // Built-in pointer arithmetic (§3.6.2): `pointer + integer`,

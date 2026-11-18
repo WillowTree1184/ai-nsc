@@ -8222,9 +8222,7 @@ impl<'a> Sema<'a> {
                         Some(element_type) => element_type,
                         None => {
                             // Infer from the range start expression's type.
-                            let Some(ty) = self.check_expr(range.start, None) else {
-                                return None;
-                            };
+                            let ty = self.check_expr(range.start, None)?;
                             element_type = Some(ty);
                             ty
                         }

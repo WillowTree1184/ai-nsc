@@ -265,3 +265,4 @@ report an error (§4.8).
 | 44 | HIGH | §5.4, §15.2 | Custom heap allocators (`heap(allocator)`) and the IAllocator interface missing | partial (11d5fb8: IAllocator interface with Allocate/Deallocate, allocator expression checking, allocate/deallocate through the interface with AllocateFailedException; IIterator/IIterable and an end-to-end allocator test remain) |
 | 45 | MED | §15.2 | `IIterator<T>`, `IIterable<T>` and `DefaultAllocator` absent from the Built-In Library | partial (8ee6895: IIterator<T>/IIterable<T> instantiated and usable, end-to-end test; DefaultAllocator and containers remain) |
 | 46 | HIGH | §5.6 | `for` over `IIterator`/`IIterable` targets missing | fixed (ea017f6: iterator/iterable traversal with Next()/Value/Null, accessor conversion, break/continue) |
+| 47 | MED | §15.2 | Built-In Library containers (array/list style iterables) absent | open |

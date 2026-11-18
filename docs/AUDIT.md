@@ -321,3 +321,4 @@ report an error (§4.8).
 | 100 | MED | §11.3 | '#(...)' rejected calls to ordinary compile-time functions | fixed (bb08e7d: compile-time-evaluable predicate, function interpretation, float-to-integer constant folding) |
 | 101 | LOW | §13 | Layout sizing hardcoded 8-byte pointers (blocked 32-bit targets) | partial (a4d857b: TargetLayout plumbing for pointers/integer64/float64 alignment; default host unchanged, 32-bit triples still diagnosed) |
 | 102 | MED | §11.4 | Compile-time execution was limited to the hand-written integer interpreter | partial (2100738: MCJIT evaluator for integer functions up to 64 bits, launcher-less module generation, JIT tests; semantic-analysis wiring pending) |
+| 103 | MED | §11.4 | Compile-time execution did not use the JIT and rejected non-integer compile-time code | fixed (e9611cc: JIT-backed compile-time calls in phase B, live top-level constants, address-based JIT invocation, host-only with interpreter fallback) |

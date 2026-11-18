@@ -173,6 +173,10 @@ pub enum ScopedKind {
     Type(TypeId),
     /// The declaring type's operators.
     Operator,
+    /// A member (and its overrides); resolved after declarations.
+    Member(u32),
+    /// A member name awaiting declaration resolution.
+    Pending(String),
 }
 
 /// One field of a structure or class (§3.8.1).
@@ -1348,6 +1352,9 @@ impl<'a> Sema<'a> {
         // Pass 2: resolve field types, layouts, enumeration values and
         // function/global signatures.
         self.resolve_declarations(&roots);
+
+        // Resolve `scoped` member-name targets now that all members exist (§9.5).
+        self.resolve_pending_scoped();
 
         // Pass 3: check bodies and initializers.
         self.finalize_variant_union_layouts();

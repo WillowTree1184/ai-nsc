@@ -1082,3 +1082,22 @@ fixed Main(): integer(4) { return 0; }",
     );
     assert!(stderr.contains("'Visible' is not accessible"), "{stderr}");
 }
+
+#[test]
+fn scoped_member_targets_reject_other_members() {
+    let stderr = check_source(
+        "\
+class Animal
+{
+    extension
+    {
+        protected scoped(Speak) fixed Hidden(this: Animal): integer(4) { return 3; }
+        public fixed Other(this: Animal): integer(4) { return this.Hidden(); }
+        public virtual fixed Speak(this: Animal): integer(4) { return 0; }
+    }
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(stderr.contains("'Hidden' is not accessible"), "{stderr}");
+}

@@ -3291,3 +3291,31 @@ fixed Main(): integer(4)
     // 4 + (2 + 3)
     assert_eq!(run_program(source), 9);
 }
+
+#[test]
+fn scoped_member_targets_allow_overrides() {
+    let source = "\
+class Animal
+{
+    extension
+    {
+        protected scoped(Speak) fixed Hidden(this: Animal): integer(4) { return 3; }
+        public virtual fixed Speak(this: Animal): integer(4) { return this.Hidden(); }
+    }
+}
+
+class Cat: Animal
+{
+    extension
+    {
+        public override fixed Speak(this: Cat): integer(4) { return this.Hidden() + 10; }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local cat: Cat = Cat();
+    return cat.Speak();
+}";
+    assert_eq!(run_program(source), 13);
+}

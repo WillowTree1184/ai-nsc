@@ -2051,12 +2051,26 @@ impl<'a> Sema<'a> {
                             sealed: *sealed,
                         }),
                         _ => {
-                            let member = owner
-                                .is_some_and(|owner| !self.collect_methods(owner, name).is_empty());
-                            if member {
-                                self.unsupported(span, "scoped member targets");
-                            } else {
-                                self.error(span, format!("unknown scoped target '{name}'"));
+                            let member = owner.and_then(|owner| {
+                                self.collect_methods(owner, name).first().copied()
+                            });
+                            match member {
+                                Some(method) => result.push(ScopedInfo {
+                                    kind: ScopedKind::Member(method),
+                                    sealed: *sealed,
+                                }),
+                                None => {
+                                    if owner.is_some() {
+                                        // The member may be declared later in the
+                                        // same type; resolve after declarations.
+                                        result.push(ScopedInfo {
+                                            kind: ScopedKind::Pending(name.clone()),
+                                            sealed: *sealed,
+                                        });
+                                    } else {
+                                        self.error(span, format!("unknown scoped target '{name}'"));
+                                    }
+                                }
                             }
                         }
                     }
@@ -2064,6 +2078,115 @@ impl<'a> Sema<'a> {
             }
         }
         result
+    }
+
+    /// Whether `owner` is `target` or inherits from it.
+    fn owner_derives_from(&self, owner: TypeId, target: TypeId) -> bool {
+        let mut current = Some(owner);
+        let mut depth = 0;
+        while let Some(ty) = current {
+            depth += 1;
+            if depth > 32 {
+                return false;
+            }
+            if ty == target {
+                return true;
+            }
+            let Type::Named(index) = self.types_of(ty) else {
+                return false;
+            };
+            current = self.result.type_defs[index as usize].base;
+        }
+        false
+    }
+
+    /// Whether the current function is the scoped member target or one of its
+    /// overrides (§9.5).
+    fn member_scope_allows(&self, target: u32, sealed: bool) -> bool {
+        let Some(current) = self.current_function else {
+            return false;
+        };
+        if current == target {
+            return true;
+        }
+        if sealed {
+            return false;
+        }
+        let base = &self.result.functions[target as usize];
+        let current_function = &self.result.functions[current as usize];
+        if !current_function.is_override || current_function.name != base.name {
+            return false;
+        }
+        match (current_function.method_of, base.method_of) {
+            (Some(current_owner), Some(base_owner)) => {
+                self.owner_derives_from(current_owner, base_owner)
+            }
+            _ => false,
+        }
+    }
+
+    /// Resolves `scoped` member-name targets that were declared before their
+    /// member (§9.5).
+    pub(crate) fn resolve_pending_scoped(&mut self) {
+        for index in 0..self.result.type_defs.len() {
+            let owner_type = self.result.types.intern(Type::Named(index as u32));
+            let method_list = self.result.type_defs[index].method_list.clone();
+            for method in method_list {
+                let scoped = self.result.functions[method as usize].scoped.clone();
+                let resolved = self.resolve_pending_scoped_list(owner_type, scoped);
+                self.result.functions[method as usize].scoped = resolved;
+            }
+            let field_count = self.result.type_defs[index].fields.len();
+            for field in 0..field_count {
+                let scoped = self.result.type_defs[index].fields[field].scoped.clone();
+                let resolved = self.resolve_pending_scoped_list(owner_type, scoped);
+                self.result.type_defs[index].fields[field].scoped = resolved;
+            }
+            let accessor_count = self.result.type_defs[index].accessors.len();
+            for accessor in 0..accessor_count {
+                let scoped = self.result.type_defs[index].accessors[accessor]
+                    .scoped
+                    .clone();
+                let resolved = self.resolve_pending_scoped_list(owner_type, scoped);
+                self.result.type_defs[index].accessors[accessor].scoped = resolved;
+            }
+        }
+    }
+
+    fn resolve_pending_scoped_list(
+        &mut self,
+        owner: TypeId,
+        scoped: Vec<ScopedInfo>,
+    ) -> Vec<ScopedInfo> {
+        scoped
+            .into_iter()
+            .map(|entry| match entry.kind {
+                ScopedKind::Pending(name) => {
+                    let member = self
+                        .collect_methods(owner, &name)
+                        .first()
+                        .copied()
+                        .map(|method| ScopedKind::Member(method));
+                    match member {
+                        Some(kind) => ScopedInfo {
+                            kind,
+                            sealed: entry.sealed,
+                        },
+                        None => {
+                            self.error(Span::default(), format!("unknown scoped target '{name}'"));
+                            ScopedInfo {
+                                kind: ScopedKind::Pending(name),
+                                sealed: entry.sealed,
+                            }
+                        }
+                    }
+                }
+                other => ScopedInfo {
+                    kind: other,
+                    sealed: entry.sealed,
+                },
+            })
+            .collect()
     }
 
     /// Whether the function being checked is an operator whose parameter list
@@ -2116,6 +2239,8 @@ impl<'a> Sema<'a> {
                 }
             }
             ScopedKind::Operator => self.current_is_operator_of(declaring),
+            ScopedKind::Member(member) => self.member_scope_allows(*member, target.sealed),
+            ScopedKind::Pending(_) => false,
         })
     }
 

@@ -269,7 +269,7 @@ report an error (§4.8).
 | 48 | MED | §9.1-§9.4 | Accessibility modifiers not enforced on member access | partial (bb38cab: fields, methods, constructors, accessors and static fields enforce public/private/protected; function-value access rights (§9.1) remain open) |
 | 49 | MED | §9.6 | `readonly` field assignment not enforced | fixed (d3942bf: assignment limited to constructors of the declaring/derived types) |
 | 50 | MED | §3.8.1 | Instance field initializers were not type-checked | fixed (d5947c6: resolve in the declaring type's scope with implicit conversions and diagnostics) |
-| 51 | HIGH | §3.6.1 | Variable-length arrays rejected | fixed (18cb471: runtime-dimension array types as pointer+length struct, stack allocation, bounds checks, for-in traversal; multi-dimensional VLAs remain unsupported) |
+| 51 | HIGH | §3.6.1 | Variable-length arrays rejected | fixed (18cb471 VLA basics; bb97379 leading-runtime multi-dimensional VLAs, non-leading runtime dimensions diagnosed) |
 | 52 | MED | §3.6.3 | Calling conventions ignored (function types always default) | fixed (fa6d5d8: convention in function types/declarations/methods/literals, LLVM CC on definitions and call sites for C/SystemV/Win64, unsupported conventions diagnosed) |
 | 53 | MED | §8.4 | Methods required a first by-reference this; extension functions without this rejected | fixed (b844817: this of target type detected anywhere, class targets without '&', extension-scoped functions registered; value-type targets still require '&') |
 | 54 | MED | §9.14 | `aligned(N)` validation and union offset semantics incomplete | fixed (01e1fa2: structure default alignment/packing, field overrides, union member offsets unadjusted, invalid targets diagnosed) |

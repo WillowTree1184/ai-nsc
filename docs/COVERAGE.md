@@ -46,7 +46,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | Literal decoding: integer/float/character/string, encodings, raw `\x` bytes | ✅ | `src/literal.rs` unit tests |
 | §3.1–3.2 type constructors, basic types, no implicit basic conversions | ✅ | e2e arithmetic, casts, comparison tests |
 | §3.3–3.5 value/reference semantics, `&` by-reference parameters, scoped storage | ✅ | by-ref parameter and alias e2e tests |
-| §3.6.1 arrays: fixed layout, indexing bounds, literals/repeat/range, array↔pointer casts, array parameter expansion, **VLA** | ✅ | e2e arrays/bounds/VLA tests; multi-dimensional VLA diagnosed |
+| §3.6.1 arrays: fixed layout, indexing bounds, literals/repeat/range, array↔pointer casts, array parameter expansion, **VLA** | ✅ | e2e arrays/bounds/VLA tests; multi-dimensional VLAs with a leading runtime dimension supported; non-leading runtime dimensions diagnosed |
 | §3.6.2 pointers: member access, `p ± i`, `p - q`, casts, `&`/`*` expressions | ✅ | e2e pointer tests |
 | §3.6.3 function types, `wildcard`, calling conventions | ✅ | function value/closures tests; C/SystemV/Win64 LLVM conventions, others diagnosed |
 | §3.7.1 classes: layout, inheritance, vtable/RTTI, construction, destructors, statics, abstract/sealed/static class | ✅ | class e2e tests, constructor-chain checks |
@@ -92,7 +92,8 @@ These are deliberate, documented limitations rather than silent miscompiles:
    runtime equivalents are still emitted; results are observationally
    equivalent for the language's observable effects, but the generated code is
    not reduced to solely the required end products (§11.4 exact wording).
-2. **Multi-dimensional variable-length arrays** are diagnosed.
+2. **Non-leading runtime array dimensions** are diagnosed (multi-dimensional
+   VLAs with a leading runtime dimension are supported).
 3. **Generic methods declaring their own type parameters** are diagnosed.
 4. **Array extension targets** (`extension for array(...)`) are diagnosed.
 5. **`verbatim`** is parsed/accepted but has no distinct semantics yet.

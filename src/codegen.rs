@@ -3446,6 +3446,40 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                         let condition = self.emit_type_check(instance, type_id)?;
                         (condition, pattern_info)
                     }
+                    Some(MatchPatternInfo::IsIllegal) => {
+                        let value = self
+                            .builder
+                            .build_load(llvm_type, value_slot, "match_float")
+                            .map_err(|error| format!("cannot load match value: {error}"))?
+                            .into_float_value();
+                        let condition = self
+                            .builder
+                            .build_float_compare(FloatPredicate::UNO, value, value, "is_illegal")
+                            .map_err(|error| format!("cannot compare: {error}"))?;
+                        (condition, pattern_info)
+                    }
+                    Some(MatchPatternInfo::IsInfinite { negative }) => {
+                        let value = self
+                            .builder
+                            .build_load(llvm_type, value_slot, "match_float")
+                            .map_err(|error| format!("cannot load match value: {error}"))?
+                            .into_float_value();
+                        let infinity = value.get_type().const_float(if negative {
+                            f64::NEG_INFINITY
+                        } else {
+                            f64::INFINITY
+                        });
+                        let condition = self
+                            .builder
+                            .build_float_compare(
+                                FloatPredicate::OEQ,
+                                value,
+                                infinity,
+                                "is_infinite",
+                            )
+                            .map_err(|error| format!("cannot compare: {error}"))?;
+                        (condition, pattern_info)
+                    }
                     None => {
                         let value = self
                             .builder
@@ -3607,6 +3641,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .map_err(|error| format!("cannot bind payload: {error}"))?;
                 Ok(())
             }
+            MatchPatternInfo::IsIllegal | MatchPatternInfo::IsInfinite { .. } => Ok(()),
             MatchPatternInfo::IsClass { binding, .. } => {
                 let Some(binding) = binding else {
                     return Ok(());

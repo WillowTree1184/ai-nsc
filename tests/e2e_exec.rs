@@ -3345,3 +3345,40 @@ fixed Main(): integer(4)
     // (2 + 10) + (3 + 1)
     assert_eq!(run_program(source), 16);
 }
+
+#[test]
+fn special_float_match_patterns() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local bad: float(8) = illegal;
+    local big: float(8) = infinite;
+    local small: float(8) = -infinite;
+    local normal: float(8) = 1.5;
+    local score: integer(4) = 0;
+
+    match bad
+    {
+        case is illegal { score += 1; }
+        case wildcard { }
+    }
+    match big
+    {
+        case is infinite { score += 2; }
+        case wildcard { }
+    }
+    match small
+    {
+        case is -infinite { score += 4; }
+        case wildcard { }
+    }
+    match normal
+    {
+        case is illegal { }
+        case is infinite { }
+        case wildcard { score += 8; }
+    }
+    return score;
+}";
+    assert_eq!(run_program(source), 15);
+}

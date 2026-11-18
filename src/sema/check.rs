@@ -4984,8 +4984,32 @@ impl<'a> Sema<'a> {
                     }
                 }
             }
-            IsTarget::Illegal | IsTarget::Infinite { .. } => {
-                self.unsupported(self.span_of(match_node), "is patterns over special floats");
+            IsTarget::Illegal => {
+                if !matches!(self.types_of(value_type), Type::Float { .. }) {
+                    self.error(
+                        self.span_of(match_node),
+                        "'is illegal' requires a floating-point value",
+                    );
+                    return;
+                }
+                self.result
+                    .match_patterns
+                    .insert((match_node, case_index as u32), MatchPatternInfo::IsIllegal);
+            }
+            IsTarget::Infinite { negative } => {
+                if !matches!(self.types_of(value_type), Type::Float { .. }) {
+                    self.error(
+                        self.span_of(match_node),
+                        "'is infinity' requires a floating-point value",
+                    );
+                    return;
+                }
+                self.result.match_patterns.insert(
+                    (match_node, case_index as u32),
+                    MatchPatternInfo::IsInfinite {
+                        negative: *negative,
+                    },
+                );
             }
         }
     }

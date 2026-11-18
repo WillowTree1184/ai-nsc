@@ -4152,6 +4152,14 @@ impl<'a> Sema<'a> {
     }
 
     fn check_statement(&mut self, node: NodeId) {
+        // `NOLAA.AssumeNoDemandNext` applies to exactly the next statement (§12.2).
+        let active = self.pending_assume_no_demand.take();
+        self.active_assume_no_demand = active;
+        self.check_statement_inner(node);
+        self.active_assume_no_demand = None;
+    }
+
+    fn check_statement_inner(&mut self, node: NodeId) {
         match self.node_kind(node).clone() {
             NodeKind::Block(_) => self.check_block(node),
             NodeKind::VerbatimBlock(inner) => {
@@ -4861,6 +4869,10 @@ impl<'a> Sema<'a> {
             _ => return,
         };
         if let Some(Symbol::Local(local)) = self.lookup(&name).cloned() {
+            if self.active_assume_no_demand == Some(local) {
+                // The following statement brings no existence demand (§12.2).
+                return;
+            }
             if self.heap_unit_locals.contains_key(&local) {
                 for peer in self.heap_group_peers(local) {
                     if let Some(index) = self.heap_unit_locals.get(&peer).copied() {
@@ -7824,6 +7836,9 @@ impl<'a> Sema<'a> {
             if let Some(index) = self.heap_unit_locals.get(&locals[0]).copied() {
                 self.heap_units[index].abandoned = true;
             }
+        }
+        if name == "AssumeNoDemandNext" {
+            self.pending_assume_no_demand = Some(locals[0]);
         }
         if name == "Bind" {
             let (required, required_by) = (locals[0], locals[1]);

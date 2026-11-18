@@ -3720,3 +3720,80 @@ fixed Main(): integer(4)
     // The bound pair shares one analysis unit: both are disposed (2 destructors).
     assert_eq!(run_program(source), 20);
 }
+
+#[test]
+fn nolaa_assume_no_demand_next_suppresses_one_statement_demand() {
+    let source = "\
+local destroyed: integer(4) = 0;
+
+structure Token
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Destruct(this: &Token) { destroyed = destroyed + 1; }
+    }
+}
+
+fixed Use(value: Token): integer(4)
+{
+    return value.Value;
+}
+
+fixed Run(): integer(4)
+{
+    heap token: Token = Token();
+    token.Value = 3;
+    NOLAA.AssumeNoDemandNext(token);
+    local seen: integer(4) = Use(token);
+    return seen;
+}
+
+fixed Main(): integer(4)
+{
+    local result: integer(4) = Run();
+    return result + destroyed * 10;
+}";
+    // The suppressed call does not demand the unit, so it is disposed at block end.
+    assert_eq!(run_program(source), 13);
+}
+
+#[test]
+fn nolaa_assume_no_demand_next_only_applies_to_one_statement() {
+    let source = "\
+local destroyed: integer(4) = 0;
+
+structure Token
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Destruct(this: &Token) { destroyed = destroyed + 1; }
+    }
+}
+
+fixed Use(value: Token): integer(4)
+{
+    return value.Value;
+}
+
+fixed Run(): integer(4)
+{
+    heap token: Token = Token();
+    token.Value = 3;
+    NOLAA.AssumeNoDemandNext(token);
+    local first: integer(4) = Use(token);
+    local second: integer(4) = Use(token);
+    return first + second;
+}
+
+fixed Main(): integer(4)
+{
+    local result: integer(4) = Run();
+    return result + destroyed * 10;
+}";
+    // The second call is a demand again, so no auto-dispose happens.
+    assert_eq!(run_program(source), 6);
+}

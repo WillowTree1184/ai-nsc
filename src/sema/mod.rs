@@ -1100,6 +1100,8 @@ pub fn analyze(
         in_verbatim: false,
         array_binding_lengths: Vec::new(),
         heap_groups: Vec::new(),
+        pending_assume_no_demand: None,
+        active_assume_no_demand: None,
         block_stack: Vec::new(),
         loop_blocks: Vec::new(),
     };
@@ -1177,6 +1179,10 @@ pub(crate) struct Sema<'a> {
     /// NOLAA existence-demand groups created by `NOLAA.Bind` (§12.2): each
     /// group is disposed at the same safe point.
     pub(crate) heap_groups: Vec<Vec<LocalId>>,
+    /// Pending `NOLAA.AssumeNoDemandNext` target for the next statement (§12.2).
+    pub(crate) pending_assume_no_demand: Option<LocalId>,
+    /// `NOLAA.AssumeNoDemandNext` target active for the statement being checked.
+    pub(crate) active_assume_no_demand: Option<LocalId>,
     /// Enclosing code blocks (innermost last), for NOLAA jump safe points.
     pub(crate) block_stack: Vec<NodeId>,
     /// Loop body blocks (innermost last), for NOLAA break/continue safe points.

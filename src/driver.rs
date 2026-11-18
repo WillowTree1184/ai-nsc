@@ -212,15 +212,27 @@ pub fn run_with_args(args: &[OsString]) -> i32 {
         (None, false) => Action::Build,
     };
 
+    let uefi_target = options
+        .target
+        .as_deref()
+        .is_some_and(|target| target.ends_with("-uefi"));
+    if uefi_target && matches!(action, Action::Run) {
+        eprintln!(
+            "ai-nsc: UEFI applications cannot be run directly; build a .efi and boot it with UEFI firmware (for example qemu-system-x86_64 with OVMF)"
+        );
+        return 1;
+    }
     // Cross-compilation produces objects but cannot link an executable for a
     // foreign target without a target sysroot (§14).
     if let Some(target) = &options.target {
         let runnable_32_bit =
             target.starts_with("i686") && crate::HOST_TRIPLE.starts_with("x86_64");
         let cross_build_with_sysroot = options.sysroot.is_some() && matches!(action, Action::Build);
+        let uefi_build = uefi_target && matches!(action, Action::Build);
         if target != crate::HOST_TRIPLE
             && !runnable_32_bit
             && !cross_build_with_sysroot
+            && !uefi_build
             && matches!(action, Action::Build | Action::Run)
         {
             eprintln!(
@@ -251,6 +263,10 @@ pub fn run_with_args(args: &[OsString]) -> i32 {
 /// specification is available; for now this validates argument handling, loads
 /// the inputs, and reports that the pipeline is not implemented yet.
 fn compile(options: &Options) -> i32 {
+    let uefi_target = options
+        .target
+        .as_deref()
+        .is_some_and(|target| target.ends_with("-uefi"));
     if options.inputs.is_empty() {
         eprintln!("ai-nsc: no input files");
         return 1;
@@ -335,12 +351,14 @@ fn compile(options: &Options) -> i32 {
         _ => sema::types::TargetLayout::HOST64,
     };
     let jit_allowed = options.target.is_none();
+    let freestanding = uefi_target;
     let sema_result = sema::analyze_with_options(
         &mut parsed,
         &sources,
         &mut diagnostics,
         target_layout,
         jit_allowed,
+        freestanding,
     );
     if sema_result.error_count > 0 {
         return 1;
@@ -396,11 +414,19 @@ fn compile(options: &Options) -> i32 {
             }
         }
         Some(Action::Build) => {
-            let output = options
-                .output
-                .clone()
-                .unwrap_or_else(|| PathBuf::from(default_stem));
-            match run_clang(&ir, &output, false, options) {
+            let output = options.output.clone().unwrap_or_else(|| {
+                if uefi_target {
+                    PathBuf::from(format!("{default_stem}.efi"))
+                } else {
+                    PathBuf::from(default_stem)
+                }
+            });
+            let result = if uefi_target {
+                link_uefi(&ir, &output, options)
+            } else {
+                run_clang(&ir, &output, false, options)
+            };
+            match result {
                 Ok(()) => 0,
                 Err(message) => {
                     eprintln!("ai-nsc: {message}");
@@ -435,6 +461,82 @@ fn compile(options: &Options) -> i32 {
     }
 }
 
+/// Links `ir` as a freestanding UEFI x86_64 application (§1: no host OS is
+/// required). A generated assembly entry thunk calls the generated `main`; on
+/// the host test path (`AINSC_UEFI_TEST_EXIT`) it also reports `main`'s result
+/// through the qemu ISA debug-exit port so an automated test can observe it.
+fn link_uefi(ir: &str, output: &Path, options: &Options) -> Result<(), String> {
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-uefi-{}-{}",
+        std::process::id(),
+        output.file_stem().map_or_else(
+            || "program".to_string(),
+            |stem| stem.to_string_lossy().into_owned()
+        )
+    ));
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("cannot create temp dir: {error}"))?;
+    let ir_path = directory.join("program.ll");
+    let object_path = directory.join("program.obj");
+    let stub_source = directory.join("uefi_entry.s");
+    let stub_object = directory.join("uefi_entry.obj");
+    let cleanup = || {
+        let _ = std::fs::remove_dir_all(&directory);
+    };
+    std::fs::write(&ir_path, ir).map_err(|error| format!("cannot write IR: {error}"))?;
+    let test_exit = std::env::var_os("AINSC_UEFI_TEST_EXIT").is_some();
+    let entry = if test_exit {
+        "padding: .byte 0x90\n.globl efi_main\nefi_main:\n    sub $0x28, %rsp\n    call main\n    movzbl %al, %eax\n    add $1, %al\n    mov $0x501, %dx\n    out %al, %dx\n1:\n    jmp 1b\n"
+    } else {
+        "padding: .byte 0x90\n.globl efi_main\nefi_main:\n    sub $0x28, %rsp\n    call main\n    xor %eax, %eax\n    add $0x28, %rsp\n    ret\n"
+    };
+    let stub = format!("{entry}.globl abort\nabort:\n    jmp abort\n");
+    std::fs::write(&stub_source, stub)
+        .map_err(|error| format!("cannot write UEFI entry: {error}"))?;
+    let clang = std::env::var("AINSC_CLANG").unwrap_or_else(|_| "clang".to_string());
+    let compile = |input: &Path, out: &Path| -> Result<(), String> {
+        let result = Command::new(&clang)
+            .arg("--target=x86_64-pc-windows-msvc")
+            .arg("-c")
+            .arg(format!("-O{}", options.optimization_level))
+            .arg(input)
+            .arg("-o")
+            .arg(out)
+            .output()
+            .map_err(|error| format!("cannot run '{clang}': {error}"))?;
+        if result.status.success() {
+            Ok(())
+        } else {
+            cleanup();
+            Err(format!(
+                "'{clang}' failed for UEFI:\n{}",
+                String::from_utf8_lossy(&result.stderr)
+            ))
+        }
+    };
+    compile(&ir_path, &object_path)?;
+    compile(&stub_source, &stub_object)?;
+    let linker = std::env::var("AINSC_LLD_LINK").unwrap_or_else(|_| "lld-link".to_string());
+    let result = Command::new(&linker)
+        .arg("/subsystem:efi_application")
+        .arg("/entry:efi_main")
+        .arg("/nodefaultlib")
+        .arg(format!("/out:{}", output.display()))
+        .arg(&object_path)
+        .arg(&stub_object)
+        .output()
+        .map_err(|error| format!("cannot run '{linker}': {error}"))?;
+    if !result.status.success() {
+        cleanup();
+        return Err(format!(
+            "'{linker}' failed for UEFI:\n{}",
+            String::from_utf8_lossy(&result.stderr)
+        ));
+    }
+    cleanup();
+    Ok(())
+}
+
 /// Assembles/links `ir` with clang.
 fn run_clang(ir: &str, output: &Path, compile_only: bool, options: &Options) -> Result<(), String> {
     let directory = std::env::temp_dir();
@@ -456,7 +558,19 @@ fn run_clang(ir: &str, output: &Path, compile_only: bool, options: &Options) -> 
         command.arg("-c");
     }
     if let Some(target) = &options.target {
-        command.arg(format!("--target={target}"));
+        // LLVM 18 on this host cannot lower `-uefi` triples directly (data
+        // layout mismatch), but UEFI x86_64 uses the Windows x64 ABI and COFF
+        // objects, so the Windows MSVC backend is the practical backend.
+        if target.ends_with("-uefi") {
+            if !target.starts_with("x86_64") {
+                return Err(format!(
+                    "UEFI target support is limited to x86_64 in this build (requested '{target}')"
+                ));
+            }
+            command.arg("--target=x86_64-pc-windows-msvc");
+        } else {
+            command.arg(format!("--target={target}"));
+        }
     }
     if let Some(sysroot) = &options.sysroot {
         command.arg(format!("--sysroot={}", sysroot.display()));

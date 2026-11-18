@@ -67,6 +67,20 @@ pub struct CodegenOptions {
 /// (§13, §14). This build supports x86 and aarch64 code generation.
 fn configure_module_target(module: &Module<'_>, triple_text: &str) -> Result<(), String> {
     use inkwell::targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetTriple};
+    // LLVM 18 on this host rejects the `-uefi` triples because the driver and
+    // backend data layouts disagree. UEFI x86_64 uses the Windows x64 ABI and
+    // COFF objects, so configure the module for the Windows MSVC backend; the
+    // driver links the resulting object as an EFI application.
+    let triple_text = if triple_text.ends_with("-uefi") {
+        if !triple_text.starts_with("x86_64") {
+            return Err(format!(
+                "UEFI target support is limited to x86_64 in this build (requested '{triple_text}')"
+            ));
+        }
+        "x86_64-pc-windows-msvc"
+    } else {
+        triple_text
+    };
     let architecture = triple_text.split('-').next().unwrap_or("");
     match architecture {
         "x86_64" | "x86_64h" | "i686" => {

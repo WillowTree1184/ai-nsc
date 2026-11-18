@@ -12,8 +12,10 @@
   whole-program example that passes semantic analysis is compiled end to end.
 - Targets: x86_64/aarch64/riscv64; **i686** build+run on x86_64 hosts (verified
   end to end) and **armv7** cross-linked with `--sysroot` + lld and executed under
-  qemu-arm; both covered by CLI tests. riscv32 is object-only (no 32-bit RISC-V
-  sysroot on this host).
+  qemu-arm; **x86_64 UEFI** builds a freestanding EFI application (qemu+OVMF boot
+  test). All are covered by CLI tests. riscv32 is object-only (no 32-bit RISC-V
+  sysroot on this host); aarch64 UEFI is not supported yet. UEFI has no platform
+  `DefaultAllocator` (allocators are the developer's responsibility).
 - Compile-time execution (§11): top-level `#{}` blocks run at compile time
   (constants, assignments incl. compound, if/while/for-range, break/continue,
   `#if`, ordinary + recursive function calls; strict §11.7 constant predicate for

@@ -1170,7 +1170,7 @@ pub fn analyze_with_layout(
     engine: &mut DiagnosticEngine,
     layout: crate::sema::types::TargetLayout,
 ) -> SemaResult {
-    analyze_with_options(ast, sources, engine, layout, true)
+    analyze_with_options(ast, sources, engine, layout, true, false)
 }
 
 /// Runs semantic analysis for an explicit target layout and host-JIT choice.
@@ -1180,6 +1180,7 @@ pub fn analyze_with_options(
     engine: &mut DiagnosticEngine,
     layout: crate::sema::types::TargetLayout,
     jit_allowed: bool,
+    freestanding: bool,
 ) -> SemaResult {
     let node_count = ast.nodes.len();
     let mut sema = Sema {
@@ -1228,6 +1229,7 @@ pub fn analyze_with_options(
         top_level_blocks: Vec::new(),
         unknown_compile_time_names: std::collections::HashSet::new(),
         jit_allowed,
+        freestanding,
         compile_time_phase_b: false,
         compile_time_deferred: false,
         compile_time_aborted: false,
@@ -1320,6 +1322,9 @@ pub(crate) struct Sema<'a> {
     pub(crate) compile_time_expression_depth: usize,
     /// Locals declared inside compile-time blocks, keyed by function.
     pub(crate) compile_time_local_ids: Vec<(u32, LocalId)>,
+    /// Whether the target is freestanding (no host C library, e.g. UEFI): the
+    /// platform `DefaultAllocator` is then the developer's responsibility.
+    pub(crate) freestanding: bool,
     /// Whether a constant initializer is being checked (§5.3).
     pub(crate) in_constant_initializer: bool,
     /// Nesting depth of compile-time function interpretation (§11.4).
@@ -2208,63 +2213,70 @@ impl<'a> Sema<'a> {
                         Some(deallocate_result),
                     ));
                 }
-                // Platform-provided DefaultAllocator (§5.4, §15.2).
-                let default_allocator =
-                    self.push_builtin_class("DefaultAllocatorImpl", None, false);
-                let mut implementations = Vec::new();
-                if let (Some(allocate_result), Some(method)) = (allocate_result, allocate_method) {
-                    let _ = method;
-                    let allocate = self.push_builtin_class_method(
-                        default_allocator,
-                        "Allocate",
-                        &[("size", cardinal8), ("alignment", cardinal8)],
-                        Some(allocate_result),
-                        FunctionBody::BuiltinAllocate,
+                // Freestanding targets (UEFI) have no platform allocator: the
+                // developer supplies an `IAllocator` and uses explicit `heap`
+                // allocator expressions (§5.4).
+                if !self.freestanding {
+                    // Platform-provided DefaultAllocator (§5.4, §15.2).
+                    let default_allocator =
+                        self.push_builtin_class("DefaultAllocatorImpl", None, false);
+                    let mut implementations = Vec::new();
+                    if let (Some(allocate_result), Some(method)) =
+                        (allocate_result, allocate_method)
+                    {
+                        let _ = method;
+                        let allocate = self.push_builtin_class_method(
+                            default_allocator,
+                            "Allocate",
+                            &[("size", cardinal8), ("alignment", cardinal8)],
+                            Some(allocate_result),
+                            FunctionBody::BuiltinAllocate,
+                        );
+                        implementations.push(allocate);
+                    }
+                    if let (Some(deallocate_result), Some(method)) =
+                        (deallocate_result, deallocate_method)
+                    {
+                        let _ = method;
+                        let deallocate = self.push_builtin_class_method(
+                            default_allocator,
+                            "Deallocate",
+                            &[("block", pointer)],
+                            Some(deallocate_result),
+                            FunctionBody::BuiltinDeallocate,
+                        );
+                        implementations.push(deallocate);
+                    }
+                    if let Type::Named(default_index) = self.result.types.get(default_allocator) {
+                        let definition = &mut self.result.type_defs[*default_index as usize];
+                        definition.interfaces.push(allocator);
+                        definition
+                            .interface_dispatch
+                            .push((allocator, implementations));
+                    }
+                    let spelling = self.spelling(allocator);
+                    let mangled = mangle_function(&[], "DefaultAllocator", &[spelling]);
+                    let global_index = self.result.globals.len() as u32;
+                    self.result.globals.push(GlobalInfo {
+                        accessibility: crate::ast::Accessibility::Public,
+                        scoped: Vec::new(),
+                        verbatim: false,
+                        name: "DefaultAllocator".to_string(),
+                        scope: Vec::new(),
+                        ty: allocator,
+                        init: None,
+                        fixed: true,
+                        mangled,
+                        node: NodeId::MAX - 700 - global_index,
+                        span: Span::default(),
+                    });
+                    self.declare(
+                        "DefaultAllocator".to_string(),
+                        Symbol::Global(global_index),
+                        Span::default(),
                     );
-                    implementations.push(allocate);
+                    self.result.default_allocator_global = Some(global_index);
                 }
-                if let (Some(deallocate_result), Some(method)) =
-                    (deallocate_result, deallocate_method)
-                {
-                    let _ = method;
-                    let deallocate = self.push_builtin_class_method(
-                        default_allocator,
-                        "Deallocate",
-                        &[("block", pointer)],
-                        Some(deallocate_result),
-                        FunctionBody::BuiltinDeallocate,
-                    );
-                    implementations.push(deallocate);
-                }
-                if let Type::Named(default_index) = self.result.types.get(default_allocator) {
-                    let definition = &mut self.result.type_defs[*default_index as usize];
-                    definition.interfaces.push(allocator);
-                    definition
-                        .interface_dispatch
-                        .push((allocator, implementations));
-                }
-                let spelling = self.spelling(allocator);
-                let mangled = mangle_function(&[], "DefaultAllocator", &[spelling]);
-                let global_index = self.result.globals.len() as u32;
-                self.result.globals.push(GlobalInfo {
-                    accessibility: crate::ast::Accessibility::Public,
-                    scoped: Vec::new(),
-                    verbatim: false,
-                    name: "DefaultAllocator".to_string(),
-                    scope: Vec::new(),
-                    ty: allocator,
-                    init: None,
-                    fixed: true,
-                    mangled,
-                    node: NodeId::MAX - 700 - global_index,
-                    span: Span::default(),
-                });
-                self.declare(
-                    "DefaultAllocator".to_string(),
-                    Symbol::Global(global_index),
-                    Span::default(),
-                );
-                self.result.default_allocator_global = Some(global_index);
             }
             // Generic iterator interfaces (§15.2).
             self.push_builtin_interface_template(

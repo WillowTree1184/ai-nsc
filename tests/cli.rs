@@ -2367,3 +2367,134 @@ fixed Main(): integer(4)
     assert_eq!(stderr.matches("error: stop now").count(), 1, "{stderr}");
     assert!(!stderr.contains("iteration limit"), "{stderr}");
 }
+
+#[test]
+fn uefi_x86_64_builds_a_bootable_application() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let qemu_ok = std::process::Command::new("qemu-system-x86_64")
+        .arg("--version")
+        .output()
+        .is_ok();
+    if std::env::consts::ARCH != "x86_64"
+        || !std::path::Path::new("/usr/share/qemu/OVMF.fd").exists()
+        || !std::path::Path::new("/usr/bin/lld-link").exists()
+        || !std::path::Path::new("/usr/bin/mkfs.vfat").exists()
+        || !std::path::Path::new("/usr/bin/mcopy").exists()
+        || !qemu_ok
+    {
+        return;
+    }
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-uefi-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(&path, "fixed Main(): integer(4)\n{\n    return 42;\n}").expect("write");
+    let executable = directory.join("program.efi");
+    let output = ai_nsc()
+        .env("AINSC_UEFI_TEST_EXIT", "1")
+        .args([
+            "build",
+            "--target=x86_64-unknown-uefi",
+            "-o",
+            executable.to_str().expect("utf-8 path"),
+            path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("run ai-nsc");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let image = directory.join("disk.img");
+    assert!(std::process::Command::new("mkfs.vfat")
+        .args(["-C", image.to_str().expect("utf-8 path"), "32768"])
+        .output()
+        .expect("mkfs")
+        .status
+        .success());
+    assert!(std::process::Command::new("mmd")
+        .args([
+            "-i",
+            image.to_str().expect("utf-8 path"),
+            "::EFI",
+            "::EFI/BOOT"
+        ])
+        .output()
+        .expect("mmd")
+        .status
+        .success());
+    assert!(std::process::Command::new("mcopy")
+        .args([
+            "-i",
+            image.to_str().expect("utf-8 path"),
+            executable.to_str().expect("utf-8 path"),
+            "::EFI/BOOT/BOOTX64.EFI",
+        ])
+        .output()
+        .expect("mcopy")
+        .status
+        .success());
+    let status = std::process::Command::new("qemu-system-x86_64")
+        .args([
+            "-machine",
+            "q35",
+            "-m",
+            "128",
+            "-bios",
+            "/usr/share/qemu/OVMF.fd",
+            "-drive",
+            &format!("format=raw,file={}", image.display()),
+            "-display",
+            "none",
+            "-serial",
+            "none",
+            "-device",
+            "isa-debug-exit,iobase=0x501,iosize=1",
+            "-no-reboot",
+        ])
+        .status()
+        .expect("qemu");
+    let _ = std::fs::remove_dir_all(&directory);
+    // isa-debug-exit reports ((case + 1) << 1) | 1; main returned 42.
+    assert_eq!(status.code(), Some((43 << 1) | 1));
+}
+
+#[test]
+fn uefi_has_no_platform_default_allocator() {
+    // The UEFI target has no platform allocator (the developer must supply one),
+    // so heap-with-default-allocator programs are rejected.
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-uefi-heap-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(
+        &path,
+        "fixed Main(): integer(4)\n{\n    heap value: integer(4) = 1;\n    return value;\n}",
+    )
+    .expect("write");
+    let output = ai_nsc()
+        .args([
+            "check",
+            "--target=x86_64-unknown-uefi",
+            path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("DefaultAllocator") || stderr.contains("allocator"),
+        "{stderr}"
+    );
+}

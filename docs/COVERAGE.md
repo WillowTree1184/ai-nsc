@@ -124,6 +124,15 @@ These are deliberate, documented limitations rather than silent miscompiles:
    on x86_64 hosts) and armv7 (cross-link with `--sysroot` + LLVM lld, run under
    qemu-arm). Other architectures are diagnosed; riscv32 output is object-only
    because no 32-bit RISC-V sysroot is available on the development host.
+   **UEFI**: `--target=x86_64-unknown-uefi` builds a freestanding EFI application
+   (§1's post-ExitBootServices bare-metal goal): the driver emits a COFF object via
+   the Windows MSVC backend (LLVM 18 rejects `-uefi` triples on this host),
+   generates an `efi_main` thunk that calls the generated `main`, and links with
+   `lld-link /subsystem:efi_application /nodefaultlib`. There is no host C library
+   and therefore **no platform `DefaultAllocator`** on UEFI: the developer supplies
+   an `IAllocator` and uses explicit `heap` allocator expressions (allocators are
+   the developer's responsibility); bare `heap` is diagnosed. `run` is rejected
+   (boot with qemu + OVMF or real firmware); aarch64 UEFI is not supported yet.
 9. **Platform queries** in the compile-time library answer for the host target.
 11. Container/iterator utilities beyond the specification's §15.2 (dynamic
     arrays, lists, maps) are not provided.

@@ -13,8 +13,8 @@
   dirty while a concurrent session lands fixes — check `git status` before
   committing.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  — **210 tests green** (40 lib unit including 4 AST-clone tests, 45 CLI,
-  2 codegen/LLVM, 112 end-to-end execution, 10 parser, 1 spec-example conformance).
+  — **211 tests green** (40 lib unit including 4 AST-clone tests, 45 CLI,
+  2 codegen/LLVM, 113 end-to-end execution, 10 parser, 1 spec-example conformance).
 - Built-in library status: Object/enumerations/exceptions (with InnerException)/
   Optional/Result/Platform/NOLAA/IAllocator are available; IIterator, IIterable,
   DefaultAllocator and containers remain.

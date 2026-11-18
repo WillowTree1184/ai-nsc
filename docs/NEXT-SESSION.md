@@ -2,14 +2,14 @@
 
 ## State
 
-- Branch `main`; last feature commit `7c3ab3f` (heap class header fix, #108), docs
-  commit `d24eea3`. `git status` is clean.
+- Branch `main`; last feature commit `5425cd3` (trial Draft 1.151 adaptation).
+  `git status` is clean.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  — **303 tests green** (40 lib unit including 4 AST-clone tests, 78 CLI,
-  2 codegen/LLVM, 1 MCJIT probe, 2 JIT compile-time evaluation, 168 end-to-end
+  — **332 tests green** (40 lib unit including 4 AST-clone tests, 94 CLI,
+  2 codegen/LLVM, 1 MCJIT probe, 2 JIT compile-time evaluation, 181 end-to-end
   execution, 10 parser, 2 spec-example conformance). The spec-conformance tests
-  read the specification itself: every `novasharp` example parses, and every
-  whole-program example that passes semantic analysis is compiled end to end.
+  read `Draft 1.151.md`: all 91 `novasharp` examples parse, and every whole-program
+  example that passes semantic analysis is compiled end to end.
 - Targets: x86_64/aarch64/riscv64; **i686** build+run on x86_64 hosts (verified
   end to end) and **armv7** cross-linked with `--sysroot` + lld and executed under
   qemu-arm; **x86_64 UEFI** builds a freestanding EFI application (qemu+OVMF boot
@@ -18,8 +18,9 @@
   `DefaultAllocator` (allocators are the developer's responsibility).
 - Compile-time execution (§11): top-level `#{}` blocks run at compile time
   (constants, assignments incl. compound, if/while/for-range, break/continue,
-  `#if`, ordinary + recursive function calls; strict §11.7 constant predicate for
-  `#` parameters and array dimensions). On the host target the full language is
+  `#if`, ordinary + recursive function calls, external linkable calls through the
+  host JIT; strict constant predicate for `#` parameters and array dimensions;
+  compile-time errors abort execution immediately). On the host target the full language is
   executed through LLVM's MCJIT (LLVM 18 has no IR interpreter); cross targets use
   the integer interpreter.
 - Built-in library (§15) complete: `Object`, `CallingConvention`, `PlatformKind`,
@@ -29,7 +30,7 @@
   (`Type.SizeOf`, `Compiler.Log*`/`Assert`, `Platform.Is`, `NOLAA.*`). Containers
   are intentionally not provided (§15.2 does not define them).
 - Docs: `docs/COVERAGE.md` maps every spec section to ✅/🟡/⛔ with evidence and
-  deliberate deviations; `docs/AUDIT.md` tracks the 111 reproduced defects (all
+  deliberate deviations; `docs/AUDIT.md` tracks the 129 reproduced defects (all
   fixed or marked partial with the fixing commit). Draft 1.151 changes are covered:
   `as` conversions, circular shifts, directional ranges, inferred `for` binding
   types, `@` markers, `for` without a binding, contextual keyword names.

@@ -1161,6 +1161,9 @@ pub fn analyze(
         compile_time_depth: 0,
         compile_time_local_ids: Vec::new(),
         in_constant_initializer: false,
+        compile_call_depth: 0,
+        top_level_blocks: Vec::new(),
+        compile_time_phase_b: false,
         array_binding_lengths: Vec::new(),
         heap_groups: Vec::new(),
         pending_assume_no_demand: None,
@@ -1250,6 +1253,13 @@ pub(crate) struct Sema<'a> {
     pub(crate) compile_time_local_ids: Vec<(u32, LocalId)>,
     /// Whether a constant initializer is being checked (§5.3).
     pub(crate) in_constant_initializer: bool,
+    /// Nesting depth of compile-time function interpretation (§11.4).
+    pub(crate) compile_call_depth: usize,
+    /// Top-level `#{}` blocks in execution order (§11.2).
+    pub(crate) top_level_blocks: Vec<NodeId>,
+    /// Whether top-level compile-time blocks are being re-executed after all
+    /// declarations are resolved (§11.2).
+    pub(crate) compile_time_phase_b: bool,
     /// Bound array dimension values while instantiating an array extension
     /// (§3.8.3).
     pub(crate) array_binding_lengths: Vec<HashMap<String, u64>>,
@@ -1507,6 +1517,10 @@ impl<'a> Sema<'a> {
 
         // Resolve `scoped` member-name targets now that all members exist (§9.5).
         self.resolve_pending_scoped();
+
+        // Pass 2 re-executes top-level compile-time blocks now that every
+        // declaration (including functions) is resolvable (§11.2).
+        self.rerun_top_level_compile_time();
 
         // Interface inheritance needs every interface's members resolved
         // (§3.7.3): flatten inherited method lists, expand class interface lists
@@ -2412,6 +2426,7 @@ impl<'a> Sema<'a> {
                     }
                 }
                 NodeKind::CompileTimeBlock(block) => {
+                    self.top_level_blocks.push(node);
                     self.execute_top_level_compile_time(node, block);
                 }
                 _ => {}
@@ -2441,27 +2456,33 @@ impl<'a> Sema<'a> {
         compound: Option<crate::ast::BinaryOp>,
     ) {
         let NodeKind::Name(name) = self.node_kind(*target).clone() else {
-            self.unsupported(
-                self.span_of(*target),
-                "compile-time assignments to non-identifier targets",
-            );
+            if self.compile_time_phase_b {
+                self.unsupported(
+                    self.span_of(*target),
+                    "compile-time assignments to non-identifier targets",
+                );
+            }
             return;
         };
         let Some((current, ty)) = self.top_level_constants.get(&name.name).copied() else {
-            self.error(
-                self.span_of(*target),
-                format!("'{}' is not a compile-time variable (§11.4)", name.name),
-            );
+            if self.compile_time_phase_b {
+                self.error(
+                    self.span_of(*target),
+                    format!("'{}' is not a compile-time variable (§11.4)", name.name),
+                );
+            }
             return;
         };
         self.suppress_errors += 1;
         let evaluated = self.eval_const_int(*value);
         self.suppress_errors -= 1;
         let Some(evaluated) = evaluated else {
-            self.unsupported(
-                self.span_of(*value),
-                "non-constant values in compile-time assignments",
-            );
+            if self.compile_time_phase_b {
+                self.unsupported(
+                    self.span_of(*value),
+                    "non-constant values in compile-time assignments",
+                );
+            }
             return;
         };
         let updated = match compound {
@@ -2505,6 +2526,26 @@ impl<'a> Sema<'a> {
     /// Executes a top-level compile-time block during declaration collection
     /// (§11.2, §11.4): constant locals become top-level compile-time variables
     /// available to later blocks, `#if`s and constant expressions.
+    /// Re-executes all top-level `#{}` blocks after declaration resolution so
+    /// compile-time function calls can be interpreted (§11.2). The `#if`
+    /// decisions already taken during declaration collection are preserved.
+    fn rerun_top_level_compile_time(&mut self) {
+        if self.top_level_blocks.is_empty() {
+            return;
+        }
+        self.top_level_constants.clear();
+        self.compile_time_phase_b = true;
+        let blocks = self.top_level_blocks.clone();
+        for node in blocks {
+            let block = match self.node_kind(node) {
+                NodeKind::CompileTimeBlock(block) => block,
+                _ => continue,
+            };
+            self.execute_top_level_compile_time(node, block);
+        }
+        self.compile_time_phase_b = false;
+    }
+
     fn execute_top_level_compile_time(&mut self, node: NodeId, block: NodeId) {
         let statements = self.block_statements(block);
         let flow = self.execute_compile_time_statements(&statements, false);
@@ -2525,6 +2566,10 @@ impl<'a> Sema<'a> {
         for statement in statements {
             let flow = match self.node_kind(*statement).clone() {
                 NodeKind::CompileTimeIf(if_statement) => {
+                    if self.compile_time_phase_b {
+                        // The declaration-selection decision was already made.
+                        continue;
+                    }
                     let condition = if_statement.condition;
                     let taken = self
                         .eval_compile_time_bool(condition, 0)
@@ -2558,7 +2603,9 @@ impl<'a> Sema<'a> {
                 NodeKind::Local(declaration) => {
                     for item in &declaration.items {
                         let Some(init) = item.init else {
-                            self.unsupported(item.span, "uninitialized compile-time variables");
+                            if self.compile_time_phase_b {
+                                self.unsupported(item.span, "uninitialized compile-time variables");
+                            }
                             continue;
                         };
                         self.suppress_errors += 1;
@@ -2572,10 +2619,14 @@ impl<'a> Sema<'a> {
                                 self.top_level_constants
                                     .insert(item.name.clone(), (value, ty));
                             }
-                            None => self.unsupported(
-                                item.span,
-                                "non-constant values in top-level compile-time blocks",
-                            ),
+                            None => {
+                                if self.compile_time_phase_b {
+                                    self.unsupported(
+                                        item.span,
+                                        "non-constant values in top-level compile-time blocks",
+                                    );
+                                }
+                            }
                         }
                     }
                     continue;
@@ -2597,6 +2648,9 @@ impl<'a> Sema<'a> {
                     continue;
                 }
                 NodeKind::ExpressionStmt(expression) => {
+                    if self.compile_time_phase_b {
+                        continue;
+                    }
                     self.compile_time_constants
                         .push(std::collections::HashMap::new());
                     self.check_expr(expression, None);

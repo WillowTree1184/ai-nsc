@@ -5,6 +5,15 @@ use super::*;
 use crate::ast::*;
 use crate::literal;
 
+/// Control flow of interpreted compile-time function bodies (§11.4).
+#[derive(Clone, Copy, Debug)]
+enum CompileFunctionFlow {
+    Normal,
+    Break,
+    Continue,
+    Return(i128),
+}
+
 impl<'a> Sema<'a> {
     // ==================================================================
     // Type resolution
@@ -3906,6 +3915,283 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Evaluates a call to an ordinary compile-time function by interpreting its
+    /// body (§11.4). Only integer-valued functions are interpreted.
+    fn eval_compile_time_call(&mut self, call: &crate::ast::CallExpr) -> Option<i128> {
+        let Some(Symbol::Functions(overloads)) = self.try_callee_symbol(call.callee) else {
+            return None;
+        };
+        if overloads.len() != 1 {
+            return None;
+        }
+        let index = overloads[0];
+        let parameters = self.result.functions[index as usize].parameters.clone();
+        if parameters.iter().any(|parameter| {
+            parameter.by_ref || parameter.compile_time || !self.is_integer(parameter.ty)
+        }) {
+            return None;
+        }
+        let return_type = self.result.functions[index as usize].return_type?;
+        if !self.is_integer(return_type) {
+            return None;
+        }
+        if call.arguments.len() != parameters.len() {
+            return None;
+        }
+        let mut arguments = Vec::with_capacity(call.arguments.len());
+        for argument in &call.arguments {
+            arguments.push(self.eval_const_int(argument.value)?);
+        }
+        self.execute_compile_time_function(index, &arguments)
+    }
+
+    fn execute_compile_time_function(&mut self, index: u32, arguments: &[i128]) -> Option<i128> {
+        if self.compile_call_depth >= 64 {
+            return None;
+        }
+        let (parameters, body) = {
+            let function = &self.result.functions[index as usize];
+            (function.parameters.clone(), function.body)
+        };
+        let Some(FunctionBody::Block(block)) = body else {
+            return None;
+        };
+        let statements = match self.node_kind(block) {
+            NodeKind::Block(statements) => statements.clone(),
+            _ => return None,
+        };
+        let mut environment = std::collections::HashMap::new();
+        for (parameter, value) in parameters.iter().zip(arguments.iter()) {
+            environment.insert(parameter.name.clone(), *value);
+        }
+        self.compile_call_depth += 1;
+        self.constant_env.push(environment);
+        let flow = self.execute_compile_time_function_statements(&statements);
+        self.constant_env.pop();
+        self.compile_call_depth -= 1;
+        match flow {
+            CompileFunctionFlow::Return(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn execute_compile_time_function_statements(
+        &mut self,
+        statements: &[NodeId],
+    ) -> CompileFunctionFlow {
+        for statement in statements {
+            match self.node_kind(*statement).clone() {
+                NodeKind::Local(declaration) => {
+                    for item in &declaration.items {
+                        let Some(init) = item.init else {
+                            return CompileFunctionFlow::Normal;
+                        };
+                        let Some(value) = self.eval_const_int(init) else {
+                            return CompileFunctionFlow::Normal;
+                        };
+                        if let Some(environment) = self.constant_env.last_mut() {
+                            environment.insert(item.name.clone(), value);
+                        }
+                    }
+                    continue;
+                }
+                NodeKind::Fixed(declaration) => {
+                    if let Some(Initializer::Expression(expression)) = declaration.init {
+                        if let Some(value) = self.eval_const_int(expression) {
+                            if let Some(environment) = self.constant_env.last_mut() {
+                                environment.insert(declaration.name.clone(), value);
+                            }
+                        }
+                    }
+                    continue;
+                }
+                NodeKind::Set(set_statement) => {
+                    let NodeKind::Name(name) = self.node_kind(set_statement.target).clone() else {
+                        return CompileFunctionFlow::Normal;
+                    };
+                    let Some(value) = self.eval_const_int(set_statement.value) else {
+                        return CompileFunctionFlow::Normal;
+                    };
+                    self.assign_compile_time_variable(&name.name, value);
+                    continue;
+                }
+                NodeKind::CompoundSet(compound) => {
+                    let NodeKind::Name(name) = self.node_kind(compound.target).clone() else {
+                        return CompileFunctionFlow::Normal;
+                    };
+                    let Some(current) = self
+                        .constant_env
+                        .iter()
+                        .rev()
+                        .find_map(|environment| environment.get(&name.name).copied())
+                    else {
+                        return CompileFunctionFlow::Normal;
+                    };
+                    let Some(value) = self.eval_const_int(compound.value) else {
+                        return CompileFunctionFlow::Normal;
+                    };
+                    let Some(updated) = self.apply_constant_compound(compound.op, current, value)
+                    else {
+                        return CompileFunctionFlow::Normal;
+                    };
+                    self.assign_compile_time_variable(&name.name, updated);
+                    continue;
+                }
+                NodeKind::If(if_statement) => {
+                    let flow = self.execute_compile_time_function_if(&if_statement);
+                    if matches!(
+                        flow,
+                        CompileFunctionFlow::Break
+                            | CompileFunctionFlow::Continue
+                            | CompileFunctionFlow::Return(_)
+                    ) {
+                        return flow;
+                    }
+                    continue;
+                }
+                NodeKind::While(while_statement) => {
+                    let flow = self.execute_compile_time_function_while(&while_statement);
+                    if matches!(
+                        flow,
+                        CompileFunctionFlow::Break
+                            | CompileFunctionFlow::Continue
+                            | CompileFunctionFlow::Return(_)
+                    ) {
+                        return flow;
+                    }
+                    continue;
+                }
+                NodeKind::Block(inner) => {
+                    let flow = self.execute_compile_time_function_statements(&inner);
+                    if matches!(
+                        flow,
+                        CompileFunctionFlow::Break
+                            | CompileFunctionFlow::Continue
+                            | CompileFunctionFlow::Return(_)
+                    ) {
+                        return flow;
+                    }
+                    continue;
+                }
+                NodeKind::Return(return_statement) => {
+                    let Some(value) = return_statement.value else {
+                        return CompileFunctionFlow::Normal;
+                    };
+                    let Some(value) = self.eval_const_int(value) else {
+                        return CompileFunctionFlow::Normal;
+                    };
+                    return CompileFunctionFlow::Return(value);
+                }
+                NodeKind::Break(_) => return CompileFunctionFlow::Break,
+                NodeKind::Continue(_) => return CompileFunctionFlow::Continue,
+                NodeKind::ExpressionStmt(expression) => {
+                    // Compile-time API calls are no-ops at run time; other
+                    // statements are not interpreted.
+                    let is_api = builtin_compiler_function(self.ast, expression).is_some()
+                        || ["Platform", "NOLAA"].iter().any(|namespace| {
+                            builtin_namespace_call(self.ast, expression, namespace).is_some()
+                        })
+                        || builtin_size_of_type_argument(self.ast, expression).is_some();
+                    if !is_api {
+                        return CompileFunctionFlow::Normal;
+                    }
+                    continue;
+                }
+                _ => return CompileFunctionFlow::Normal,
+            }
+        }
+        CompileFunctionFlow::Normal
+    }
+
+    fn execute_compile_time_function_if(
+        &mut self,
+        statement: &crate::ast::IfStmt,
+    ) -> CompileFunctionFlow {
+        for branch in &statement.branches {
+            let Some(taken) = self.eval_compile_time_bool(branch.condition, 0) else {
+                return CompileFunctionFlow::Normal;
+            };
+            if taken {
+                let statements = match self.node_kind(branch.body) {
+                    NodeKind::Block(statements) => statements.clone(),
+                    _ => return CompileFunctionFlow::Normal,
+                };
+                return self.execute_compile_time_function_statements(&statements);
+            }
+        }
+        if let Some(else_block) = statement.else_block {
+            let statements = match self.node_kind(else_block) {
+                NodeKind::Block(statements) => statements.clone(),
+                _ => return CompileFunctionFlow::Normal,
+            };
+            return self.execute_compile_time_function_statements(&statements);
+        }
+        CompileFunctionFlow::Normal
+    }
+
+    fn execute_compile_time_function_while(
+        &mut self,
+        statement: &crate::ast::LoopStmt,
+    ) -> CompileFunctionFlow {
+        let mut iterations = 0usize;
+        while self
+            .eval_compile_time_bool(statement.condition, 0)
+            .unwrap_or(false)
+        {
+            iterations += 1;
+            if iterations > 1_000_000 {
+                return CompileFunctionFlow::Normal;
+            }
+            let statements = match self.node_kind(statement.body) {
+                NodeKind::Block(statements) => statements.clone(),
+                _ => return CompileFunctionFlow::Normal,
+            };
+            match self.execute_compile_time_function_statements(&statements) {
+                CompileFunctionFlow::Break => break,
+                CompileFunctionFlow::Return(value) => {
+                    return CompileFunctionFlow::Return(value);
+                }
+                CompileFunctionFlow::Normal | CompileFunctionFlow::Continue => {}
+            }
+        }
+        CompileFunctionFlow::Normal
+    }
+
+    fn assign_compile_time_variable(&mut self, name: &str, value: i128) {
+        if let Some(environment) = self.constant_env.last_mut() {
+            if environment.contains_key(name) {
+                environment.insert(name.to_string(), value);
+                return;
+            }
+        }
+        if let Some((_, ty)) = self.top_level_constants.get(name).copied() {
+            self.top_level_constants
+                .insert(name.to_string(), (value, ty));
+        }
+    }
+
+    fn apply_constant_compound(
+        &self,
+        operator: crate::ast::BinaryOp,
+        left: i128,
+        right: i128,
+    ) -> Option<i128> {
+        use crate::ast::BinaryOp;
+        Some(match operator {
+            BinaryOp::Add => left.wrapping_add(right),
+            BinaryOp::Subtract => left.wrapping_sub(right),
+            BinaryOp::Multiply => left.wrapping_mul(right),
+            BinaryOp::Divide if right != 0 => left.wrapping_div(right),
+            BinaryOp::Remainder if right != 0 => left.wrapping_rem(right),
+            BinaryOp::ShiftLeft => left.wrapping_shl(right as u32),
+            BinaryOp::ShiftRight => ((left as u128) >> (right as u32 & 127)) as i128,
+            BinaryOp::BitwiseAnd => left & right,
+            BinaryOp::BitwiseOr => left | right,
+            BinaryOp::BitwiseXor => left ^ right,
+            _ => return None,
+        })
+    }
+
     pub(crate) fn eval_const_int(&mut self, node: NodeId) -> Option<i128> {
         match self.node_kind(node).clone() {
             NodeKind::IntegerLiteral(literal) => match literal::decode_integer(&literal.raw) {
@@ -3928,9 +4214,12 @@ impl<'a> Sema<'a> {
             // The compiler API call `Type.SizeOf<T>()` is a compile-time constant
             // (§11.8).
             NodeKind::Call(call) => {
-                let argument = builtin_size_of_type_argument(self.ast, call.callee)?;
-                let ty = self.resolve_type(argument)?;
-                Some(self.size_align(ty).0 as i128)
+                if let Some(argument) = builtin_size_of_type_argument(self.ast, call.callee) {
+                    let ty = self.resolve_type(argument)?;
+                    return Some(self.size_align(ty).0 as i128);
+                }
+                // Ordinary compile-time functions are interpreted (§11.4).
+                self.eval_compile_time_call(&call)
             }
             NodeKind::Binary(binary) => {
                 let left = self.eval_const_int(binary.left)?;

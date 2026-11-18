@@ -4336,3 +4336,56 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 13);
 }
+
+#[test]
+fn compile_time_blocks_interpret_function_calls() {
+    let source = "\
+fixed Double(value: integer(4)): integer(4)
+{
+    return value * 2;
+}
+
+fixed Add(left: integer(4), right: integer(4)): integer(4)
+{
+    return left + right;
+}
+
+#{
+    local first: integer(4) = Double(3);
+    local second: integer(4) = Add(first, 4);
+}
+
+local value: integer(4) = second;
+
+fixed Main(): integer(4)
+{
+    return value;
+}";
+    // Double(3) + 4
+    assert_eq!(run_program(source), 10);
+}
+
+#[test]
+fn compile_time_blocks_interpret_recursive_functions() {
+    let source = "\
+fixed Fibonacci(value: integer(4)): integer(4)
+{
+    if (value < 2)
+    {
+        return value;
+    }
+    return Fibonacci(value - 1) + Fibonacci(value - 2);
+}
+
+#{
+    local result: integer(4) = Fibonacci(10);
+}
+
+local value: integer(4) = result;
+
+fixed Main(): integer(4)
+{
+    return value;
+}";
+    assert_eq!(run_program(source), 55);
+}

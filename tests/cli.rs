@@ -2124,3 +2124,41 @@ fixed Main(): integer(4)
     assert!(!accepted.contains("too many arguments"), "{accepted}");
     assert!(!accepted.contains("no overload"), "{accepted}");
 }
+
+#[test]
+fn for_range_expression_types_must_be_consistent() {
+    let mismatch = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    local x: integer(4) = 3;
+    for 1..\"text\"
+    {
+    }
+    return x;
+}",
+    );
+    assert!(
+        mismatch.contains("not compatible")
+            || mismatch.contains("range expression types must be consistent")
+            || mismatch.contains("requires an integer range"),
+        "{mismatch}"
+    );
+    // Mixed integer/cardinal non-literal range expressions are also rejected.
+    let mixed = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    local x: integer(4) = 3;
+    local y: cardinal(4) = 4;
+    for x..y
+    {
+    }
+    return x;
+}",
+    );
+    assert!(
+        mixed.contains("range expression types must be consistent"),
+        "{mixed}"
+    );
+}

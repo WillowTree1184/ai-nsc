@@ -6795,26 +6795,74 @@ impl<'a> Sema<'a> {
                             "for range requires an integer or cardinal binding type",
                         );
                     }
-                }
-                let expected = binding.as_ref().map(|(_, ty)| *ty);
-                for expression in [Some(range.start), range.step, Some(range.end)]
-                    .into_iter()
-                    .flatten()
-                {
-                    let ty = self.check_expr(expression, expected);
-                    if let (Some(ty), Some(binding_type)) = (ty, expected) {
-                        self.expect_assignable(self.span_of(expression), ty, binding_type);
+                    let expected = Some(binding_type);
+                    for expression in [Some(range.start), range.step, Some(range.end)]
+                        .into_iter()
+                        .flatten()
+                    {
+                        let ty = self.check_expr(expression, expected);
+                        if let Some(ty) = ty {
+                            self.expect_assignable(self.span_of(expression), ty, binding_type);
+                        }
                     }
-                }
-                if binding.is_none() {
-                    if let Some(start_type) = self.result.node_types[range.start as usize] {
-                        if !self.is_integer(start_type) {
+                } else {
+                    // Without an iteration variable there is no explicit type;
+                    // infer the range type from the first non-literal expression
+                    // and require every range expression to have that type
+                    // (§5.9.5: range expression types must be consistent). A
+                    // literal such as `1` therefore adopts the type of `x` in
+                    // `for 1..x`.
+                    let is_literal =
+                        |this: &Self, expression: NodeId| match this.node_kind(expression) {
+                            NodeKind::IntegerLiteral(_) => true,
+                            NodeKind::Unary(unary) => {
+                                unary.op == UnaryOp::Negate
+                                    && matches!(
+                                        this.node_kind(unary.operand),
+                                        NodeKind::IntegerLiteral(_)
+                                    )
+                            }
+                            _ => false,
+                        };
+                    let mut anchor = None;
+                    for candidate in [Some(range.end), Some(range.start), range.step]
+                        .into_iter()
+                        .flatten()
+                    {
+                        if !is_literal(self, candidate) {
+                            anchor = Some(candidate);
+                            break;
+                        }
+                    }
+                    let mut range_type =
+                        anchor.and_then(|expression| self.check_expr(expression, None));
+                    for expression in [Some(range.start), range.step, Some(range.end)]
+                        .into_iter()
+                        .flatten()
+                    {
+                        if Some(expression) == anchor {
+                            continue;
+                        }
+                        let ty = self.check_expr(expression, range_type);
+                        match (ty, range_type) {
+                            (Some(ty), Some(expected)) if ty != expected => {
+                                self.error(
+                                    self.span_of(expression),
+                                    "range expression types must be consistent (§5.9.5)",
+                                );
+                            }
+                            (Some(ty), None) => range_type = Some(ty),
+                            _ => {}
+                        }
+                    }
+                    if let Some(range_type) = range_type {
+                        if !(self.is_integer(range_type) || self.is_numeric(range_type)) {
                             self.error(
                                 self.span_of(range.start),
                                 "an omitted 'for' iteration variable requires an integer range",
                             );
                         }
-                        self.result.node_types[node as usize] = Some(start_type);
+                        self.result.node_types[node as usize] = Some(range_type);
                     }
                 }
             }

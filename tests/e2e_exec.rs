@@ -4635,3 +4635,22 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 0);
 }
+
+#[test]
+fn omitted_for_binding_infers_the_range_type_from_typed_expressions() {
+    // §5.9.5: range expression types must be consistent. With an omitted
+    // iteration variable the literal `1` adopts the type of `x` (integer(4)),
+    // so no i8/i32 mismatch reaches LLVM.
+    let source = "\
+fixed Main(): integer(4)
+{
+    local x: integer(4) = 3;
+    local count: integer(4) = 0;
+    for 1..x
+    {
+        count += 1;
+    }
+    return count;
+}";
+    assert_eq!(run_program(source), 3);
+}

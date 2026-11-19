@@ -989,6 +989,7 @@ impl<'a> Sema<'a> {
             mangled: String::new(),
             exposed_symbol: None,
             environment_facts: Vec::new(),
+            environment_object_facts: Vec::new(),
             generic_parameters,
             generic_arguments: Vec::new(),
             template: None,
@@ -1207,6 +1208,7 @@ impl<'a> Sema<'a> {
             mangled,
             exposed_symbol: None,
             environment_facts: Vec::new(),
+            environment_object_facts: Vec::new(),
             generic_parameters: Vec::new(),
             generic_arguments: Vec::new(),
             template: None,
@@ -1489,6 +1491,7 @@ impl<'a> Sema<'a> {
             mangled,
             exposed_symbol: None,
             environment_facts: Vec::new(),
+            environment_object_facts: Vec::new(),
             generic_parameters: Vec::new(),
             generic_arguments: Vec::new(),
             template: None,
@@ -1561,6 +1564,7 @@ impl<'a> Sema<'a> {
             mangled,
             exposed_symbol: None,
             environment_facts: Vec::new(),
+            environment_object_facts: Vec::new(),
             generic_parameters: Vec::new(),
             generic_arguments: Vec::new(),
             template: None,
@@ -2275,6 +2279,7 @@ impl<'a> Sema<'a> {
             mangled,
             exposed_symbol: None,
             environment_facts: Vec::new(),
+            environment_object_facts: Vec::new(),
             generic_parameters: Vec::new(),
             generic_arguments: Vec::new(),
             template: None,
@@ -2637,6 +2642,7 @@ impl<'a> Sema<'a> {
             mangled,
             exposed_symbol: None,
             environment_facts: Vec::new(),
+            environment_object_facts: Vec::new(),
             generic_parameters: Vec::new(),
             generic_arguments: Vec::new(),
             template: None,
@@ -2925,6 +2931,7 @@ impl<'a> Sema<'a> {
             mangled,
             exposed_symbol: None,
             environment_facts: Vec::new(),
+            environment_object_facts: Vec::new(),
             generic_parameters: Vec::new(),
             generic_arguments: Vec::new(),
             template: None,
@@ -3861,6 +3868,7 @@ impl<'a> Sema<'a> {
             mangled,
             exposed_symbol: None,
             environment_facts: Vec::new(),
+            environment_object_facts: Vec::new(),
             generic_parameters: Vec::new(),
             generic_arguments: Vec::new(),
             template: None,
@@ -3971,6 +3979,7 @@ impl<'a> Sema<'a> {
             mangled: exposed.clone(),
             exposed_symbol: Some(exposed),
             environment_facts: Vec::new(),
+            environment_object_facts: Vec::new(),
             generic_parameters: Vec::new(),
             generic_arguments: Vec::new(),
             template: None,
@@ -5415,7 +5424,15 @@ impl<'a> Sema<'a> {
         while index < self.result.functions.len() {
             let current = index;
             index += 1;
-            let (body, parameters, method_of, span, is_abstract, environment_facts) = {
+            let (
+                body,
+                parameters,
+                method_of,
+                span,
+                is_abstract,
+                environment_facts,
+                environment_object_facts,
+            ) = {
                 let function = &self.result.functions[current];
                 (
                     function.body,
@@ -5424,6 +5441,7 @@ impl<'a> Sema<'a> {
                     function.span,
                     function.is_abstract,
                     function.environment_facts.clone(),
+                    function.environment_object_facts.clone(),
                 )
             };
             if is_abstract || body.is_none() {
@@ -5497,6 +5515,13 @@ impl<'a> Sema<'a> {
                     .find(|(fact_position, _)| *fact_position == position)
                 {
                     self.environment_fact_locals.insert(local, *host);
+                }
+                for (_, field, host) in environment_object_facts
+                    .iter()
+                    .filter(|(fact_position, _, _)| *fact_position == position)
+                {
+                    self.environment_fact_fields
+                        .insert((local, field.clone()), *host);
                 }
                 llvm_parameter_index += 1;
             }
@@ -9970,21 +9995,47 @@ impl<'a> Sema<'a> {
 
     /// Whether an expression is a compile-time constant (§11.2): literals,
     /// operators over constants, fixed globals and the compiler API.
-    /// Whether `node` names a parameter of the current function whose type is
-    /// `EnvironmentFacts`.
-    fn expression_is_facts_parameter(&self, node: NodeId) -> bool {
+    /// Whether `node` names a parameter of the current function (any type).
+    fn expression_is_object_parameter(&self, node: NodeId) -> bool {
         let NodeKind::Name(name) = self.node_kind(node) else {
             return false;
         };
         let Some(Symbol::Local(local)) = self.lookup(&name.name).cloned() else {
             return false;
         };
-        self.local_info(local).is_some_and(|info| {
-            info.parameter.is_some()
-                && self
-                    .lookup_type_id("EnvironmentFacts")
-                    .is_some_and(|facts| facts == info.ty)
-        })
+        self.local_info(local)
+            .is_some_and(|info| info.parameter.is_some())
+    }
+
+    /// Whether `node` names a parameter of the current function whose type is
+    /// `EnvironmentFacts`.
+    fn expression_is_facts_parameter(&self, node: NodeId) -> bool {
+        match self.node_kind(node) {
+            NodeKind::Name(name) => {
+                let Some(Symbol::Local(local)) = self.lookup(&name.name).cloned() else {
+                    return false;
+                };
+                self.local_info(local).is_some_and(|info| {
+                    info.parameter.is_some()
+                        && self
+                            .lookup_type_id("EnvironmentFacts")
+                            .is_some_and(|facts| facts == info.ty)
+                })
+            }
+            NodeKind::MemberAccess(access) | NodeKind::PointerMemberAccess(access) => {
+                let NodeKind::Name(name) = self.node_kind(access.base) else {
+                    return false;
+                };
+                let Some(Symbol::Local(local)) = self.lookup(&name.name).cloned() else {
+                    return false;
+                };
+                // A field of an object parameter can carry a facts value; a
+                // calling specialization may make it known.
+                self.local_info(local)
+                    .is_some_and(|info| info.parameter.is_some())
+            }
+            _ => false,
+        }
     }
 
     /// EnvironmentFacts values and their field/query expressions are frozen
@@ -11178,6 +11229,7 @@ impl<'a> Sema<'a> {
             mangled,
             exposed_symbol: None,
             environment_facts: Vec::new(),
+            environment_object_facts: Vec::new(),
             generic_parameters: Vec::new(),
             generic_arguments: Vec::new(),
             template: None,
@@ -13282,8 +13334,9 @@ impl<'a> Sema<'a> {
                     })
                     .map(|(position, _)| position)
                     .collect();
-                let specializes = !fact_positions.is_empty()
+                let specializes = (!fact_positions.is_empty() || !parameters.is_empty())
                     && function.environment_facts.is_empty()
+                    && function.environment_object_facts.is_empty()
                     && !function.is_template()
                     && function.exposed_symbol.is_none();
                 if specializes {
@@ -13292,19 +13345,44 @@ impl<'a> Sema<'a> {
                     self.suppress_errors -= 1;
                     if let Some(mapped) = mapped {
                         let mut facts = Vec::new();
+                        let mut all_facts_known = true;
                         for position in &fact_positions {
                             match self.environment_fact_source(mapped[*position]) {
                                 Some(host) => facts.push((*position, host)),
                                 None => {
-                                    facts.clear();
+                                    all_facts_known = false;
                                     break;
                                 }
                             }
                         }
-                        if facts.len() == fact_positions.len() {
-                            if let Some(instance) =
-                                self.instantiate_environment_facts_function(candidate, &facts, span)
-                            {
+                        let mut object_facts = Vec::new();
+                        if all_facts_known {
+                            for (position, value) in mapped.iter().enumerate() {
+                                let NodeKind::Name(name) = self.node_kind(*value) else {
+                                    continue;
+                                };
+                                let Some(Symbol::Local(local)) = self.lookup(&name.name).cloned()
+                                else {
+                                    continue;
+                                };
+                                let known: Vec<(String, bool)> = self
+                                    .environment_fact_fields
+                                    .iter()
+                                    .filter(|((object, _), _)| *object == local)
+                                    .map(|((_, field), host)| (field.clone(), *host))
+                                    .collect();
+                                for (field, host) in known {
+                                    object_facts.push((position, field, host));
+                                }
+                            }
+                        }
+                        if all_facts_known && (!facts.is_empty() || !object_facts.is_empty()) {
+                            if let Some(instance) = self.instantiate_environment_facts_function(
+                                candidate,
+                                &facts,
+                                &object_facts,
+                                span,
+                            ) {
                                 candidates.push(instance);
                                 continue;
                             }
@@ -13412,22 +13490,56 @@ impl<'a> Sema<'a> {
                 let mapped = self.match_call_arguments(&parameters, arguments, span);
                 self.suppress_errors -= 1;
                 mapped.is_some_and(|mapped| {
-                    parameters
-                        .iter()
-                        .zip(mapped.iter())
-                        .filter(|(parameter, _)| {
-                            self.lookup_type_id("EnvironmentFacts")
-                                .is_some_and(|facts| facts == parameter.ty)
-                        })
-                        .all(|(_, value)| {
-                            self.environment_fact_source(*value).is_some()
-                                || self.expression_is_facts_parameter(*value)
-                        })
+                    for (parameter, value) in parameters.iter().zip(mapped.iter()) {
+                        let facts_parameter = self
+                            .lookup_type_id("EnvironmentFacts")
+                            .is_some_and(|facts| facts == parameter.ty);
+                        if facts_parameter {
+                            if self.environment_fact_source(*value).is_some() {
+                                continue;
+                            }
+                            if !self.expression_is_facts_parameter(*value) {
+                                return false;
+                            }
+                        } else if self.deferred_object_fact_functions.contains(&selected)
+                            && !self.expression_is_object_parameter(*value)
+                        {
+                            return false;
+                        }
+                    }
+                    true
                 })
             });
             if can_forward {
                 if let Some(function) = self.current_function {
                     self.deferred_fact_query_functions.insert(function);
+                    let parameters = self.result.functions[selected as usize].parameters.clone();
+                    if self.suppress_errors == 0 {
+                        self.suppress_errors += 1;
+                        let mapped = self.match_call_arguments(&parameters, arguments, span);
+                        self.suppress_errors -= 1;
+                        if let Some(mapped) = mapped {
+                            let uses_object_field =
+                                parameters
+                                    .iter()
+                                    .zip(mapped.iter())
+                                    .any(|(parameter, value)| {
+                                        self.lookup_type_id("EnvironmentFacts").is_some_and(
+                                            |facts| {
+                                                facts == parameter.ty
+                                                    && matches!(
+                                                        self.node_kind(*value),
+                                                        NodeKind::MemberAccess(_)
+                                                            | NodeKind::PointerMemberAccess(_)
+                                                    )
+                                            },
+                                        )
+                                    });
+                            if uses_object_field {
+                                self.deferred_object_fact_functions.insert(function);
+                            }
+                        }
+                    }
                 }
             } else {
                 self.error(

@@ -163,6 +163,7 @@ impl<'a> Sema<'a> {
             mangled: String::new(),
             exposed_symbol,
             environment_facts: Vec::new(),
+            environment_object_facts: Vec::new(),
             generic_parameters: parameters,
             generic_arguments: Vec::new(),
             template: None,
@@ -583,6 +584,7 @@ impl<'a> Sema<'a> {
             mangled,
             exposed_symbol,
             environment_facts: Vec::new(),
+            environment_object_facts: Vec::new(),
             generic_parameters: Vec::new(),
             generic_arguments: arguments.clone(),
             template: Some(template_index),
@@ -604,6 +606,7 @@ impl<'a> Sema<'a> {
         &mut self,
         template_index: u32,
         facts: &[(usize, bool)],
+        object_facts: &[(usize, String, bool)],
         span: Span,
     ) -> Option<u32> {
         let (
@@ -632,7 +635,7 @@ impl<'a> Sema<'a> {
                 template.is_sealed,
             )
         };
-        let key = (node, facts.to_vec());
+        let key = (node, facts.to_vec(), object_facts.to_vec());
         if let Some(existing) = self.environment_fact_instantiations.get(&key) {
             return Some(*existing);
         }
@@ -668,10 +671,13 @@ impl<'a> Sema<'a> {
             .map(|parameter| self.spelling(parameter.ty))
             .collect();
         let base = mangle_function(&scope, &name, &spellings);
-        let suffix: String = facts
+        let mut suffix: String = facts
             .iter()
             .map(|(position, host)| format!(".facts{position}{}", u8::from(*host)))
             .collect();
+        for (position, field, host) in object_facts {
+            suffix.push_str(&format!(".ofacts{position}{field}{}", u8::from(*host)));
+        }
         let mangled = format!("{base}{suffix}");
         let index = self.result.functions.len() as u32;
         self.result.functions.push(FunctionInfo {
@@ -694,6 +700,7 @@ impl<'a> Sema<'a> {
             mangled,
             exposed_symbol: None,
             environment_facts: facts.to_vec(),
+            environment_object_facts: object_facts.to_vec(),
             generic_parameters: Vec::new(),
             generic_arguments: Vec::new(),
             template: Some(template_index),
@@ -823,6 +830,7 @@ impl<'a> Sema<'a> {
             mangled,
             exposed_symbol,
             environment_facts: Vec::new(),
+            environment_object_facts: Vec::new(),
             generic_parameters: Vec::new(),
             generic_arguments: Vec::new(),
             template: Some(template_index),

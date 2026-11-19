@@ -3917,6 +3917,11 @@ fixed Test(holder: Holder): boolean
 
 fixed Main(): integer(4)
 {
+    local holder: Holder = Holder();
+    if (Test(holder))
+    {
+        return 1;
+    }
     return 0;
 }",
     );

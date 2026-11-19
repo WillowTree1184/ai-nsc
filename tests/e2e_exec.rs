@@ -5700,3 +5700,34 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 42);
 }
+
+#[test]
+fn environment_object_field_facts_specialize_callees() {
+    let source = "\
+class Holder
+{
+    public Facts: EnvironmentFacts;
+}
+
+fixed IsLinux(facts: EnvironmentFacts): boolean
+{
+    return #(facts.PlatformIs(\"Linux\"));
+}
+
+fixed Check(holder: Holder): boolean
+{
+    return IsLinux(holder.Facts);
+}
+
+fixed Main(): integer(4)
+{
+    local holder: Holder = Holder();
+    holder.Facts = Environment.Host;
+    if (Check(holder))
+    {
+        return 7;
+    }
+    return 0;
+}";
+    assert_eq!(run_program(source), 7);
+}

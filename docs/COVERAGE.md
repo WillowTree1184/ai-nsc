@@ -21,7 +21,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **418 tests**: 41 lib unit tests (lexer, literal,
+`cargo test` currently runs **419 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
 that read `docs/grammar/Draft 1.153.md` directly (a closed-set test also asserts that the only spec programs failing semantic analysis are the documented demonstration/inconsistency snippets):
@@ -116,11 +116,12 @@ miscompiles.
    locals initialized from them fold at compile time; functions taking
    `EnvironmentFacts` parameters are specialized per call-site fact tuple
    (including forwarding through further facts parameters), and calls to
-   functions with a known constant facts return are recognised, and fields of
-   local objects whose fact value was assigned from a known source are tracked,
-   so queries on those values fold in `#(...)`/`#if`. Residual: a facts value
-   loaded from a field of a parameter/unknown object (or otherwise not
-   statically tracked) cannot be specialized and is diagnosed.
+   functions with a known constant facts return are recognised, fields of local
+   objects whose fact value was assigned from a known source are tracked, and
+   object parameters are specialized per known field facts (including forwarding
+   through further calls), so queries on those values fold in `#(...)`/`#if`.
+   Residual: a facts value loaded from a field of an object whose origin is
+   genuinely unknown is diagnosed.
 
 ## Specification inconsistencies (not deliberate extensions)
 

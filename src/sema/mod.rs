@@ -390,6 +390,9 @@ pub struct FunctionInfo {
     /// Facts values for EnvironmentFacts parameters of a specialization
     /// (parameter position, host flag).
     pub environment_facts: Vec<(usize, bool)>,
+    /// Facts stored in fields of object parameters for a specialization
+    /// (parameter position, field name, host flag).
+    pub environment_object_facts: Vec<(usize, String, bool)>,
     /// Locals declared in the body, in declaration order.
     pub locals: Vec<LocalInfo>,
     /// Span of the declaration, for diagnostics.
@@ -1277,6 +1280,7 @@ pub fn analyze_with_options(
         constant_instantiations: HashMap::new(),
         environment_fact_instantiations: HashMap::new(),
         deferred_fact_query_functions: std::collections::HashSet::new(),
+        deferred_object_fact_functions: std::collections::HashSet::new(),
         deferred_fact_query_nodes: std::collections::HashSet::new(),
         heap_units: Vec::new(),
         heap_alias_units: HashMap::new(),
@@ -1401,9 +1405,13 @@ pub(crate) struct Sema<'a> {
     /// constant argument tuple.
     pub(crate) constant_instantiations: HashMap<(NodeId, Vec<i128>), u32>,
     /// EnvironmentFacts-parameter specialization cache.
-    pub(crate) environment_fact_instantiations: HashMap<(NodeId, Vec<(usize, bool)>), u32>,
+    #[allow(clippy::type_complexity)]
+    pub(crate) environment_fact_instantiations:
+        HashMap<(NodeId, Vec<(usize, bool)>, Vec<(usize, String, bool)>), u32>,
     /// Functions whose compile-time facts query needs a specialization.
     pub(crate) deferred_fact_query_functions: std::collections::HashSet<u32>,
+    /// Deferred functions whose facts query depends on an object parameter field.
+    pub(crate) deferred_object_fact_functions: std::collections::HashSet<u32>,
     /// Query nodes deferred until a facts specialization re-checks the body.
     pub(crate) deferred_fact_query_nodes: std::collections::HashSet<NodeId>,
     /// Heap allocation units of the function body being checked (§12.2).
@@ -2146,6 +2154,7 @@ impl<'a> Sema<'a> {
             captures: Vec::new(),
             constant_values: HashMap::new(),
             environment_facts: Vec::new(),
+            environment_object_facts: Vec::new(),
             locals: Vec::new(),
             span: Span::default(),
         });
@@ -2338,6 +2347,7 @@ impl<'a> Sema<'a> {
             captures: Vec::new(),
             constant_values: HashMap::new(),
             environment_facts: Vec::new(),
+            environment_object_facts: Vec::new(),
             locals: Vec::new(),
             span: Span::default(),
         });
@@ -2415,6 +2425,7 @@ impl<'a> Sema<'a> {
             captures: Vec::new(),
             constant_values: HashMap::new(),
             environment_facts: Vec::new(),
+            environment_object_facts: Vec::new(),
             locals: Vec::new(),
             span: Span::default(),
         });

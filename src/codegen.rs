@@ -5941,6 +5941,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             Some(Resolution::InterfaceConstant { interface, slot }) => {
                 self.gen_interface_constant_load(node, interface, slot)
             }
+            Some(Resolution::CompileTimeObjectCopy { name, ty }) => {
+                self.gen_compile_time_object_copy(node, &name, ty)
+            }
             Some(Resolution::Operator { .. })
             | Some(Resolution::DerivedNotEqual { .. })
             | Some(Resolution::DerivedComparison { .. })
@@ -6655,6 +6658,48 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .build_store(slot, value)
             .map_err(|error| format!("cannot store value: {error}"))?;
         Ok(slot)
+    }
+
+    /// Materialises a copyable compile-time object snapshot as an LLVM constant
+    /// struct (§11.4/§11.8).
+    fn gen_compile_time_object_copy(
+        &mut self,
+        _node: NodeId,
+        name: &str,
+        ty: TypeId,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let Some((_, values)) = self.sema.compile_time_object_copies.get(name).cloned() else {
+            return Err("missing compile-time object snapshot".to_string());
+        };
+        let Type::Named(index) = self.sema.types.get(ty).clone() else {
+            return Err("compile-time object copy requires a named type".to_string());
+        };
+        let definition = &self.sema.type_defs[index as usize];
+        let fields = definition.fields.clone();
+        let info = self
+            .struct_types
+            .get(&index)
+            .ok_or_else(|| "missing struct type".to_string())?;
+        let llvm_type = info.llvm_type;
+        let semantic_to_llvm = info.semantic_to_llvm.clone();
+        let mut constants: Vec<BasicValueEnum<'ctx>> = Vec::new();
+        for field_index in 0..llvm_type.count_fields() {
+            let field_type = llvm_type
+                .get_field_type_at_index(field_index)
+                .ok_or_else(|| "missing struct field type".to_string())?;
+            constants.push(field_type.const_zero());
+        }
+        for (semantic, field) in fields.iter().enumerate() {
+            let Some(llvm_index) = semantic_to_llvm.get(semantic).copied() else {
+                continue;
+            };
+            let Some((_, value)) = values.iter().find(|(name, _)| name == &field.name) else {
+                continue;
+            };
+            let llvm_type = self.llvm_type(field.ty)?.into_int_type();
+            constants[llvm_index as usize] = llvm_type.const_int(*value as u64, false).into();
+        }
+        Ok(llvm_type.const_named_struct(&constants).into())
     }
 
     /// Loads an interface value-constant slot through the instance's runtime

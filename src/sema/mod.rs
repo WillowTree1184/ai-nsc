@@ -825,6 +825,14 @@ pub enum Resolution {
         /// Index into the type's field list.
         index: u32,
     },
+    /// A copy of a copyable compile-time object materialised as a runtime
+    /// constant (§11.4/§11.8).
+    CompileTimeObjectCopy {
+        /// Snapshot name.
+        name: String,
+        /// Object type.
+        ty: TypeId,
+    },
     /// An interface value-constant slot, loaded through the instance's interface
     /// dispatch table (§3.8.3/§13.1).
     InterfaceConstant {
@@ -997,6 +1005,8 @@ pub struct SemaResult {
     pub heap_allocators: HashMap<NodeId, NodeId>,
     /// Known EnvironmentFacts return values (`None` = returns differ/unknown).
     pub environment_fact_returns: HashMap<u32, Option<bool>>,
+    /// Copyable compile-time object snapshots for runtime constants (§11.4/§11.8).
+    pub compile_time_object_copies: HashMap<String, (TypeId, Vec<(String, i128)>)>,
     /// Explicit heap allocator used for each heap local, for deallocation.
     pub heap_allocator_locals: HashMap<LocalId, NodeId>,
     /// Iteration over `IIterator`/`IIterable` targets, keyed by the `for` node
@@ -4458,13 +4468,48 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Copies a compile-time object into the runtime-constant snapshot map if
+    /// §11.8 permits it (value type, scalar fields, no destructor).
+    fn snapshot_compile_time_object(&mut self, name: &str, object: &CompileTimeObject) {
+        let Type::Named(index) = self.types_of(object.ty) else {
+            return;
+        };
+        let definition = &self.result.type_defs[index as usize];
+        if definition.kind != TypeDefKind::Structure || definition.methods.contains_key("Destruct")
+        {
+            return;
+        }
+        let mut fields = Vec::new();
+        for field in &definition.fields {
+            let allowed = match self.types_of(field.ty) {
+                Type::Integer { .. } => true,
+                Type::Named(field_index) => matches!(
+                    self.result.type_defs[field_index as usize].kind,
+                    TypeDefKind::Enumeration
+                ),
+                _ => field.ty == TypeId::BOOLEAN,
+            };
+            if !allowed {
+                return;
+            }
+            let Some(value) = object.fields.get(&field.name).copied() else {
+                return;
+            };
+            fields.push((field.name.clone(), value));
+        }
+        self.result
+            .compile_time_object_copies
+            .insert(name.to_string(), (object.ty, fields));
+    }
+
     /// Destroys every live compile-time object in reverse construction order.
     fn destroy_compile_time_objects(&mut self) {
         let order = std::mem::take(&mut self.compile_time_object_order);
         for name in order.into_iter().rev() {
-            let ty = self.compile_time_objects.get(&name).map(|object| object.ty);
-            if let Some(ty) = ty {
-                self.execute_compile_time_object_method(ty, &name, "Destruct", &[]);
+            let object = self.compile_time_objects.get(&name).cloned();
+            if let Some(object) = object {
+                self.snapshot_compile_time_object(&name, &object);
+                self.execute_compile_time_object_method(object.ty, &name, "Destruct", &[]);
             }
             self.compile_time_objects.remove(&name);
         }

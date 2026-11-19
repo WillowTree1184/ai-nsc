@@ -5973,3 +5973,24 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 5);
 }
+
+#[test]
+fn copyable_compile_time_structures_materialise_runtime_constants() {
+    let source = "\
+structure Token
+{
+    public Value: integer(4);
+}
+
+#{
+    heap token: Token = Token();
+    token.Value = 5;
+}
+
+fixed Main(): integer(4)
+{
+    local copy: Token = token;
+    return copy.Value;
+}";
+    assert_eq!(run_program(source), 5);
+}

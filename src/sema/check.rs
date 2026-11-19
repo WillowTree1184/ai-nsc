@@ -9703,6 +9703,20 @@ impl<'a> Sema<'a> {
         expected: Option<TypeId>,
     ) -> Option<TypeId> {
         let Some(symbol) = self.lookup(&name.name).cloned() else {
+            // A copyable compile-time object can be materialised as a runtime
+            // constant (§11.4/§11.8).
+            if let Some((ty, _)) = self
+                .result
+                .compile_time_object_copies
+                .get(&name.name)
+                .cloned()
+            {
+                self.result.resolutions[node as usize] = Some(Resolution::CompileTimeObjectCopy {
+                    name: name.name.clone(),
+                    ty,
+                });
+                return Some(ty);
+            }
             // Top-level compile-time variables keep their final value at runtime
             // (§11.4).
             if let Some((_, ty)) = self.top_level_constants.get(&name.name).copied() {

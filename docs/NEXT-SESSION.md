@@ -2,7 +2,7 @@
 
 ## State
 
-- Branch `main`; last feature commit `00ca2a2`.
+- Branch `main`; last feature commit `493da9b`.
 - **Active goal: 100% Draft 1.153 conformance, no more no less.** The
   authoritative specification is `docs/grammar/Draft 1.153.md`; Draft 1.152 is
   historical only.

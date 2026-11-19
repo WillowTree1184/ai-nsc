@@ -15,7 +15,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **441 tests**: 41 lib unit, 146 CLI/driver,
+`cargo test` currently runs **442 tests**: 41 lib unit, 146 CLI/driver,
 2 LLVM codegen, 1 MCJIT probe, 2 JIT compile-time evaluation, 228 end-to-end
 execution, 10 parser and 3 spec-example conformance tests. The spec tests read
 `zh-cn.md` directly: 102 `novasharp` fences, all parse except five documented
@@ -93,10 +93,10 @@ semantics is pinned (`3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`).
    objects/catch bindings/hierarchy matching, and basic constructor/destructor
    execution (constructor arguments/`this.Field` writes, `this.Method()` calls;
    explicit dispose and end-of-block reverse destruction), and copyable
-   scalar-field structures and one-dimensional scalar arrays are materialised as
-   runtime constants. Remaining: constructor/destructor exceptions and arbitrary
-   side effects, non-scalar/pointer fields, and copy rules for strings/unions/
-   variants/enums.
+   scalar-field structures, one-dimensional scalar arrays and strings (as byte
+   arrays) are materialised as runtime constants. Remaining: constructor/
+   destructor exceptions and arbitrary side effects, non-scalar/pointer fields,
+   and copy rules for unions/variants/enums.
 
 ## Specification inconsistencies (not deliberate extensions)
 

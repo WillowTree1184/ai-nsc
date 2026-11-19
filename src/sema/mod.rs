@@ -1017,6 +1017,8 @@ pub struct SemaResult {
     pub compile_time_object_copies: HashMap<String, (TypeId, Vec<(String, i128)>)>,
     /// Copyable compile-time array snapshots for runtime constants.
     pub compile_time_array_copies: HashMap<String, (TypeId, Vec<i128>)>,
+    /// Copyable compile-time enumeration snapshots for runtime constants.
+    pub compile_time_scalar_copies: HashMap<String, (TypeId, i128)>,
     /// Explicit heap allocator used for each heap local, for deallocation.
     pub heap_allocator_locals: HashMap<LocalId, NodeId>,
     /// Iteration over `IIterator`/`IIterable` targets, keyed by the `for` node
@@ -1439,6 +1441,8 @@ pub(crate) struct CompileTimeObject {
     pub fields: HashMap<String, i128>,
     /// Flat scalar element values for compile-time arrays.
     pub array: Option<Vec<i128>>,
+    /// Scalar value for compile-time enumerations.
+    pub scalar: Option<i128>,
 }
 
 pub(crate) struct Sema<'a> {
@@ -4080,6 +4084,7 @@ impl<'a> Sema<'a> {
                                             ty,
                                             fields,
                                             array: None,
+                                            scalar: None,
                                         });
                                     }
                                 }
@@ -4507,6 +4512,16 @@ impl<'a> Sema<'a> {
     /// Copies a compile-time object into the runtime-constant snapshot map if
     /// §11.8 permits it (value type, scalar fields, no destructor).
     fn snapshot_compile_time_object(&mut self, name: &str, object: &CompileTimeObject) {
+        if let Some(value) = object.scalar {
+            if let Type::Named(index) = self.types_of(object.ty) {
+                if self.result.type_defs[index as usize].kind == TypeDefKind::Enumeration {
+                    self.result
+                        .compile_time_scalar_copies
+                        .insert(name.to_string(), (object.ty, value));
+                }
+            }
+            return;
+        }
         if let Some(values) = &object.array {
             if let Type::Array {
                 dimensions,
@@ -4647,6 +4662,25 @@ impl<'a> Sema<'a> {
                 );
                 return;
             };
+            if let Type::Named(type_index) = self.types_of(ty) {
+                if self.result.type_defs[type_index as usize].kind == TypeDefKind::Enumeration {
+                    if let Some(value) = self.eval_const_int(expression) {
+                        self.compile_time_objects.insert(
+                            declaration.name.clone(),
+                            CompileTimeObject {
+                                ty,
+                                fields: HashMap::new(),
+                                array: None,
+                                scalar: Some(value),
+                            },
+                        );
+                        self.compile_time_object_order
+                            .push(declaration.name.clone());
+                        self.unknown_compile_time_names.remove(&declaration.name);
+                        return;
+                    }
+                }
+            }
             if let Type::Array { dimensions, .. } = self.types_of(ty) {
                 if dimensions.len() == 1 {
                     if let NodeKind::ArrayLiteral(literal) = self.node_kind(expression).clone() {
@@ -4670,12 +4704,36 @@ impl<'a> Sema<'a> {
                                     ty,
                                     fields: HashMap::new(),
                                     array: Some(values),
+                                    scalar: None,
                                 },
                             );
                             self.compile_time_object_order
                                 .push(declaration.name.clone());
                             self.unknown_compile_time_names.remove(&declaration.name);
                             return;
+                        }
+                    } else if let NodeKind::StringLiteral(literal)
+                    | NodeKind::VerbatimStringLiteral(literal) =
+                        self.node_kind(expression).clone()
+                    {
+                        if let Ok(decoded) = crate::literal::decode_string(&literal.raw) {
+                            if decoded.unit_size == 1 {
+                                let values: Vec<i128> =
+                                    decoded.bytes.iter().map(|byte| i128::from(*byte)).collect();
+                                self.compile_time_objects.insert(
+                                    declaration.name.clone(),
+                                    CompileTimeObject {
+                                        ty,
+                                        fields: HashMap::new(),
+                                        array: Some(values),
+                                        scalar: None,
+                                    },
+                                );
+                                self.compile_time_object_order
+                                    .push(declaration.name.clone());
+                                self.unknown_compile_time_names.remove(&declaration.name);
+                                return;
+                            }
                         }
                     }
                 }
@@ -4687,6 +4745,7 @@ impl<'a> Sema<'a> {
                     ty,
                     fields,
                     array: None,
+                    scalar: None,
                 },
             );
             self.compile_time_object_order
@@ -4703,6 +4762,23 @@ impl<'a> Sema<'a> {
             self.execute_compile_time_object_method(ty, &declaration.name, "Construct", &arguments);
             return;
         };
+        if let Type::Named(index) = self.types_of(ty) {
+            if self.result.type_defs[index as usize].kind == TypeDefKind::Enumeration {
+                self.compile_time_objects.insert(
+                    declaration.name.clone(),
+                    CompileTimeObject {
+                        ty,
+                        fields: HashMap::new(),
+                        array: None,
+                        scalar: Some(value),
+                    },
+                );
+                self.compile_time_object_order
+                    .push(declaration.name.clone());
+                self.unknown_compile_time_names.remove(&declaration.name);
+                return;
+            }
+        }
         let allowed = ty == TypeId::BOOLEAN
             || matches!(
                 self.result.types.get(ty),

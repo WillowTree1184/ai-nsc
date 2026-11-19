@@ -11,7 +11,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-Current result: **441 tests green**, formatting clean, clippy with zero warnings.
+Current result: **442 tests green**, formatting clean, clippy with zero warnings.
 
 | Target | Tests |
 | --- | ---: |
@@ -20,7 +20,7 @@ Current result: **441 tests green**, formatting clean, clippy with zero warnings
 | LLVM codegen | 2 |
 | MCJIT probe | 1 |
 | JIT compile-time evaluation | 2 |
-| end-to-end execution | 236 |
+| end-to-end execution | 237 |
 | parser | 10 |
 | spec-example conformance | 3 |
 
@@ -64,7 +64,7 @@ examples; these are not hidden by the `Main`-program conformance test.
 
 See `docs/COVERAGE.md` for the current real gap: compile-time
 constructor/destructor exceptions/arbitrary side effects, non-scalar/pointer
-fields, and string/union/variant/enum copy-to-runtime coverage. NOLAA conservatism is required by §12.2 and is not a
+fields, and union/variant/enum copy-to-runtime coverage. NOLAA conservatism is required by §12.2 and is not a
 deviation.
 
 Audit history: `docs/AUDIT.md` (199 reproduced defects/fixes).

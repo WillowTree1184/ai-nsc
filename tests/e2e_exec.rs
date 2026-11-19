@@ -6039,3 +6039,18 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 2);
 }
+
+#[test]
+fn compile_time_strings_copy_as_runtime_byte_arrays() {
+    let source = "\
+#{
+    heap text: array(5) cardinal(1) = \"hello\";
+}
+
+fixed Main(): integer(4)
+{
+    local bytes: array(5) cardinal(1) = text;
+    return bytes[0] as integer(4);
+}";
+    assert_eq!(run_program(source), 104);
+}

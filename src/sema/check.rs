@@ -9747,6 +9747,15 @@ impl<'a> Sema<'a> {
                 });
                 return Some(ty);
             }
+            if let Some((ty, value)) = self
+                .result
+                .compile_time_scalar_copies
+                .get(&name.name)
+                .cloned()
+            {
+                self.result.resolutions[node as usize] = Some(Resolution::Constant { ty, value });
+                return Some(ty);
+            }
             // Top-level compile-time variables keep their final value at runtime
             // (§11.4).
             if let Some((_, ty)) = self.top_level_constants.get(&name.name).copied() {

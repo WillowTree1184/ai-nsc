@@ -1287,6 +1287,7 @@ pub fn analyze_with_options(
         disposing_parameters: HashMap::new(),
         parameter_escapes: HashMap::new(),
         environment_fact_locals: HashMap::new(),
+        environment_fact_fields: HashMap::new(),
         pointer_aliases: HashMap::new(),
         element_heap_aliases: HashMap::new(),
         local_blocks: HashMap::new(),
@@ -1423,6 +1424,8 @@ pub(crate) struct Sema<'a> {
     pub(crate) parameter_escapes: HashMap<u32, Vec<bool>>,
     /// Locals holding an `EnvironmentFacts` value (true = host facts).
     pub(crate) environment_fact_locals: HashMap<LocalId, bool>,
+    /// Known EnvironmentFacts field values: (object local, field name) -> host.
+    pub(crate) environment_fact_fields: HashMap<(LocalId, String), bool>,
     /// Pointer locals aliasing a heap unit (`local p = &heapUnit;`).
     pub(crate) pointer_aliases: HashMap<LocalId, u32>,
     /// Local containers holding heap units through element writes (`bucket[i] = unit`).

@@ -6534,6 +6534,14 @@ impl<'a> Sema<'a> {
                     if let NodeKind::Name(base_name) = self.node_kind(member.base) {
                         if let Some(Symbol::Local(base)) = self.lookup(&base_name.name).cloned() {
                             let key = (base, member.name.clone());
+                            match self.environment_fact_source(statement.value) {
+                                Some(host) => {
+                                    self.environment_fact_fields.insert(key.clone(), host);
+                                }
+                                None => {
+                                    self.environment_fact_fields.remove(&key);
+                                }
+                            }
                             match self.heap_source_unit(statement.value) {
                                 Some(unit) => {
                                     self.field_heap_aliases.insert(key, unit);
@@ -11743,6 +11751,18 @@ impl<'a> Sema<'a> {
                 }
             }
             return None;
+        }
+        if let NodeKind::MemberAccess(access) = self.node_kind(node) {
+            if let NodeKind::Name(base_name) = self.node_kind(access.base) {
+                if let Some(Symbol::Local(local)) = self.lookup(&base_name.name).cloned() {
+                    if let Some(host) = self
+                        .environment_fact_fields
+                        .get(&(local, access.name.clone()))
+                    {
+                        return Some(*host);
+                    }
+                }
+            }
         }
         if let NodeKind::Call(call) = self.node_kind(node) {
             let target = match self.result.resolutions[node as usize].clone() {

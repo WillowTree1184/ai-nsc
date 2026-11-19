@@ -3910,13 +3910,13 @@ fixed IsLinux(facts: EnvironmentFacts): boolean
     return #(facts.PlatformIs(\"Linux\"));
 }
 
+fixed Test(holder: Holder): boolean
+{
+    return IsLinux(holder.Facts);
+}
+
 fixed Main(): integer(4)
 {
-    local holder: Holder = Holder();
-    if (IsLinux(holder.Facts))
-    {
-        return 1;
-    }
     return 0;
 }",
     );

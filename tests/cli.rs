@@ -2842,3 +2842,55 @@ fixed Main(): integer(4)
         "{stderr}"
     );
 }
+
+#[test]
+fn nolaa_double_dispose_through_an_alias_warns() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-aliasdd-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(
+        &path,
+        "class Token { public Value: integer(4); }\n\nfixed Main(): integer(4)\n{\n    heap token: Token = Token();\n    local alias: Token = token;\n    dispose alias;\n    dispose token;\n    return 0;\n}",
+    )
+    .expect("write");
+    let output = ai_nsc()
+        .args(["check", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("disposed more than once"), "{stderr}");
+}
+
+#[test]
+fn nolaa_use_after_dispose_through_an_alias_warns() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-aliasuse-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(
+        &path,
+        "class Token { public Value: integer(4); }\n\nfixed Main(): integer(4)\n{\n    heap token: Token = Token();\n    local alias: Token = token;\n    dispose alias;\n    return token.Value;\n}",
+    )
+    .expect("write");
+    let output = ai_nsc()
+        .args(["check", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(stderr.contains("used after 'dispose'"), "{stderr}");
+}

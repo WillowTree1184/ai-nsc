@@ -5848,6 +5848,15 @@ impl<'a> Sema<'a> {
                     return;
                 }
                 self.ensure_assignable(statement.target);
+                if let Some(Resolution::Local(target)) =
+                    self.result.resolutions[statement.target as usize].clone()
+                {
+                    if let Some(unit) = self.heap_unit_for_name_expression(statement.value) {
+                        self.heap_alias_units.insert(target, unit);
+                    } else {
+                        self.heap_alias_units.remove(&target);
+                    }
+                }
                 if let Some(Resolution::Accessor { setter, .. }) =
                     self.result.resolutions[statement.target as usize].clone()
                 {
@@ -6289,6 +6298,15 @@ impl<'a> Sema<'a> {
             );
             locals.push(local);
         }
+        // Aliases to a heap unit are tracked so Double-Dispose/Use-After-Dispose
+        // checks see through them (§12.2).
+        for (local, item) in locals.iter().zip(declaration.items.iter()) {
+            if let Some(initializer) = item.init {
+                if let Some(unit) = self.heap_unit_for_name_expression(initializer) {
+                    self.heap_alias_units.insert(*local, unit);
+                }
+            }
+        }
         // Variable-length arrays cannot be initialized (§3.6.1).
         for (local, item) in locals.iter().zip(declaration.items.iter()) {
             if item.init.is_some() {
@@ -6638,6 +6656,21 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// The heap allocation unit an alias expression directly names (§12.2), if
+    /// the expression is a plain local reference to a heap unit or alias.
+    fn heap_unit_for_name_expression(&self, node: NodeId) -> Option<u32> {
+        let NodeKind::Name(name) = self.node_kind(node) else {
+            return None;
+        };
+        let Symbol::Local(local) = self.lookup(&name.name).cloned()? else {
+            return None;
+        };
+        self.heap_unit_locals
+            .get(&local)
+            .map(|index| *index as u32)
+            .or_else(|| self.heap_alias_units.get(&local).copied())
+    }
+
     fn note_heap_escape(&mut self, node: NodeId) {
         let name = match self.node_kind(node) {
             NodeKind::Name(name) => name.name.clone(),
@@ -6771,23 +6804,41 @@ impl<'a> Sema<'a> {
                             )
                     );
                     if disposable {
-                        if !self.disposed_locals.insert(local) {
-                            self.warn(
-                                self.span_of(statement.target),
-                                format!("'{}' is disposed more than once", name.name),
-                            );
-                        }
-                        if let Some(index) = self.heap_unit_locals.get(&local).copied() {
-                            if self.heap_units[index].escaped {
-                                self.warn(
-                                    self.span_of(statement.target),
-                                    format!(
-                                        "early dispose: '{}' is disposed while another demand on it may still exist (§12.2)",
-                                        name.name
-                                    ),
-                                );
+                        self.disposed_locals.insert(local);
+                        let unit = self.heap_unit_locals.get(&local).copied().or_else(|| {
+                            self.heap_alias_units
+                                .get(&local)
+                                .copied()
+                                .map(|index| index as usize)
+                        });
+                        match unit {
+                            Some(index) => {
+                                if self.heap_units[index].disposed {
+                                    self.warn(
+                                        self.span_of(statement.target),
+                                        format!("'{}' is disposed more than once", name.name),
+                                    );
+                                } else {
+                                    if self.heap_units[index].escaped {
+                                        self.warn(
+                                            self.span_of(statement.target),
+                                            format!(
+                                                "early dispose: '{}' is disposed while another demand on it may still exist (§12.2)",
+                                                name.name
+                                            ),
+                                        );
+                                    }
+                                    self.heap_units[index].disposed = true;
+                                }
                             }
-                            self.heap_units[index].disposed = true;
+                            None => {
+                                if !self.disposed_locals.insert(local) {
+                                    self.warn(
+                                        self.span_of(statement.target),
+                                        format!("'{}' is disposed more than once", name.name),
+                                    );
+                                }
+                            }
                         }
                         self.result.resolutions[statement.target as usize] =
                             Some(Resolution::Local(local));
@@ -8012,7 +8063,19 @@ impl<'a> Sema<'a> {
                         return None;
                     }
                 }
-                if self.disposed_locals.contains(&local) && self.early_dispose_warned.insert(local)
+                let unit_disposed = self
+                    .heap_unit_locals
+                    .get(&local)
+                    .copied()
+                    .or_else(|| {
+                        self.heap_alias_units
+                            .get(&local)
+                            .copied()
+                            .map(|index| index as usize)
+                    })
+                    .is_some_and(|index| self.heap_units[index].disposed);
+                if (self.disposed_locals.contains(&local) || unit_disposed)
+                    && self.early_dispose_warned.insert(local)
                 {
                     // Using a value after `dispose` is an early dispose (§12.2).
                     let local_name = self

@@ -132,8 +132,11 @@ implementing them is conforming and they are therefore not listed as deviations.
    `#{ while true { ... } }` is genuinely nonterminating, as specified.
 6. **NOLAA** is a conservative approximation: warnings (including Early-Dispose),
    block-end/return/break/continue auto-dispose, alias/store demand tracking,
-   `NOLAA.Bind` groups and `NOLAA.AssumeNoDemandNext`; general CFG safe-point
-   insertion and complete alias analysis are not implemented.
+   `NOLAA.Bind` groups and `NOLAA.AssumeNoDemandNext`. Direct aliases of heap
+   units are tracked, so Double-Dispose and Use-After-Dispose are now detected
+   through `local alias = heapUnit;` / later assignment. General CFG safe-point
+   insertion, automatic SCC grouping (only `NOLAA.Bind` groups are explicit) and
+   complete alias analysis through fields/pointers are still conservative.
 8. **Target selection**: `--target` configures code generation, object emission
    and the semantic data layout for x86_64, aarch64, riscv64, i686 (runs natively
    on x86_64 hosts) and armv7 (cross-link with `--sysroot` + LLVM lld, run under

@@ -21,7 +21,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **378 tests**: 41 lib unit tests (lexer, literal,
+`cargo test` currently runs **379 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
 that read `docs/grammar/Draft 1.152.md` directly (a closed-set test also asserts that the only spec programs failing semantic analysis are the documented demonstration/inconsistency snippets):
@@ -88,7 +88,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §5.9.5 `for` without an iteration variable (range only) | ✅ | parser/sema/codegen; range type inferred from the first non-literal expression and all range expressions must share it (literal `1` adopts `x`'s type in `for 1..x`); e2e ascending/descending/labelled-break and mixed-type diagnostics |
 | §3.6.3 function types: `wildcard`, calling conventions, defaults, type equality/conversion | ✅ | `wildcard` matches unchecked trailing arguments (fixed prefix validated; small ints/bools promoted, `float(4)`→`f64`, arrays/VLAs decay to pointers); variadic declarations emitted; explicit calling conventions accepted after parameters/wildcard, bare `CallingConvention` member names resolved, `CDeclaration` uses the LLVM default C convention, `SystemVAMD64`/`MicrosoftX64` map to their LLVM conventions (method `wildcard` signatures still share the fixed-prefix matcher) |
 | §3.8.2 accessor `this` without `&` for reference targets | ✅ | reference/value target validation (missing/extra `&`, wrong `this` type), extension blocks require `this`, static/free accessors reject it; block-shorthand receivers work for classes and structures (e2e) |
-| §8.2 `array(Name: Type) T` parameter expansion | ✅ | function declaration parameters (`Name[dims]: T`), function type constructors and function literal parameter lists; sema expands to a pointer parameter followed by the binding parameters (e2e) |
+| §8.2 `array(Name: Type) T` parameter expansion | ✅ | function declaration parameters (`Name[dims]: T`), function type constructors and function literal parameter lists; sema expands to a pointer parameter followed by the binding parameters (e2e); parameter/argument/generic-parameter lists reject trailing commas/semicolons because the §8.2/§3.6.3/§10.1 grammars do not allow them |
 | §10 generics / monomorphization | ✅ | types/functions/constraints/extension-for-generic/caching/mangling; methods that declare their own type parameters; array extension targets (methods/accessors/operators); class/structure index accessors are tested, and array-target index accessors are rejected per §4.9.2 (index accessors may only be declared in class/structure extension blocks). §14.3.2 optimisation directives are permissions, not requirements. |
 | §11.1–11.7 compile-time: `#(...)`, `#if`/`#else`, `#{}` blocks (incl. top-level and cross-file order), `#` constant parameters, compile-time boundary | ✅ | compile-time e2e tests; blocks are lowered as runtime equivalents of compile-time results (semantics-preserving approximation) |
 | §11.8 compiler API: `Type.SizeOf<T>`, `Compiler.LogNote/LogWarning/LogError/Assert`, `Platform.Is`, `NOLAA.Abandon/Bind/AssumeNoDemandNext` | ✅ | compiler API tests |

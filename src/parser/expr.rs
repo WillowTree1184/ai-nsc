@@ -491,6 +491,9 @@ impl<'a> Parser<'a> {
                     break;
                 }
                 if self.at(TokenKind::RightParen) || self.at(TokenKind::Semicolon) {
+                    self.error_here(
+                        "a trailing comma is not allowed in a function literal parameter list",
+                    );
                     break;
                 }
                 continue;
@@ -513,6 +516,9 @@ impl<'a> Parser<'a> {
                 break;
             }
             if self.at(TokenKind::RightParen) || self.at(TokenKind::Semicolon) {
+                self.error_here(
+                    "a trailing comma is not allowed in a function literal parameter list",
+                );
                 break;
             }
         }
@@ -536,6 +542,10 @@ impl<'a> Parser<'a> {
             let value = self.parse_expression()?;
             arguments.push(Argument { name, value, span });
             if !self.eat(TokenKind::Comma) {
+                break;
+            }
+            if self.at(TokenKind::RightParen) {
+                self.error_here("a trailing comma is not allowed in an argument list");
                 break;
             }
         }

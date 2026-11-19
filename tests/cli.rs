@@ -3063,3 +3063,39 @@ fixed Main(): integer(4)
         "{stderr}"
     );
 }
+
+#[test]
+fn trailing_commas_are_rejected_in_parameters_and_arguments() {
+    let parameter = check_source(
+        "\
+fixed F(a: integer(4),): integer(4)
+{
+    return a;
+}
+
+fixed Main(): integer(4)
+{
+    return 0;
+}",
+    );
+    assert!(
+        parameter.contains("trailing comma is not allowed in a parameter list"),
+        "{parameter}"
+    );
+    let argument = check_source(
+        "\
+fixed F(a: integer(4)): integer(4)
+{
+    return a;
+}
+
+fixed Main(): integer(4)
+{
+    return F(1,);
+}",
+    );
+    assert!(
+        argument.contains("trailing comma is not allowed in an argument list"),
+        "{argument}"
+    );
+}

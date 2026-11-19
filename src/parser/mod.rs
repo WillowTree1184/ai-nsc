@@ -801,6 +801,10 @@ impl<'a> Parser<'a> {
             if !self.eat(TokenKind::Comma) {
                 break;
             }
+            if self.at(TokenKind::RightParen) || self.at(TokenKind::Semicolon) {
+                self.error_here("a trailing comma is not allowed in a parameter list");
+                break;
+            }
             if self.at(TokenKind::Wildcard) {
                 self.bump();
                 wildcard = true;
@@ -906,6 +910,10 @@ impl<'a> Parser<'a> {
             };
             parameters.push(parameter);
             if !self.eat(TokenKind::Semicolon) {
+                break;
+            }
+            if self.at(TokenKind::Greater) {
+                self.error_here("a trailing ';' is not allowed in a generic parameter list");
                 break;
             }
         }

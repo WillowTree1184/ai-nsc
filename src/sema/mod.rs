@@ -652,6 +652,9 @@ pub struct GlobalInfo {
     pub init: Option<NodeId>,
     /// Whether the storage is a constant (`fixed`).
     pub fixed: bool,
+    /// Whether this global is declared by `linkable` and keeps its external
+    /// symbol name (§5.6).
+    pub linkable: bool,
     /// Mangled symbol name.
     pub mangled: String,
     /// The declaration's AST node.
@@ -2099,6 +2102,7 @@ impl<'a> Sema<'a> {
             ty,
             init: None,
             fixed: true,
+            linkable: false,
             mangled,
             node: NodeId::default(),
             span: Span::default(),
@@ -2740,6 +2744,7 @@ impl<'a> Sema<'a> {
                         ty: allocator,
                         init: None,
                         fixed: true,
+                        linkable: false,
                         mangled,
                         node: NodeId::MAX - 700 - global_index,
                         span: Span::default(),

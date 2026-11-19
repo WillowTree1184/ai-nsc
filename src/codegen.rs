@@ -1064,9 +1064,15 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             }
         }
         for index in 0..self.sema.globals.len() as u32 {
-            let (mangled, ty, fixed, init) = {
+            let (mangled, ty, fixed, init, linkable) = {
                 let info = &self.sema.globals[index as usize];
-                (info.mangled.clone(), info.ty, info.fixed, info.init)
+                (
+                    info.mangled.clone(),
+                    info.ty,
+                    info.fixed,
+                    info.init,
+                    info.linkable,
+                )
             };
             let llvm_type = self.llvm_type(ty)?;
             let global = self.module.add_global(llvm_type, None, &mangled);
@@ -1076,6 +1082,19 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .ok_or_else(|| "missing DefaultAllocator instance".to_string())?;
                 global.set_initializer(&instance.as_pointer_value());
                 global.set_constant(true);
+                self.globals.insert(index, global);
+                continue;
+            }
+            if linkable {
+                // A linkable global keeps its external symbol. With no
+                // initializer it is an external declaration provided at link time.
+                if let Some(initializer) = init {
+                    if let Some(value) = self.const_scalar(initializer) {
+                        global.set_initializer(&value);
+                    } else {
+                        self.launcher_initializers.push(index);
+                    }
+                }
                 self.globals.insert(index, global);
                 continue;
             }

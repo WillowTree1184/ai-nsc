@@ -5829,3 +5829,15 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 5);
 }
+
+#[test]
+fn linkable_variables_with_initializers_keep_external_symbols() {
+    let source = "\
+linkable ExternalCounter: integer(4) = 7;
+
+fixed Main(): integer(4)
+{
+    return ExternalCounter;
+}";
+    assert_eq!(run_program(source), 7);
+}

@@ -559,6 +559,7 @@ impl<'a> Sema<'a> {
                             ty,
                             init,
                             fixed: false,
+                            linkable: false,
                             mangled,
                             node: *member,
                             span: self.span_of(*member),
@@ -1348,6 +1349,7 @@ impl<'a> Sema<'a> {
             ty,
             init,
             fixed: true,
+            linkable: false,
             mangled,
             node,
             span: self.span_of(node),
@@ -3977,8 +3979,63 @@ impl<'a> Sema<'a> {
             self.unsupported(self.span_of(node), "linkable declarations without a type");
             return;
         };
+        let is_function = matches!(self.node_kind(ty_node), NodeKind::FunctionType(_));
+        if !is_function {
+            if !declaration.generics.is_empty() {
+                self.error(
+                    self.span_of(node),
+                    "a linkable variable must not declare generic parameters",
+                );
+                return;
+            }
+            let Some(ty) = self.resolve_type(ty_node) else {
+                return;
+            };
+            let exposed = match &declaration.symbol {
+                Some(raw) => match literal::decode_string(raw) {
+                    Ok(decoded) => String::from_utf8_lossy(&decoded.bytes).into_owned(),
+                    Err(_) => {
+                        self.error(self.span_of(node), "invalid linkable symbol string literal");
+                        return;
+                    }
+                },
+                None => declaration.name.clone(),
+            };
+            let init = match declaration.init {
+                Some(Initializer::Expression(expression)) => Some(expression),
+                Some(Initializer::Block(_)) => {
+                    self.error(
+                        self.span_of(node),
+                        "a linkable variable requires an expression initializer",
+                    );
+                    return;
+                }
+                None => None,
+            };
+            let index = self.result.globals.len() as u32;
+            let scope = self.scope_path.clone();
+            self.result.globals.push(GlobalInfo {
+                accessibility: declaration.modifiers.accessibility,
+                scoped: Vec::new(),
+                verbatim: declaration.modifiers.verbatim,
+                name: declaration.name.clone(),
+                scope,
+                ty,
+                init,
+                fixed: true,
+                linkable: true,
+                mangled: exposed,
+                node,
+                span: self.span_of(node),
+            });
+            self.declare(
+                declaration.name.clone(),
+                Symbol::Global(index),
+                self.span_of(node),
+            );
+            return;
+        }
         let NodeKind::FunctionType(function) = self.node_kind(ty_node) else {
-            self.unsupported(self.span_of(node), "linkable variables");
             return;
         };
         let body = match declaration.init {
@@ -4206,6 +4263,7 @@ impl<'a> Sema<'a> {
             ty,
             init,
             fixed: true,
+            linkable: false,
             mangled,
             node,
             span: self.span_of(node),
@@ -4255,6 +4313,7 @@ impl<'a> Sema<'a> {
                 ty,
                 init: item.init,
                 fixed: false,
+                linkable: false,
                 mangled,
                 node,
                 span: item.span,

@@ -3985,3 +3985,31 @@ fixed Main(): integer(4)
         "{stderr}"
     );
 }
+
+#[test]
+fn linkable_variable_without_initializer_is_an_external_global() {
+    let directory =
+        std::env::temp_dir().join(format!("ainsc-cli-linkable-var-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(
+        &path,
+        "linkable ExternalBuffer: pointer cardinal(1);\n\nfixed Main(): integer(4) { return 0; }",
+    )
+    .expect("write");
+    let output = ai_nsc()
+        .args(["emit-ir", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let ir = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        ir.contains("ExternalBuffer") && ir.contains("external"),
+        "{ir}"
+    );
+}

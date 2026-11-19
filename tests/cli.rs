@@ -1990,10 +1990,10 @@ fn compiler_api_is_restricted_to_compile_time_contexts() {
         "{sizeof_direct}"
     );
     let platform_direct = check_source(
-        "fixed Main(): integer(4)\n{\n    if (Platform.Is(PlatformKind.Linux)) { return 1; }\n    return 0;\n}",
+        "fixed Main(): integer(4)\n{\n    if (Environment.Current.PlatformIs(\"Linux\")) { return 1; }\n    return 0;\n}",
     );
     assert!(
-        platform_direct.contains("through '#(...)' or '#if'"),
+        platform_direct.contains("environment queries must be evaluated at compile time"),
         "{platform_direct}"
     );
     let compiler_direct = check_source(
@@ -2661,7 +2661,7 @@ fn platform_queries_answer_the_selected_target() {
     std::fs::write(
         &path,
         "\
-#if Platform.Is(PlatformKind.Windows)
+#if Environment.Target.PlatformIs(\"Windows\")
 {
     #{ Compiler.LogError(\"windows target\"); }
 }
@@ -2692,7 +2692,7 @@ fixed Main(): integer(4)
     std::fs::write(
         &other_path,
         "\
-#if Platform.Is(PlatformKind.Other)
+#if Environment.Target.Platform == PlatformKind.Other
 {
     #{ Compiler.LogError(\"other target\"); }
 }
@@ -3172,4 +3172,99 @@ fixed Main(): integer(4)
 }",
     );
     assert!(repeated.contains("modifier must not repeat"), "{repeated}");
+}
+
+#[test]
+fn environment_queries_report_host_and_target_facts() {
+    let current = check_source(
+        "\
+#if Environment.Current.PlatformIs(\"Linux\")
+{
+    #{ Compiler.LogError(\"current linux\"); }
+}
+
+fixed Main(): integer(4)
+{
+    return 0;
+}",
+    );
+    assert!(current.contains("current linux"), "{current}");
+    let host = check_source(
+        "\
+#if Environment.Host.ArchitectureIs(\"X86_64\")
+{
+    #{ Compiler.LogError(\"host x86_64\"); }
+}
+
+fixed Main(): integer(4)
+{
+    return 0;
+}",
+    );
+    assert!(host.contains("host x86_64"), "{host}");
+    let target = check_source(
+        "\
+#if Environment.Target.PlatformIs(\"Windows\")
+{
+    #{ Compiler.LogError(\"target windows\"); }
+}
+else
+{
+    #{ Compiler.LogError(\"not windows\"); }
+}
+
+fixed Main(): integer(4)
+{
+    return 0;
+}",
+    );
+    assert!(target.contains("not windows"), "{target}");
+
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-environment-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(
+        &path,
+        "\
+#if Environment.Target.ArchitectureIs(\"Arm64\")
+{
+    #{ Compiler.LogError(\"arm64 target\"); }
+}
+
+fixed Main(): integer(4)
+{
+    return 0;
+}",
+    )
+    .expect("write");
+    let output = ai_nsc()
+        .args([
+            "check",
+            "--target=aarch64-unknown-linux-gnu",
+            path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("arm64 target"), "{stderr}");
+}
+
+#[test]
+fn platform_namespace_is_not_part_of_draft_1_153() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    local linux: boolean = #(Platform.Is(\"Linux\"));
+    return 0;
+}",
+    );
+    assert!(stderr.contains("unknown name 'Platform'"), "{stderr}");
 }

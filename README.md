@@ -30,7 +30,7 @@ Implemented and tested today:
   `IIterator`/`IIterable`), `match` with patterns/guards/`is` special floats,
   `trap`/`catch`/`finally`, `throw`, `heap`/`dispose`, compile-time blocks and
   conditionals, and the compiler API (`Type.SizeOf`, `Compiler.Log*`,
-  `Compiler.Assert`, `Platform.Is`, `NOLAA.*`).
+  `Compiler.Assert`, `Environment.Current/Host/Target` queries, `NOLAA.*`).
 - **Functions and runtime**: defaults, named arguments, by-reference parameters,
   array parameter sugar, `#` compile-time constant parameters (functions,
   methods and operators), nested functions, function literals with capturing
@@ -38,12 +38,12 @@ Implemented and tested today:
   and variant matching, custom `IAllocator`/`DefaultAllocator` heap allocation,
   NOLAA dispose warnings and conservative auto-dispose, and a launcher that
   performs runtime initialization before `Main`.
-- **Built-In Library (§15)**: `Object`, `CallingConvention`, `PlatformKind`, the
+- **Built-In Library (§15)**: `Object`, `CallingConvention`, `PlatformKind`, `ArchitectureKind`, `EnvironmentKind`, the
   exception hierarchy with `InnerException` and constructors, `Optional<T>`,
   `Result<TValue; TAlternative>`, `IIterator<T>`, `IIterable<T>`, `IAllocator`
   and the platform `DefaultAllocator`, plus the compile-time library.
 
-`cargo test` runs **383 tests** (41 lib unit, 119 CLI, 2 LLVM codegen, 205
+`cargo test` runs **385 tests** (41 lib unit, 121 CLI, 2 LLVM codegen, 205
 end-to-end programs, 10 parser, 3 spec-conformance tests that read the
 specification itself: every `novasharp` example parses, and every whole-program
 example that passes semantic analysis is compiled end to end by the CLI).

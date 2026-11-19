@@ -7,7 +7,7 @@
   authoritative specification is `docs/grammar/Draft 1.153.md`; Draft 1.152 is
   historical only.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  — **383 tests green** (41 lib unit, 119 CLI, 2 codegen/LLVM, 1 MCJIT probe,
+  — **385 tests green** (41 lib unit, 121 CLI, 2 codegen/LLVM, 1 MCJIT probe,
   2 JIT compile-time evaluation, 205 end-to-end execution, 10 parser, 3
   spec-example conformance). The spec-conformance tests read `Draft 1.153.md`:
   all 97 `novasharp` examples parse (the bare inline-assembly block and the bare
@@ -19,13 +19,18 @@
 - Draft 1.153 semantic fixes (round 24): duplicate overload signatures rejected,
   mangling contract markers, repeated modifiers rejected, monomorphization base
   restricted to identifiers, `Type.SizeOf` returns 64-bit values.
+- Draft 1.153 semantic fixes (round 25): `Environment` API replaces `Platform`
+  (Current/Host/Target, architecture facts, string queries), with tests for host,
+  target and cross-target architecture; `Platform` is no longer accepted.
 - **Draft 1.153 new work still open**:
   1. §5.2 inline assembly: lexer raw mode, AST/parser/placeholders/clobbers,
      per-architecture syntax validation, LLVM InlineAsm lowering, barriers,
      compile-time/host restrictions, tests.
-  2. §11.9.3 `Environment` API replacing `Platform`: `PlatformKind`,
-     `ArchitectureKind`, `EnvironmentKind`, `EnvironmentFacts`, `Current/Host/
-     Target`, string queries, `#if` direct-call rule, host/target facts.
+  2. §11.9.3 `Environment` API: implemented (Current/Host/Target facts,
+     `PlatformIs`/`ArchitectureIs`, host/target architecture, `Platform` removed).
+     Remaining: a materialised `EnvironmentFacts`/`Environment` module declaration
+     in the built-in type space (queries are compile-time folded) and the
+     `#if` direct-call-only nuance for `#()` wrapping.
   3. §8.5/§13.2 `#`/`&`: participate in type equality but not overload
      signature; only-contract overloads forbidden; mangling hash includes
      contract markers.

@@ -1257,12 +1257,14 @@ pub fn analyze_with_options(
         compile_time_local_ids: Vec::new(),
         in_constant_initializer: false,
         compile_call_depth: 0,
+        environment_eval_depth: 0,
         top_level_blocks: Vec::new(),
         top_level_units: Vec::new(),
         unknown_compile_time_names: std::collections::HashSet::new(),
         jit_allowed,
         freestanding,
         target_platform_kind: Sema::platform_kind_for_triple(target_triple),
+        target_architecture_kind: Sema::architecture_kind_for_triple(target_triple),
         compile_time_phase_b: false,
         compile_time_deferred: false,
         compile_time_aborted: false,
@@ -1402,12 +1404,18 @@ pub(crate) struct Sema<'a> {
     /// Whether the target is freestanding (no host C library, e.g. UEFI): the
     /// platform `DefaultAllocator` is then the developer's responsibility.
     pub(crate) freestanding: bool,
-    /// Compilation target's `PlatformKind` value for `Platform.Is` (§11.9.3).
+    /// Compilation target's `PlatformKind` value for environment queries
+    /// (§11.9.3).
     pub(crate) target_platform_kind: u32,
+    /// Compilation target's `ArchitectureKind` value (§11.9.3).
+    pub(crate) target_architecture_kind: u32,
     /// Whether a constant initializer is being checked (§5.3).
     pub(crate) in_constant_initializer: bool,
     /// Nesting depth of compile-time function interpretation (§11.4).
     pub(crate) compile_call_depth: usize,
+    /// Depth of compile-time boolean evaluation (used to allow environment
+    /// queries while a declaration-phase `#if` condition is evaluated).
+    pub(crate) environment_eval_depth: usize,
     /// Top-level `#{}` blocks in execution order (§11.2).
     pub(crate) top_level_blocks: Vec<NodeId>,
     /// Top-level `#{}` blocks and `#()` expression statements in source order
@@ -1531,6 +1539,49 @@ impl<'a> Sema<'a> {
             "Linux" => Some(2),
             "MacOS" => Some(3),
             "FreeBSD" => Some(4),
+            _ => None,
+        }
+    }
+
+    /// The `ArchitectureKind` value for a target triple (§11.9.3): 0 `Other`,
+    /// 1 `X86`, 2 `X86_64`, 3 `Arm`, 4 `Arm64`, 5 `RiscV32`, 6 `RiscV64`.
+    pub(crate) fn architecture_kind_for_triple(triple: Option<&str>) -> u32 {
+        let triple = triple.map_or_else(
+            || crate::HOST_TRIPLE.to_ascii_lowercase(),
+            |triple| triple.to_ascii_lowercase(),
+        );
+        if triple.contains("x86_64") || triple.contains("amd64") {
+            2
+        } else if triple.contains("i386")
+            || triple.contains("i486")
+            || triple.contains("i586")
+            || triple.contains("i686")
+            || triple.contains("x86")
+        {
+            1
+        } else if triple.contains("aarch64") || triple.contains("arm64") {
+            4
+        } else if triple.contains("arm") {
+            3
+        } else if triple.contains("riscv64") {
+            6
+        } else if triple.contains("riscv32") {
+            5
+        } else {
+            0
+        }
+    }
+
+    /// Resolves a canonical architecture name to an `ArchitectureKind` value
+    /// (§11.9.3). Names are case-sensitive and `Other` has no name.
+    pub(crate) fn architecture_kind_from_name(name: &str) -> Option<u32> {
+        match name {
+            "X86" => Some(1),
+            "X86_64" => Some(2),
+            "Arm" => Some(3),
+            "Arm64" => Some(4),
+            "RiscV32" => Some(5),
+            "RiscV64" => Some(6),
             _ => None,
         }
     }
@@ -2145,6 +2196,15 @@ impl<'a> Sema<'a> {
             4,
             &["Other", "Windows", "Linux", "MacOS", "FreeBSD"],
         );
+        self.push_builtin_enumeration(
+            "ArchitectureKind",
+            false,
+            4,
+            &[
+                "Other", "X86", "X86_64", "Arm", "Arm64", "RiscV32", "RiscV64",
+            ],
+        );
+        self.push_builtin_enumeration("EnvironmentKind", false, 4, &["Host", "Target"]);
         const NAMES: [&str; 6] = [
             "Exception",
             "NotImplementedException",
@@ -3311,7 +3371,7 @@ impl<'a> Sema<'a> {
                 }
                 NodeKind::ExpressionStmt(expression) => {
                     let is_api = builtin_compiler_function(self.ast, expression).is_some()
-                        || ["Platform", "NOLAA"].iter().any(|namespace| {
+                        || ["Environment", "NOLAA"].iter().any(|namespace| {
                             builtin_namespace_call(self.ast, expression, namespace).is_some()
                         })
                         || builtin_size_of_type_argument(self.ast, expression).is_some();

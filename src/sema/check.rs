@@ -4138,7 +4138,25 @@ impl<'a> Sema<'a> {
 
     /// Evaluates a compile-time constant boolean used by `#if` (§11.6).
     pub(crate) fn eval_compile_time_bool(&mut self, node: NodeId, depth: u32) -> Option<bool> {
+        self.environment_eval_depth += 1;
+        let result = self.eval_compile_time_bool_inner(node, depth);
+        self.environment_eval_depth -= 1;
+        result
+    }
+
+    fn eval_compile_time_bool_inner(&mut self, node: NodeId, depth: u32) -> Option<bool> {
         if depth > 16 {
+            return None;
+        }
+        if let Some(result) = self.check_environment_expression(node) {
+            let ty = result?;
+            if ty != TypeId::BOOLEAN {
+                return None;
+            }
+            if let Some(Resolution::Constant { value, .. }) = self.result.resolutions[node as usize]
+            {
+                return Some(value != 0);
+            }
             return None;
         }
         match self.node_kind(node).clone() {
@@ -4183,38 +4201,20 @@ impl<'a> Sema<'a> {
                 }
                 _ => None,
             },
-            NodeKind::Call(call) => {
-                // Platform.Is is a compile-time constant (§15.3).
-                let name = builtin_namespace_call(self.ast, call.callee, "Platform")?;
-                if name != "Is" || call.arguments.len() != 1 {
+            NodeKind::Call(_) => None,
+            NodeKind::MemberAccess(access) => {
+                let Some(Symbol::Type(type_id)) = self.try_resolve_name(access.base) else {
                     return None;
-                }
-                let argument = &call.arguments[0];
-                match self.node_kind(argument.value) {
-                    NodeKind::StringLiteral(literal) => {
-                        let decoded = literal::decode_string(&literal.raw).ok()?;
-                        let name = String::from_utf8_lossy(&decoded.bytes).into_owned();
-                        Some(
-                            Self::platform_kind_from_name(&name)
-                                .is_some_and(|kind| kind == self.target_platform_kind),
-                        )
-                    }
-                    NodeKind::MemberAccess(access) => {
-                        let Some(Symbol::Type(type_id)) = self.try_resolve_name(access.base) else {
-                            return None;
-                        };
-                        let Type::Named(index) = self.types_of(type_id) else {
-                            return None;
-                        };
-                        let definition = &self.result.type_defs[index as usize];
-                        let (_, value) = definition
-                            .enum_members
-                            .iter()
-                            .find(|(member, _)| *member == access.name)?;
-                        Some(*value as u32 == self.target_platform_kind)
-                    }
-                    _ => None,
-                }
+                };
+                let Type::Named(index) = self.types_of(type_id) else {
+                    return None;
+                };
+                let definition = &self.result.type_defs[index as usize];
+                definition
+                    .enum_members
+                    .iter()
+                    .find(|(member, _)| *member == access.name)
+                    .map(|(_, value)| *value != 0)
             }
             NodeKind::Name(name) => {
                 match self
@@ -4497,7 +4497,7 @@ impl<'a> Sema<'a> {
                     // Compile-time API calls are no-ops at run time; other
                     // statements are not interpreted.
                     let is_api = builtin_compiler_function(self.ast, expression).is_some()
-                        || ["Platform", "NOLAA"].iter().any(|namespace| {
+                        || ["Environment", "NOLAA"].iter().any(|namespace| {
                             builtin_namespace_call(self.ast, expression, namespace).is_some()
                         })
                         || builtin_size_of_type_argument(self.ast, expression).is_some();
@@ -4897,6 +4897,14 @@ impl<'a> Sema<'a> {
     }
 
     pub(crate) fn eval_const_int(&mut self, node: NodeId) -> Option<i128> {
+        if let Some(result) = self.check_environment_expression(node) {
+            result?;
+            if let Some(Resolution::Constant { value, .. }) = self.result.resolutions[node as usize]
+            {
+                return Some(value);
+            }
+            return None;
+        }
         match self.node_kind(node).clone() {
             NodeKind::IntegerLiteral(literal) => match literal::decode_integer(&literal.raw) {
                 Ok(value) => {
@@ -5082,6 +5090,20 @@ impl<'a> Sema<'a> {
                         return None;
                     }
                 })
+            }
+            NodeKind::MemberAccess(access) => {
+                let Some(Symbol::Type(type_id)) = self.try_resolve_name(access.base) else {
+                    return None;
+                };
+                let Type::Named(index) = self.types_of(type_id) else {
+                    return None;
+                };
+                let definition = &self.result.type_defs[index as usize];
+                definition
+                    .enum_members
+                    .iter()
+                    .find(|(member, _)| *member == access.name)
+                    .map(|(_, value)| *value)
             }
             NodeKind::Name(name) => {
                 // Top-level compile-time variables are compile-time bindings
@@ -6083,7 +6105,7 @@ impl<'a> Sema<'a> {
             match self.node_kind(*statement).clone() {
                 NodeKind::ExpressionStmt(expression) => {
                     let is_api = builtin_compiler_function(self.ast, expression).is_some()
-                        || ["Platform", "NOLAA"].iter().any(|namespace| {
+                        || ["Environment", "NOLAA"].iter().any(|namespace| {
                             builtin_namespace_call(self.ast, expression, namespace).is_some()
                         })
                         || builtin_size_of_type_argument(self.ast, expression).is_some();
@@ -8191,6 +8213,11 @@ impl<'a> Sema<'a> {
 
 impl<'a> Sema<'a> {
     pub(crate) fn check_expr(&mut self, node: NodeId, expected: Option<TypeId>) -> Option<TypeId> {
+        if let Some(result) = self.check_environment_expression(node) {
+            let ty = result?;
+            self.result.node_types[node as usize] = Some(ty);
+            return Some(ty);
+        }
         let ty = self.check_expr_inner(node, expected);
         if let (Some(ty), Some(expected)) = (ty, expected) {
             if ty != expected && !self.is_assignable(ty, expected) {
@@ -9301,8 +9328,23 @@ impl<'a> Sema<'a> {
             NodeKind::VerbatimExpression(_) => false,
             NodeKind::Call(call) => {
                 builtin_size_of_type_argument(self.ast, call.callee).is_some()
-                    || builtin_namespace_call(self.ast, call.callee, "Platform")
-                        .is_some_and(|name| name == "Is")
+                    || self
+                        .environment_segments(call.callee)
+                        .is_some_and(|segments| {
+                            segments.len() == 2
+                                && matches!(segments[1].as_str(), "PlatformIs" | "ArchitectureIs")
+                        })
+            }
+            NodeKind::MemberAccess(access) => {
+                self.environment_segments(node).is_some_and(|segments| {
+                    matches!(segments.as_slice(), [kind] if kind == "Kind")
+                        || matches!(
+                            segments.as_slice(),
+                            [world, member]
+                                if matches!(world.as_str(), "Current" | "Host" | "Target")
+                                    && matches!(member.as_str(), "Platform" | "Architecture")
+                        )
+                }) && !matches!(self.node_kind(access.base), NodeKind::Call(_))
             }
             NodeKind::Name(name) => match self.lookup(&name.name) {
                 Some(Symbol::Global(global)) => {
@@ -10901,69 +10943,165 @@ impl<'a> Sema<'a> {
         Some(TypeId::VOID)
     }
 
-    /// Evaluates `Platform.Is(...)` against the compilation target (§15.3).
-    fn check_platform_is(&mut self, node: NodeId, arguments: &[Argument]) -> Option<TypeId> {
-        let span = self.span_of(node);
-        if arguments.len() != 1 {
-            self.error(span, "Platform.Is takes exactly one argument");
+    /// The worlds an `Environment` query can inspect (§11.9.3).
+    fn environment_segments(&self, node: NodeId) -> Option<Vec<String>> {
+        match self.node_kind(node) {
+            NodeKind::Name(name) if name.name == "Environment" => Some(Vec::new()),
+            NodeKind::MemberAccess(access) => {
+                let mut segments = self.environment_segments(access.base)?;
+                segments.push(access.name);
+                Some(segments)
+            }
+            _ => None,
+        }
+    }
+
+    fn environment_world(&self, name: &str) -> Option<bool> {
+        // `true` selects the Host facts, `false` the Target/Current facts.
+        match name {
+            "Host" => Some(true),
+            "Target" | "Current" => Some(false),
+            _ => None,
+        }
+    }
+
+    fn environment_string_argument(&mut self, call: &CallExpr) -> Option<String> {
+        if call.arguments.len() != 1 {
             return None;
         }
-        let argument = &arguments[0];
-        let matches = match self.node_kind(argument.value) {
-            NodeKind::StringLiteral(literal) => match literal::decode_string(&literal.raw) {
-                Ok(decoded) => {
-                    let name = String::from_utf8_lossy(&decoded.bytes).into_owned();
-                    // Names outside the canonical set answer false (§15.3).
-                    Self::platform_kind_from_name(&name)
-                        .is_some_and(|kind| kind == self.target_platform_kind)
-                }
-                Err(message) => {
-                    self.error(self.span_of(argument.value), message);
-                    return None;
-                }
-            },
-            NodeKind::MemberAccess(access) => {
-                // `PlatformKind.Member`
-                let Some(Symbol::Type(type_id)) = self.try_resolve_name(access.base) else {
-                    self.error(self.span_of(node), "Platform.Is expects a platform kind");
-                    return None;
-                };
-                let Type::Named(index) = self.types_of(type_id) else {
-                    return None;
-                };
-                let definition = &self.result.type_defs[index as usize];
-                if definition.kind != TypeDefKind::Enumeration {
-                    self.error(self.span_of(node), "Platform.Is expects a platform kind");
-                    return None;
-                }
-                match definition
-                    .enum_members
-                    .iter()
-                    .find(|(member, _)| *member == access.name)
-                {
-                    Some((_, value)) => *value as u32 == self.target_platform_kind,
-                    None => {
-                        self.error(
-                            self.span_of(node),
-                            format!("'{}' is not a platform kind", access.name),
-                        );
-                        return None;
-                    }
-                }
+        let value = call.arguments[0].value;
+        let raw = match self.node_kind(value) {
+            NodeKind::StringLiteral(literal) | NodeKind::VerbatimStringLiteral(literal) => {
+                literal.raw
             }
             _ => {
                 self.unsupported(
-                    self.span_of(argument.value),
-                    "Platform.Is with non-constant arguments",
+                    self.span_of(value),
+                    "environment queries with non-literal names",
                 );
                 return None;
             }
         };
-        self.result.resolutions[node as usize] = Some(Resolution::Constant {
-            ty: TypeId::BOOLEAN,
-            value: i128::from(matches),
-        });
-        Some(TypeId::BOOLEAN)
+        match literal::decode_string(&raw) {
+            Ok(decoded) => Some(String::from_utf8_lossy(&decoded.bytes).into_owned()),
+            Err(message) => {
+                self.error(self.span_of(value), message);
+                None
+            }
+        }
+    }
+
+    fn environment_facts(&self, host: bool) -> (u32, u32) {
+        if host {
+            (
+                Self::platform_kind_for_triple(Some(crate::HOST_TRIPLE)),
+                Self::architecture_kind_for_triple(Some(crate::HOST_TRIPLE)),
+            )
+        } else {
+            (self.target_platform_kind, self.target_architecture_kind)
+        }
+    }
+
+    /// Recognises the §11.9.3 environment API without requiring a materialised
+    /// `Environment` module declaration; all queries are compile-time folded.
+    fn check_environment_expression(&mut self, node: NodeId) -> Option<Option<TypeId>> {
+        // Only environment paths are inspected; every other expression falls
+        // through unchanged.
+        let recognised = match self.node_kind(node) {
+            NodeKind::Call(call) => {
+                self.environment_segments(call.callee)
+                    .is_some_and(|segments| {
+                        segments.len() == 2
+                            && matches!(segments[1].as_str(), "PlatformIs" | "ArchitectureIs")
+                    })
+            }
+            _ => self.environment_segments(node).is_some_and(|segments| {
+                matches!(segments.as_slice(), [kind] if kind == "Kind")
+                    || matches!(
+                        segments.as_slice(),
+                        [world, member]
+                            if matches!(world.as_str(), "Current" | "Host" | "Target")
+                                && matches!(member.as_str(), "Platform" | "Architecture")
+                    )
+            }),
+        };
+        if !recognised {
+            return None;
+        }
+        if !self.in_compile_time_code() && self.environment_eval_depth == 0 {
+            self.error(
+                self.span_of(node),
+                "environment queries must be evaluated at compile time through '#(...)' or a '#if' condition (§11.9.3)",
+            );
+            return Some(None);
+        }
+        // Calls: `Environment.<world>.PlatformIs("...")` /
+        // `ArchitectureIs`.
+        if let NodeKind::Call(call) = self.node_kind(node) {
+            let segments = self.environment_segments(call.callee)?;
+            if segments.len() != 2 {
+                return None;
+            }
+            let host = self.environment_world(&segments[0])?;
+            let method = segments[1].as_str();
+            if method != "PlatformIs" && method != "ArchitectureIs" {
+                return None;
+            }
+            let Some(name) = self.environment_string_argument(&call) else {
+                return Some(None);
+            };
+            let (platform, architecture) = self.environment_facts(host);
+            let matches = if method == "PlatformIs" {
+                Self::platform_kind_from_name(&name).is_some_and(|kind| kind == platform)
+            } else {
+                Self::architecture_kind_from_name(&name).is_some_and(|kind| kind == architecture)
+            };
+            self.result.resolutions[node as usize] = Some(Resolution::Constant {
+                ty: TypeId::BOOLEAN,
+                value: i128::from(matches),
+            });
+            return Some(Some(TypeId::BOOLEAN));
+        }
+        // Values: `Environment.Kind`, `Environment.<world>.Platform`,
+        // `Environment.<world>.Architecture`.
+        let segments = self.environment_segments(node)?;
+        let (host, member, ty) = match segments.as_slice() {
+            [kind] if kind == "Kind" => {
+                return {
+                    self.result.resolutions[node as usize] = Some(Resolution::Constant {
+                        ty: self.lookup_type_id("EnvironmentKind")?,
+                        value: 1,
+                    });
+                    Some(Some(self.lookup_type_id("EnvironmentKind")?))
+                };
+            }
+            [world, member] => {
+                let host = self.environment_world(world)?;
+                let ty = match member.as_str() {
+                    "Platform" => self.lookup_type_id("PlatformKind")?,
+                    "Architecture" => self.lookup_type_id("ArchitectureKind")?,
+                    _ => return None,
+                };
+                (host, member.as_str(), ty)
+            }
+            _ => return None,
+        };
+        let (platform, architecture) = self.environment_facts(host);
+        let value = if member == "Platform" {
+            i128::from(platform)
+        } else {
+            i128::from(architecture)
+        };
+        self.result.resolutions[node as usize] = Some(Resolution::Constant { ty, value });
+        Some(Some(ty))
+    }
+
+    /// Looks up a built-in type id by name.
+    fn lookup_type_id(&self, name: &str) -> Option<TypeId> {
+        match self.lookup(name) {
+            Some(Symbol::Type(ty)) => Some(*ty),
+            _ => None,
+        }
     }
 
     /// Handles the compile-time diagnostics API (§15.3).
@@ -11155,7 +11293,7 @@ impl<'a> Sema<'a> {
 
     fn check_call(&mut self, node: NodeId, call: &CallExpr) -> Option<TypeId> {
         if self.in_verbatim {
-            for namespace in ["Platform", "Compiler", "NOLAA"] {
+            for namespace in ["Environment", "Compiler", "NOLAA"] {
                 if builtin_namespace_call(self.ast, call.callee, namespace).is_some() {
                     self.error(
                         self.span_of(node),
@@ -11216,13 +11354,6 @@ impl<'a> Sema<'a> {
                 {
                     return self.check_generic_method_call(node, call, &monomorphization, &access);
                 }
-            }
-        }
-        // Compiler API: `Platform.Is(PlatformKind)` / `Platform.Is("name")`
-        // evaluates against the compilation target (§15.3).
-        if let Some(name) = builtin_namespace_call(self.ast, call.callee, "Platform") {
-            if name == "Is" {
-                return self.check_platform_is(node, &call.arguments);
             }
         }
         // Heap lifetime analysis controls are advisory no-ops at run time (§15.3).

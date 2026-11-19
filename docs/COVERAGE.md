@@ -93,7 +93,7 @@ semantics is pinned (`3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`).
    catches). Remaining: constructor/destructor bodies of compile-time objects,
    non-scalar fields, thrown object values/catch bindings and class-hierarchy
    catch matching.
-3. **Interface constant contracts (§3.8.3)**: direct function/accessor/operator
+2. **Interface constant contracts (§3.8.3)**: direct function/accessor/operator
    contracts and class-body extension implementations work; non-function
    interface constants without initializers are not modelled as class-side
    constant contracts.

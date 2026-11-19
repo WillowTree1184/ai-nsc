@@ -6,8 +6,8 @@
 - **Active goal: 100% Draft 1.16 conformance.** Authoritative specification:
   `docs/grammar/Draft 1.16.md` (1.153 and earlier are historical only).
 - Gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-  `cargo test` — **424 tests green** (41 lib unit, 140 CLI, 2 codegen/LLVM,
-  1 MCJIT probe, 2 JIT compile-time evaluation, 225 end-to-end execution,
+  `cargo test` — **428 tests green** (41 lib unit, 141 CLI, 2 codegen/LLVM,
+  1 MCJIT probe, 2 JIT compile-time evaluation, 228 end-to-end execution,
   10 parser, 3 spec-example conformance).
 - Spec tests read Draft 1.16 directly: 102 `novasharp` fences; all parse except
   five documented syntax fragments; every complete `Main` example compiles; the
@@ -38,25 +38,18 @@
 1. **Compile-time non-scalar execution (§11.4)**: constructor/destructor bodies
    of compile-time objects, non-scalar fields, thrown object values/catch
    bindings and class-hierarchy catch matching are not interpreted.
-2. **Function-field `Block` initializers (§3.9.1)**: expression initializers work;
-   `Name: function(...) { }` is diagnosed.
-3. **`linkable` variables (§5.6)**: linkable functions work; external data/global
-   symbols are diagnosed.
-4. **`#if` on global `fixed` constants (§11.7)**: immutable `#{}`/`#` forward
-   bindings work; top-level `fixed` conditions are diagnosed.
-5. **Interface constant contracts (§3.8.3)**: function/accessor/operator contracts
+2. **Interface constant contracts (§3.8.3)**: function/accessor/operator contracts
    work; non-function constants without initializers are not modelled as
    class-side constant contracts.
 
 ## Next steps (round order)
 
-1. Function-field `Block` initializers + `linkable` variables.
-2. `#if` on global `fixed` constants + interface constant contracts.
-3. Compile-time object constructor/destructor and thrown object/catch bindings.
-4. Re-run all spec examples with `ai-nsc check` (not only `Main` programs),
+1. Interface constant contracts.
+2. Compile-time object constructor/destructor and thrown object/catch bindings.
+3. Re-run all spec examples with `ai-nsc check` (not only `Main` programs),
    close remaining documented-demo vs real-gap distinctions.
-5. Final audit: COVERAGE/AUDIT/README/spec-notes consistency, zero deviations,
-   full gates.
+4. Final audit: COVERAGE/AUDIT/README/spec-notes consistency, remaining
+   deviations and full gates.
 
 ## Where things live
 

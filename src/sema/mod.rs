@@ -825,6 +825,14 @@ pub enum Resolution {
         /// Index into the type's field list.
         index: u32,
     },
+    /// A copy of a copyable compile-time array materialised as a runtime
+    /// constant (§11.4/§11.8).
+    CompileTimeArrayCopy {
+        /// Snapshot name.
+        name: String,
+        /// Array type.
+        ty: TypeId,
+    },
     /// A copy of a copyable compile-time object materialised as a runtime
     /// constant (§11.4/§11.8).
     CompileTimeObjectCopy {
@@ -1007,6 +1015,8 @@ pub struct SemaResult {
     pub environment_fact_returns: HashMap<u32, Option<bool>>,
     /// Copyable compile-time object snapshots for runtime constants (§11.4/§11.8).
     pub compile_time_object_copies: HashMap<String, (TypeId, Vec<(String, i128)>)>,
+    /// Copyable compile-time array snapshots for runtime constants.
+    pub compile_time_array_copies: HashMap<String, (TypeId, Vec<i128>)>,
     /// Explicit heap allocator used for each heap local, for deallocation.
     pub heap_allocator_locals: HashMap<LocalId, NodeId>,
     /// Iteration over `IIterator`/`IIterable` targets, keyed by the `for` node
@@ -1427,6 +1437,8 @@ pub(crate) struct CompileTimeObject {
     pub ty: TypeId,
     /// Scalar field values by field name.
     pub fields: HashMap<String, i128>,
+    /// Flat scalar element values for compile-time arrays.
+    pub array: Option<Vec<i128>>,
 }
 
 pub(crate) struct Sema<'a> {
@@ -4064,7 +4076,11 @@ impl<'a> Sema<'a> {
                                 if self.compile_time_phase_b {
                                     if let Some(ty) = self.lookup_type_id(&type_name) {
                                         let fields = self.compile_time_object_fields(ty);
-                                        object = Some(CompileTimeObject { ty, fields });
+                                        object = Some(CompileTimeObject {
+                                            ty,
+                                            fields,
+                                            array: None,
+                                        });
                                     }
                                 }
                             }
@@ -4491,6 +4507,22 @@ impl<'a> Sema<'a> {
     /// Copies a compile-time object into the runtime-constant snapshot map if
     /// §11.8 permits it (value type, scalar fields, no destructor).
     fn snapshot_compile_time_object(&mut self, name: &str, object: &CompileTimeObject) {
+        if let Some(values) = &object.array {
+            if let Type::Array {
+                dimensions,
+                element,
+            } = self.types_of(object.ty)
+            {
+                let scalar_element =
+                    matches!(self.types_of(element), Type::Integer { .. } | Type::Boolean);
+                if dimensions.len() == 1 && scalar_element {
+                    self.result
+                        .compile_time_array_copies
+                        .insert(name.to_string(), (object.ty, values.clone()));
+                }
+            }
+            return;
+        }
         let Type::Named(index) = self.types_of(object.ty) else {
             return;
         };
@@ -4615,9 +4647,48 @@ impl<'a> Sema<'a> {
                 );
                 return;
             };
+            if let Type::Array { dimensions, .. } = self.types_of(ty) {
+                if dimensions.len() == 1 {
+                    if let NodeKind::ArrayLiteral(literal) = self.node_kind(expression).clone() {
+                        let mut values = Vec::new();
+                        let mut valid = true;
+                        for element in &literal.elements {
+                            let crate::ast::ArrayElement::Value(element) = element else {
+                                valid = false;
+                                break;
+                            };
+                            let Some(value) = self.eval_const_int(*element) else {
+                                valid = false;
+                                break;
+                            };
+                            values.push(value);
+                        }
+                        if valid {
+                            self.compile_time_objects.insert(
+                                declaration.name.clone(),
+                                CompileTimeObject {
+                                    ty,
+                                    fields: HashMap::new(),
+                                    array: Some(values),
+                                },
+                            );
+                            self.compile_time_object_order
+                                .push(declaration.name.clone());
+                            self.unknown_compile_time_names.remove(&declaration.name);
+                            return;
+                        }
+                    }
+                }
+            }
             let fields = self.compile_time_object_fields(ty);
-            self.compile_time_objects
-                .insert(declaration.name.clone(), CompileTimeObject { ty, fields });
+            self.compile_time_objects.insert(
+                declaration.name.clone(),
+                CompileTimeObject {
+                    ty,
+                    fields,
+                    array: None,
+                },
+            );
             self.compile_time_object_order
                 .push(declaration.name.clone());
             self.unknown_compile_time_names.remove(&declaration.name);

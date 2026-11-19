@@ -5944,6 +5944,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             Some(Resolution::CompileTimeObjectCopy { name, ty }) => {
                 self.gen_compile_time_object_copy(node, &name, ty)
             }
+            Some(Resolution::CompileTimeArrayCopy { name, ty }) => {
+                self.gen_compile_time_array_copy(&name, ty)
+            }
             Some(Resolution::Operator { .. })
             | Some(Resolution::DerivedNotEqual { .. })
             | Some(Resolution::DerivedComparison { .. })
@@ -6658,6 +6661,32 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .build_store(slot, value)
             .map_err(|error| format!("cannot store value: {error}"))?;
         Ok(slot)
+    }
+
+    /// Materialises a copyable compile-time array snapshot as an LLVM constant
+    /// array (§11.4/§11.8).
+    fn gen_compile_time_array_copy(
+        &mut self,
+        name: &str,
+        ty: TypeId,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let Some((_, values)) = self.sema.compile_time_array_copies.get(name).cloned() else {
+            return Err("missing compile-time array snapshot".to_string());
+        };
+        let Type::Array { element, .. } = self.sema.types.get(ty).clone() else {
+            return Err("compile-time array copy requires an array".to_string());
+        };
+        let array_type = match self.llvm_type(ty)? {
+            BasicTypeEnum::ArrayType(array) => array,
+            _ => return Err("compile-time array copy requires an LLVM array".to_string()),
+        };
+        let _ = array_type;
+        let element_type = self.llvm_type(element)?.into_int_type();
+        let constants: Vec<_> = values
+            .iter()
+            .map(|value| element_type.const_int(*value as u64, false))
+            .collect();
+        Ok(element_type.const_array(&constants).into())
     }
 
     /// Materialises a copyable compile-time object snapshot as an LLVM constant

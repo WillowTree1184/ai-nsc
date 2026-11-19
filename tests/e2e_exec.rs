@@ -6024,3 +6024,18 @@ class Token
 fixed Main(): integer(4) { return seen; }";
     assert_eq!(run_program(source), 9);
 }
+
+#[test]
+fn compile_time_arrays_copy_to_runtime_constants() {
+    let source = "\
+#{
+    heap values: array(3) integer(4) = { 1, 2, 3 };
+}
+
+fixed Main(): integer(4)
+{
+    local copy: array(3) integer(4) = values;
+    return copy[1];
+}";
+    assert_eq!(run_program(source), 2);
+}

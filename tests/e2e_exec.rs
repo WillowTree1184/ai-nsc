@@ -5307,3 +5307,28 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 15);
 }
+
+#[test]
+fn returned_explicit_allocator_heap_class_is_disposed_by_the_caller() {
+    let source = "\
+class Token
+{
+    public Value: integer(4);
+}
+
+fixed Make(): Token
+{
+    heap(DefaultAllocator) token: Token = Token();
+    token.Value = 5;
+    return token;
+}
+
+fixed Main(): integer(4)
+{
+    local made: Token = Make();
+    local value: integer(4) = made.Value;
+    dispose made;
+    return value;
+}";
+    assert_eq!(run_program(source), 5);
+}

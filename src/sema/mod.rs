@@ -961,6 +961,8 @@ pub struct SemaResult {
     /// Locals referencing a heap unit returned by another function with the
     /// default allocator (§5.8/§12.2).
     pub heap_reference_locals: HashSet<LocalId>,
+    /// Locals referencing a returned explicit-allocator heap class instance.
+    pub heap_custom_reference_locals: HashSet<LocalId>,
     /// Methods belonging to non-named owners (array extensions, §3.8.3).
     pub owner_methods: HashMap<TypeId, Vec<u32>>,
     /// Accessors belonging to non-named owners (array extensions, §3.8.3).
@@ -1763,7 +1765,7 @@ impl<'a> Sema<'a> {
             tag_type: None,
             payload_offset: 0,
             payload_size: 0,
-            instance_size: 2 * self.builtin_pointer_size(),
+            instance_size: 3 * self.builtin_pointer_size(),
             instance_align: self.builtin_pointer_size(),
             enum_members: Vec::new(),
             underlying: None,
@@ -2185,7 +2187,7 @@ impl<'a> Sema<'a> {
                 tag_type: None,
                 payload_offset: 0,
                 payload_size: 0,
-                instance_size: 2 * self.builtin_pointer_size(),
+                instance_size: 3 * self.builtin_pointer_size(),
                 instance_align: self.builtin_pointer_size(),
                 enum_members: Vec::new(),
                 underlying: None,
@@ -2235,13 +2237,13 @@ impl<'a> Sema<'a> {
                     definition.fields = vec![FieldInfo {
                         name: "InnerException".to_string(),
                         ty: optional_exception,
-                        offset: 2 * pointer_size,
+                        offset: 3 * pointer_size,
                         accessibility: crate::ast::Accessibility::Public,
                         readonly: false,
                         scoped: Vec::new(),
                     }];
                     definition.field_initializers = vec![None];
-                    definition.instance_size = 4 * pointer_size;
+                    definition.instance_size = 5 * pointer_size;
                     definition.instance_align = pointer_size;
                 }
             }

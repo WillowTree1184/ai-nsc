@@ -488,7 +488,7 @@ impl<'a> Sema<'a> {
         let mut field_initializers: Vec<Option<NodeId>> = Vec::new();
         let pointer_size = u64::from(self.result.types.pointer_size());
         // Classes start with the vtable and typeinfo pointers (§3.7.1).
-        let mut offset: u64 = if is_class { 2 * pointer_size } else { 0 };
+        let mut offset: u64 = if is_class { 3 * pointer_size } else { 0 };
         let mut max_align: u64 = if is_class { 8 } else { 1 };
 
         if let Some(base_type) = base_type {
@@ -5389,6 +5389,7 @@ impl<'a> Sema<'a> {
         }
         self.bodies_checked = self.result.functions.len();
         self.result.heap_reference_locals = self.heap_reference_locals.clone();
+        self.result.heap_custom_reference_locals = self.heap_custom_reference_locals.clone();
         self.finalize_compile_time_block_locals();
         self.check_return_paths();
     }
@@ -7367,17 +7368,24 @@ impl<'a> Sema<'a> {
                 let info = self.local_info(local).cloned();
                 if let Some(info) = info {
                     if self.heap_custom_reference_locals.contains(&local) {
-                        self.error(
-                            self.span_of(statement.target),
-                            "disposing a heap reference returned with an explicit allocator is not supported",
-                        );
-                        return;
+                        let is_class = matches!(self.type_of(info.ty), Type::Named(index) if matches!(
+                            self.result.type_defs[index as usize].kind,
+                            TypeDefKind::Class | TypeDefKind::Interface
+                        ));
+                        if !is_class {
+                            self.error(
+                                self.span_of(statement.target),
+                                "disposing a heap reference returned with an explicit allocator is only supported for class types",
+                            );
+                            return;
+                        }
                     }
                     // §5.8: the target must point to a heap allocation unit; a
                     // scope-lifetime instance is not disposable.
                     let disposable = self.heap_unit_locals.contains_key(&local)
                         || self.heap_alias_units.contains_key(&local)
-                        || self.heap_reference_locals.contains(&local);
+                        || self.heap_reference_locals.contains(&local)
+                        || self.heap_custom_reference_locals.contains(&local);
                     if disposable {
                         let was_disposed = !self.disposed_locals.insert(local);
                         let unit = self.heap_unit_locals.get(&local).copied().or_else(|| {

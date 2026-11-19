@@ -699,10 +699,12 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         let mut semantic_to_llvm = Vec::with_capacity(fields.len());
         let mut offset: u64 = 0;
         if is_class {
-            // Class header: vtable pointer, then type information pointer.
+            // Class header: vtable pointer, type information pointer, then the
+            // allocator used by explicit-allocator heap units (null otherwise).
             llvm_fields.push(pointer_type.into());
             llvm_fields.push(pointer_type.into());
-            offset = 16;
+            llvm_fields.push(pointer_type.into());
+            offset = 3 * u64::from(self.sema.types.pointer_size());
         }
         for field in &fields {
             if field.offset > offset {
@@ -956,6 +958,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     }
                     let field_value = self.context.i8_type().const_array(&bytes);
                     instance_type.const_named_struct(&[
+                        pointer_type.const_null().into(),
                         pointer_type.const_null().into(),
                         pointer_type.const_null().into(),
                         field_value.into(),
@@ -2476,8 +2479,10 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         let size = self.instance_size(info.ty);
         // An explicit allocator expression allocates through IAllocator (§5.4);
         // otherwise the platform allocator is used.
+        let mut explicit_allocator_value = None;
         let storage = if let Some(allocator_node) = self.sema.heap_allocators.get(&node).copied() {
             let allocator = self.gen_expr(allocator_node)?.into_pointer_value();
+            explicit_allocator_value = Some(allocator);
             let alignment = self.sema.size_align(info.ty).1;
             self.gen_allocator_allocate(allocator, size, alignment)?
         } else if self.sema.heap_default_allocator.contains(&node) {
@@ -2514,6 +2519,25 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         // Heap-allocated class instances need their vtable/typeinfo header just
         // like stack-constructed ones, or interface/virtual dispatch crashes.
         self.emit_instance_header(info.ty, storage)?;
+        if let Some(allocator) = explicit_allocator_value {
+            // Classes carry the allocator in the third header slot so a returned
+            // reference can be disposed by its caller (§5.4).
+            if let Type::Named(index) = self.sema.types.get(info.ty) {
+                if matches!(
+                    self.sema.type_defs[*index as usize].kind,
+                    TypeDefKind::Class | TypeDefKind::Interface
+                ) {
+                    let instance_struct = self.instance_llvm_type(info.ty)?;
+                    let pointer = self
+                        .builder
+                        .build_struct_gep(instance_struct, storage, 2, "heap_allocator_header")
+                        .map_err(|error| format!("cannot locate allocator header: {error}"))?;
+                    self.builder
+                        .build_store(pointer, allocator)
+                        .map_err(|error| format!("cannot store allocator header: {error}"))?;
+                }
+            }
+        }
         if let Some(initializer) = declaration.init {
             let is_construction = matches!(
                 self.sema.resolutions[initializer as usize],
@@ -2738,6 +2762,38 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         // A reference returned by another function points to a heap unit created
         // there with the default allocator (§5.8/§12.2). Dispose it through the
         // default allocator; the reference was never registered as a local unit.
+        if self.sema.heap_custom_reference_locals.contains(&local) {
+            let instance = self
+                .builder
+                .build_load(pointer_type, slot, "custom_heap_reference")
+                .map_err(|error| format!("cannot load heap reference: {error}"))?
+                .into_pointer_value();
+            if let Some(destructor) = self.find_method(info.ty, "Destruct") {
+                let function = *self
+                    .functions
+                    .get(&destructor)
+                    .ok_or_else(|| "missing destructor".to_string())?;
+                self.builder
+                    .build_call(function, &[instance.into()], "destruct")
+                    .map_err(|error| format!("cannot call destructor: {error}"))?;
+            }
+            let instance_struct = self.instance_llvm_type(info.ty)?;
+            let allocator_slot = self
+                .builder
+                .build_struct_gep(instance_struct, instance, 2, "heap_allocator_header")
+                .map_err(|error| format!("cannot locate allocator header: {error}"))?;
+            let allocator = self
+                .builder
+                .build_load(pointer_type, allocator_slot, "heap_allocator")
+                .map_err(|error| format!("cannot load heap allocator: {error}"))?
+                .into_pointer_value();
+            let (interface_index, method) = self
+                .builtin_interface_method("IAllocator", "Deallocate")
+                .ok_or_else(|| "IAllocator.Deallocate is missing".to_string())?;
+            let arguments = vec![allocator.into(), instance.into()];
+            self.gen_interface_call(allocator, interface_index, method, &arguments)?;
+            return Ok(());
+        }
         if self.sema.heap_reference_locals.contains(&local) {
             let instance = self
                 .builder

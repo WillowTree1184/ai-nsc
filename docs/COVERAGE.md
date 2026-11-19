@@ -21,7 +21,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **379 tests**: 41 lib unit tests (lexer, literal,
+`cargo test` currently runs **380 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
 that read `docs/grammar/Draft 1.152.md` directly (a closed-set test also asserts that the only spec programs failing semantic analysis are the documented demonstration/inconsistency snippets):
@@ -50,7 +50,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §3.6.1 arrays: fixed layout, indexing bounds, literals/repeat/range, array↔pointer casts, array parameter expansion, **VLA** | ✅ | e2e arrays/bounds/VLA tests; runtime dimensions are supported at any position in a function body. Multi-dimensional VLAs are represented as nested `{pointer, length}` levels (`array(2, n) T` is an array of two VLA rows; `array(n, m) T` is a VLA of VLA rows), with codegen allocating each row's buffer and initialising nested VLA storage; VLA initializers and VLA constants/returns remain rejected |
 | §3.6.2 pointers: member access, `p ± i`, `p - q`, casts, `&`/`*` expressions | ✅ | e2e pointer tests |
 | §3.6.3 function types, `wildcard`, calling conventions | ✅ | function value/closures tests; C/SystemV/Win64 LLVM conventions, others diagnosed |
-| §3.7.1 classes: layout, inheritance, vtable/RTTI, construction, destructors, statics, abstract/sealed/static class | ✅ | class e2e tests, constructor-chain checks; a class/interface-typed field always occupies a reference (pointer) even when the field refers to the class being laid out (self-referential `Next: Node`), so instance size and codegen field offsets agree |
+| §3.7.1 classes: layout, inheritance, vtable/RTTI, construction, destructors, statics, abstract/sealed/static class | ✅ | class e2e tests, constructor-chain checks; a class/interface-typed field always occupies a reference (pointer) even when the field refers to the class being laid out (self-referential `Next: Node`), so instance size and codegen field offsets agree; the instance header carries vtable, typeinfo and an allocator slot (null for stack/default/malloc instances), used to dispose explicit-allocator heap instances returned from another function |
 | §3.7.2 structures: exact layout, `aligned(N)` packing | ✅ | layout e2e tests |
 | §3.7.3 interfaces: contracts, dispatch, RTTI, accessors, generics, interface inheritance | ✅ | interface dispatch/RTTI and inheritance tests (flattened methods, transitive `is` checks) |
 | §3.7.4 enumerations: members, underlying type, casts | ✅ | enumeration e2e tests |

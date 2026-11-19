@@ -5945,3 +5945,31 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 10);
 }
+
+#[test]
+fn compile_time_object_constructors_execute_and_initialize_fields() {
+    let source = "\
+class Token
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Construct(this: &Token, value: integer(4))
+        {
+            this.Value = value;
+        }
+    }
+}
+
+#{
+    heap token: Token = Token(5);
+    local seen: integer(4) = token.Value;
+}
+
+fixed Main(): integer(4)
+{
+    return seen;
+}";
+    assert_eq!(run_program(source), 5);
+}

@@ -5241,6 +5241,9 @@ impl<'a> Sema<'a> {
             }
             return None;
         }
+        if let Some((_, value)) = self.compile_time_this_field(node) {
+            return Some(value);
+        }
         match self.node_kind(node).clone() {
             NodeKind::IntegerLiteral(literal) => match literal::decode_integer(&literal.raw) {
                 Ok(value) => {

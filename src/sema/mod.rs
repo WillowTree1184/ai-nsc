@@ -1343,6 +1343,9 @@ pub fn analyze_with_options(
         top_level_constants: HashMap::new(),
         compile_time_heap: HashMap::new(),
         compile_time_objects: HashMap::new(),
+        compile_time_object_order: Vec::new(),
+        compile_time_this_stack: Vec::new(),
+        compile_time_body_names: Vec::new(),
         two_phase_future_fixed: std::collections::HashSet::new(),
         two_phase_future_locals: std::collections::HashSet::new(),
         two_phase_pending: Vec::new(),
@@ -1531,6 +1534,13 @@ pub(crate) struct Sema<'a> {
     pub(crate) compile_time_heap: HashMap<String, (i128, TypeId)>,
     /// Compile-time non-scalar heap objects.
     pub(crate) compile_time_objects: HashMap<String, CompileTimeObject>,
+    /// Construction order of compile-time objects (for reverse destruction).
+    pub(crate) compile_time_object_order: Vec<String>,
+    /// Stack of object names whose constructor/destructor body is executing.
+    pub(crate) compile_time_this_stack: Vec<String>,
+    /// Names declared by the compile-time body currently executing, for
+    /// restoration after constructor/destructor execution.
+    pub(crate) compile_time_body_names: Vec<std::collections::HashSet<String>>,
     /// Immutable bindings produced by `#{}` blocks anywhere in the program,
     /// used to detect forward dependencies for lazy two-phase evaluation (§11.7).
     two_phase_future_fixed: std::collections::HashSet<String>,
@@ -3465,6 +3475,19 @@ impl<'a> Sema<'a> {
         compound: Option<crate::ast::BinaryOp>,
     ) {
         if let NodeKind::MemberAccess(member) = self.node_kind(*target).clone() {
+            if matches!(self.node_kind(member.base), NodeKind::This) {
+                if let Some(object_name) = self.compile_time_this_stack.last().cloned() {
+                    self.suppress_errors += 1;
+                    let evaluated = self.eval_const_int(*value);
+                    self.suppress_errors -= 1;
+                    if let Some(evaluated) = evaluated {
+                        if let Some(object) = self.compile_time_objects.get_mut(&object_name) {
+                            object.fields.insert(member.name.clone(), evaluated);
+                        }
+                        return;
+                    }
+                }
+            }
             if let NodeKind::Name(base) = self.node_kind(member.base) {
                 if self.compile_time_objects.contains_key(&base.name) {
                     self.suppress_errors += 1;
@@ -3581,6 +3604,9 @@ impl<'a> Sema<'a> {
         self.top_level_constants.clear();
         self.compile_time_heap.clear();
         self.compile_time_objects.clear();
+        self.compile_time_object_order.clear();
+        self.compile_time_this_stack.clear();
+        self.compile_time_body_names.clear();
         self.compile_time_phase_b = true;
         self.compile_time_deferred = false;
         let units = self.top_level_units.clone();
@@ -3703,6 +3729,7 @@ impl<'a> Sema<'a> {
         }
         let statements = self.block_statements(block);
         let flow = self.execute_compile_time_statements(&statements, false);
+        self.destroy_compile_time_objects();
         if matches!(flow, CompileTimeFlow::Throw(_)) {
             self.error(
                 self.span_of(node),
@@ -3821,6 +3848,9 @@ impl<'a> Sema<'a> {
                                 self.top_level_constants
                                     .insert(item.name.clone(), (value, ty));
                                 self.unknown_compile_time_names.remove(&item.name);
+                                if let Some(names) = self.compile_time_body_names.last_mut() {
+                                    names.insert(item.name.clone());
+                                }
                             }
                             None => {
                                 if self.compile_time_phase_b {
@@ -3843,6 +3873,9 @@ impl<'a> Sema<'a> {
                         if let Some((value, ty)) = value {
                             self.top_level_constants
                                 .insert(declaration.name.clone(), (value, ty));
+                            if let Some(names) = self.compile_time_body_names.last_mut() {
+                                names.insert(declaration.name.clone());
+                            }
                         }
                     }
                     continue;
@@ -3957,9 +3990,18 @@ impl<'a> Sema<'a> {
                 }
                 NodeKind::Dispose(dispose) => {
                     if let NodeKind::Name(name) = self.node_kind(dispose.target) {
-                        if self.compile_time_heap.remove(&name.name).is_some()
-                            || self.compile_time_objects.remove(&name.name).is_some()
-                        {
+                        if self.compile_time_heap.remove(&name.name).is_some() {
+                            continue;
+                        }
+                        if let Some(object) = self.compile_time_objects.remove(&name.name) {
+                            self.compile_time_object_order
+                                .retain(|candidate| *candidate != name.name);
+                            self.execute_compile_time_object_method(
+                                object.ty,
+                                &name.name,
+                                "Destruct",
+                                &[],
+                            );
                             continue;
                         }
                     }
@@ -4364,6 +4406,85 @@ impl<'a> Sema<'a> {
         fields
     }
 
+    /// Executes a compile-time constructor/destructor body with `this` bound to
+    /// the named compile-time object. Parameters and body-local names are
+    /// restored afterwards; writes to outer compile-time variables persist.
+    fn execute_compile_time_object_method(
+        &mut self,
+        ty: TypeId,
+        object_name: &str,
+        method_name: &str,
+        arguments: &[i128],
+    ) {
+        let Type::Named(type_index) = self.types_of(ty) else {
+            return;
+        };
+        let Some(methods) = self.result.type_defs[type_index as usize]
+            .methods
+            .get(method_name)
+            .cloned()
+        else {
+            return;
+        };
+        let Some(method) = methods.first().copied() else {
+            return;
+        };
+        let Some(FunctionBody::Block(body)) = self.result.functions[method as usize].body else {
+            return;
+        };
+        let parameters = self.result.functions[method as usize].parameters.clone();
+        let snapshot = self.top_level_constants.clone();
+        let mut declared = std::collections::HashSet::new();
+        for (parameter, argument) in parameters.iter().skip(1).zip(arguments.iter()) {
+            declared.insert(parameter.name.clone());
+            self.top_level_constants
+                .insert(parameter.name.clone(), (*argument, parameter.ty));
+        }
+        let statements = self.block_statements(body);
+        self.compile_time_body_names.push(declared);
+        self.compile_time_this_stack.push(object_name.to_string());
+        let flow = self.execute_compile_time_statements(&statements, false);
+        self.compile_time_this_stack.pop();
+        let declared = self.compile_time_body_names.pop().unwrap_or_default();
+        for name in declared {
+            if let Some(previous) = snapshot.get(&name).copied() {
+                self.top_level_constants.insert(name, previous);
+            } else {
+                self.top_level_constants.remove(&name);
+            }
+        }
+        if matches!(flow, CompileTimeFlow::Throw(_)) {
+            self.compile_time_aborted = true;
+        }
+    }
+
+    /// Destroys every live compile-time object in reverse construction order.
+    fn destroy_compile_time_objects(&mut self) {
+        let order = std::mem::take(&mut self.compile_time_object_order);
+        for name in order.into_iter().rev() {
+            let ty = self.compile_time_objects.get(&name).map(|object| object.ty);
+            if let Some(ty) = ty {
+                self.execute_compile_time_object_method(ty, &name, "Destruct", &[]);
+            }
+            self.compile_time_objects.remove(&name);
+        }
+    }
+
+    /// Reads/writes a field on the compile-time object currently executing a
+    /// constructor/destructor (`this.Field`).
+    fn compile_time_this_field(&self, node: NodeId) -> Option<(String, i128)> {
+        let NodeKind::MemberAccess(access) = self.node_kind(node) else {
+            return None;
+        };
+        if !matches!(self.node_kind(access.base), NodeKind::This) {
+            return None;
+        }
+        let object_name = self.compile_time_this_stack.last()?.clone();
+        let object = self.compile_time_objects.get(&object_name)?;
+        let value = *object.fields.get(&access.name)?;
+        Some((object_name, value))
+    }
+
     fn execute_compile_time_heap(&mut self, node: NodeId, declaration: &crate::ast::HeapDecl) {
         let declared = declaration.ty.and_then(|ty| self.resolve_type(ty));
         let Some(expression) = declaration.init else {
@@ -4407,7 +4528,18 @@ impl<'a> Sema<'a> {
             let fields = self.compile_time_object_fields(ty);
             self.compile_time_objects
                 .insert(declaration.name.clone(), CompileTimeObject { ty, fields });
+            self.compile_time_object_order
+                .push(declaration.name.clone());
             self.unknown_compile_time_names.remove(&declaration.name);
+            let arguments = match self.node_kind(expression) {
+                NodeKind::Call(call) => call
+                    .arguments
+                    .iter()
+                    .filter_map(|argument| self.eval_const_int(argument.value))
+                    .collect(),
+                _ => Vec::new(),
+            };
+            self.execute_compile_time_object_method(ty, &declaration.name, "Construct", &arguments);
             return;
         };
         let allowed = ty == TypeId::BOOLEAN

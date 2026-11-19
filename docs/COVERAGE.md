@@ -15,7 +15,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **435 tests**: 41 lib unit, 144 CLI/driver,
+`cargo test` currently runs **436 tests**: 41 lib unit, 144 CLI/driver,
 2 LLVM codegen, 1 MCJIT probe, 2 JIT compile-time evaluation, 228 end-to-end
 execution, 10 parser and 3 spec-example conformance tests. The spec tests read
 `Draft 1.162.md` directly: 102 `novasharp` fences, all parse except five documented
@@ -89,10 +89,12 @@ semantics is pinned (`3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`).
 
 1. **Compile-time non-scalar execution (§11.4)**: top-level blocks interpret
    scalar and scalar-field non-scalar heap objects, field reads/writes, dispose,
-   `is` patterns/bindings, and `trap`/`throw`/`finally` including materialised
-   thrown objects, catch bindings and class-hierarchy matching (when types are
-   resolved). Remaining: constructor/destructor bodies of compile-time objects
-   and non-scalar fields.
+   `is` patterns/bindings, `trap`/`throw`/`finally` with materialised thrown
+   objects/catch bindings/hierarchy matching, and basic constructor/destructor
+   execution (constructor arguments/`this.Field` writes; explicit dispose and
+   end-of-block reverse destruction). Remaining: full constructor/destructor
+   method-call/exception/side-effect execution, compile-time object copy-to-
+   runtime rules, and non-scalar fields.
 
 ## Specification inconsistencies (not deliberate extensions)
 

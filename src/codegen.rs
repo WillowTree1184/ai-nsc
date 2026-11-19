@@ -2899,6 +2899,51 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         }
     }
 
+    /// Pinned floating-point/vector registers for unannotated asm operands.
+    fn pinned_asm_float_registers(target: &str) -> Option<Vec<&'static str>> {
+        if target.starts_with("x86_64")
+            || target.starts_with("i386")
+            || target.starts_with("i486")
+            || target.starts_with("i586")
+            || target.starts_with("i686")
+        {
+            Some(vec![
+                "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9",
+                "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15",
+            ])
+        } else if target.starts_with("aarch64") || target.starts_with("arm64") {
+            Some(
+                (0..32)
+                    .map(|index| {
+                        // Leaked once for the compiler process lifetime.
+                        let name = format!("v{index}");
+                        Box::leak(name.into_boxed_str()) as &'static str
+                    })
+                    .collect(),
+            )
+        } else if target.starts_with("arm") {
+            Some(
+                (0..32)
+                    .map(|index| {
+                        let name = format!("s{index}");
+                        Box::leak(name.into_boxed_str()) as &'static str
+                    })
+                    .collect(),
+            )
+        } else if target.starts_with("riscv64") || target.starts_with("riscv32") {
+            Some(
+                (0..32)
+                    .map(|index| {
+                        let name = format!("f{index}");
+                        Box::leak(name.into_boxed_str()) as &'static str
+                    })
+                    .collect(),
+            )
+        } else {
+            None
+        }
+    }
+
     /// Lowers an inline-assembly statement (§5.2) to an LLVM `call asm`.
     /// Lowers an unannotated operand block by pinning every operand to a fixed
     /// register and declaring every other target register clobbered (§5.2).
@@ -2906,6 +2951,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         &mut self,
         statement: &AssemblyStmt,
         registers: &[&'static str],
+        float_registers: &[&'static str],
     ) -> Result<(), String> {
         struct PinnedOperand<'ctx> {
             direction: AssemblyDirection,
@@ -2915,7 +2961,10 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             register: &'static str,
         }
         let mut operands: Vec<PinnedOperand<'ctx>> = Vec::new();
+        let mut used_registers: std::collections::HashSet<&'static str> =
+            std::collections::HashSet::new();
         let mut register_index = 0usize;
+        let mut float_register_index = 0usize;
         for segment in &statement.segments {
             let AssemblySegment::Placeholder {
                 expression,
@@ -2932,8 +2981,30 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 .flatten()
                 .ok_or_else(|| "missing assembly operand type".to_string())?;
             let llvm_ty = self.llvm_type(ty)?;
-            let register = registers[register_index];
-            register_index += 1;
+            let register = if matches!(llvm_ty, BasicTypeEnum::FloatType(_)) {
+                while float_register_index < float_registers.len()
+                    && used_registers.contains(float_registers[float_register_index])
+                {
+                    float_register_index += 1;
+                }
+                let Some(register) = float_registers.get(float_register_index).copied() else {
+                    return Err("no free floating-point assembly register".to_string());
+                };
+                float_register_index += 1;
+                register
+            } else {
+                while register_index < registers.len()
+                    && used_registers.contains(registers[register_index])
+                {
+                    register_index += 1;
+                }
+                let Some(register) = registers.get(register_index).copied() else {
+                    return Err("no free general-purpose assembly register".to_string());
+                };
+                register_index += 1;
+                register
+            };
+            used_registers.insert(register);
             let (pointer, value) = match direction {
                 AssemblyDirection::In => (None, Some(self.gen_expr(*expression)?)),
                 AssemblyDirection::Out => {
@@ -2982,7 +3053,10 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         constraints.push("~{flags}".to_string());
         constraints.push("~{fpsr}".to_string());
         constraints.push("~{dirflag}".to_string());
-        for register in Self::all_register_clobbers(target) {
+        for register in Self::all_register_clobbers(target)
+            .into_iter()
+            .chain(float_registers.iter().copied())
+        {
             if !operands.iter().any(|operand| operand.register == register) {
                 constraints.push(format!("~{{{register}}}"));
             }
@@ -3087,27 +3161,17 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
     fn gen_assembly_statement(&mut self, statement: &AssemblyStmt) -> Result<(), String> {
         if statement.clobbers.is_none() {
             let target = self.options.target.as_deref().unwrap_or(crate::HOST_TRIPLE);
-            let has_float_operand = statement.segments.iter().any(|segment| {
-                let AssemblySegment::Placeholder { expression, .. } = segment else {
-                    return false;
-                };
-                self.sema
-                    .node_types
-                    .get(*expression as usize)
-                    .copied()
-                    .flatten()
-                    .is_some_and(|ty| matches!(self.sema.types.get(ty), Type::Float { .. }))
-            });
-            if !has_float_operand {
-                if let Some(registers) = Self::pinned_asm_registers(target) {
-                    let placeholders = statement
-                        .segments
-                        .iter()
-                        .filter(|segment| matches!(segment, AssemblySegment::Placeholder { .. }))
-                        .count();
-                    if placeholders > 0 && placeholders <= registers.len() {
-                        return self.gen_pinned_assembly(statement, &registers);
-                    }
+            if let (Some(registers), Some(float_registers)) = (
+                Self::pinned_asm_registers(target),
+                Self::pinned_asm_float_registers(target),
+            ) {
+                let placeholders = statement
+                    .segments
+                    .iter()
+                    .filter(|segment| matches!(segment, AssemblySegment::Placeholder { .. }))
+                    .count();
+                if placeholders > 0 && placeholders <= registers.len() + float_registers.len() {
+                    return self.gen_pinned_assembly(statement, &registers, &float_registers);
                 }
             }
         }

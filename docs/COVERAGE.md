@@ -84,7 +84,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §5.10.5 directional ranges `..<`, `..<=`, `..>`, `..>=`; inferred `for` binding types | ✅ | parser/lexer, default step from the operator direction, direction-specific loop conditions, explicit types inferred from array/iterator/range targets; array-literal range expansion honours direction; step/direction contradictions diagnosed |
 | §11.7 lazy two-phase conditional evaluation | ✅ | enabled automatically when a top-level/module `#if` condition references a not-yet-produced **immutable** binding (`#{}` `fixed` constant, `#` constant parameter, generic/type/platform constant): unconditional `#{}` execute first in file/source order, deferred `#if` settle in dependency rounds and lock their selected branch once (declarations collected, branch `#{}` executed once); `local`/mutable forward dependencies are diagnosed; a round that settles nothing reports a no-progress static error (e.g. mutual dependencies); Draft 1.153 removed fixed-point/oscillation detection and candidate-error buffering, so none is implemented. Top-level `#()` statements are parsed and executed (compiler-API calls in the declaration pass, other expressions in the second pass); forward bindings are shared across the whole program, and deferred `#if` declarations are restored into their original module scope during settlement. |
 | §11.2/§11.4 compile-time execution: top-level `#{}`/`#if`/`#()`, function-body `#{}` scope and end products | 🟡 | top-level blocks and compile-time functions interpret constants, assignments, if/while/do-while/for-range, `match` with value/comparison/wildcard patterns and guards, API calls and compile-time calls; `#{}` does not scope declarations and retained end products stay visible; function-body blocks keep their end products when read at run time and reject run-time writes; scalar compile-time `heap` allocation/assignment/`dispose` is interpreted (the unit is freed with compile-time execution and is not visible at run time); non-scalar compile-time heap objects, `throw`/`trap` and `is` match patterns remain unimplemented in compile-time interpretation |
-| §11.9 compiler API: Type/Compiler/Environment/NOLAA, `#if` environment queries | ✅ | compile-time contexts (`#{}`, `#(...)`, `#if`) may call the API; runtime code must wrap Type/Compiler/Environment calls in `#(...)`/`#if` (NOLAA markers remain run-time statements); Draft 1.153 §11.9.3 replaces `Platform` with `Environment`: `Current`/`Host`/`Target` facts are frozen, `PlatformIs`/`ArchitectureIs` compare canonical names byte-exactly and case-sensitively, unknown names answer false, `Other` has no name, and `#if` conditions use direct calls. `Type.SizeOf` returns a 64-bit unsigned value (32-bit targets use the low 32 bits; i686 test verifies). The compiler defines no extension names (permitted by §11.9.3). Current follows the target/program environment; Host gives the compiler-host facts explicitly. Value queries (`Environment.Current.Platform`/`.Architecture`, `Environment.Kind`) fold to `PlatformKind`/`ArchitectureKind`/`EnvironmentKind` constants; the `EnvironmentFacts` structure and `Environment.Current`/`Host`/`Target` values are built-in and can be stored in locals (field/query folding works for those constants), and cross-target architecture objects are emitted for x86_64/aarch64/riscv64 |
+| §11.9 compiler API: Type/Compiler/Environment/NOLAA, `#if` environment queries | ✅ | compile-time contexts (`#{}`, `#(...)`, `#if`) may call the API; runtime code must wrap Type/Compiler/Environment calls in `#(...)`/`#if` (NOLAA markers remain run-time statements); Draft 1.153 §11.9.3 replaces `Platform` with `Environment`: `Current`/`Host`/`Target` facts are frozen, `PlatformIs`/`ArchitectureIs` compare canonical names byte-exactly and case-sensitively, unknown names answer false, `Other` has no name, and `#if` conditions use direct calls. `Type.SizeOf` returns a 64-bit unsigned value (32-bit targets use the low 32 bits; i686 test verifies). The compiler defines no extension names (permitted by §11.9.3). Current follows the target/program environment; Host gives the compiler-host facts explicitly. Value queries (`Environment.Current.Platform`/`.Architecture`, `Environment.Kind`) fold to `PlatformKind`/`ArchitectureKind`/`EnvironmentKind` constants; the `EnvironmentFacts` structure and `Environment.Current`/`Host`/`Target` values are built-in and can be stored in locals; facts-parameter and object-field-fact functions are specialized per known call-site fact tuple so compile-time queries fold, and unprovable origins are rejected at compile time, and cross-target architecture objects are emitted for x86_64/aarch64/riscv64 |
 | §14.3.1 no-optimize marker: `@(expr)`, `@{ block }`, `local @Name`, `fixed @Name`, verbatim bodies | ✅ | parsed and enforced (nested markers, `#` inside markers and constant folding of marked storages rejected; `optnone` for marked bodies; e2e tests) |
 | §5.10.5 `for` without an iteration variable (range only) | ✅ | parser/sema/codegen; range type inferred from the first non-literal expression and all range expressions must share it (literal `1` adopts `x`'s type in `for 1..x`); e2e ascending/descending/labelled-break and mixed-type diagnostics |
 | §3.6.3 function types: `wildcard`, calling conventions, defaults, type equality/conversion | ✅ | `wildcard` matches unchecked trailing arguments (fixed prefix validated; small ints/bools promoted, `float(4)`→`f64`, arrays/VLAs decay to pointers); variadic declarations emitted; explicit calling conventions accepted after parameters/wildcard, bare `CallingConvention` member names resolved, `CDeclaration` uses the LLVM default C convention, `SystemVAMD64`/`MicrosoftX64` map to their LLVM conventions (method `wildcard` signatures still share the fixed-prefix matcher) |
@@ -112,16 +112,6 @@ miscompiles.
    class-hierarchy matching is absent). Non-scalar compile-time heap objects and
    `is` match patterns are not interpreted; those forms are diagnosed rather
    than miscompiled.
-2. **EnvironmentFacts compile-time specialization**: queries on frozen facts and
-   locals initialized from them fold at compile time; functions taking
-   `EnvironmentFacts` parameters are specialized per call-site fact tuple
-   (including forwarding through further facts parameters), and calls to
-   functions with a known constant facts return are recognised, fields of local
-   objects whose fact value was assigned from a known source are tracked, and
-   object parameters are specialized per known field facts (including forwarding
-   through further calls), so queries on those values fold in `#(...)`/`#if`.
-   Residual: a facts value loaded from a field of an object whose origin is
-   genuinely unknown is diagnosed.
 
 ## Specification inconsistencies (not deliberate extensions)
 
@@ -134,6 +124,11 @@ miscompiles.
 
 ## Capabilities and implementation notes (not deviations)
 
+- EnvironmentFacts queries whose frozen value cannot be proven at compile time
+  are rejected at compile time (instead of silently deferring), satisfying
+  §11.9.3's requirement that queries be compile-time evaluated; all statically
+  known flows (constants, locals, parameters, object fields, returns, forwarding)
+  are specialized and folded.
 - NOLAA is deliberately conservative, as §12.2 requires: it only inserts a
   dispose when it can assert a safe point, does not dispose on unknown aliasing
   or linkable calls, and emits the required warnings. Its precision limits

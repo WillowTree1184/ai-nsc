@@ -1376,6 +1376,7 @@ pub fn analyze_with_options(
         compile_time_heap: HashMap::new(),
         compile_time_objects: HashMap::new(),
         compile_time_object_order: Vec::new(),
+        compile_time_pointer_fields: HashMap::new(),
         compile_time_this_stack: Vec::new(),
         compile_time_body_names: Vec::new(),
         two_phase_future_fixed: std::collections::HashSet::new(),
@@ -1575,6 +1576,8 @@ pub(crate) struct Sema<'a> {
     pub(crate) compile_time_objects: HashMap<String, CompileTimeObject>,
     /// Construction order of compile-time objects (for reverse destruction).
     pub(crate) compile_time_object_order: Vec<String>,
+    /// Pointer fields of compile-time objects by object and field name.
+    pub(crate) compile_time_pointer_fields: HashMap<String, HashMap<String, Option<String>>>,
     /// Stack of object names whose constructor/destructor body is executing.
     pub(crate) compile_time_this_stack: Vec<String>,
     /// Names declared by the compile-time body currently executing, for
@@ -3507,6 +3510,69 @@ impl<'a> Sema<'a> {
     /// Executes a compile-time assignment (`X = value` / `X += value`) in a
     /// top-level `#{}` block (§11.4): the compile-time variable's stored value is
     /// updated so later compile-time code and run-time constants see it.
+    /// Resolves an expression to a compile-time object reference, following
+    /// `this` and pointer fields (cycles allowed).
+    fn compile_time_object_reference(&self, node: NodeId) -> Option<String> {
+        match self.node_kind(node).clone() {
+            NodeKind::This => self.compile_time_this_stack.last().cloned(),
+            NodeKind::Name(name) => {
+                if self.compile_time_objects.contains_key(&name.name) {
+                    Some(name.name)
+                } else {
+                    None
+                }
+            }
+            NodeKind::MemberAccess(member) => {
+                let base = self.compile_time_object_reference(member.base)?;
+                self.compile_time_pointer_fields
+                    .get(&base)?
+                    .get(&member.name)?
+                    .clone()
+            }
+            _ => None,
+        }
+    }
+
+    /// Resolves a compile-time object's pointer field type, if the field is a
+    /// pointer.
+    fn compile_time_pointer_field(&self, object_name: &str, field_name: &str) -> bool {
+        let Some(object) = self.compile_time_objects.get(object_name) else {
+            return false;
+        };
+        let Type::Named(index) = self.types_of(object.ty) else {
+            return false;
+        };
+        self.result.type_defs[index as usize]
+            .fields
+            .iter()
+            .any(|field| {
+                field.name == field_name && matches!(self.types_of(field.ty), Type::Pointer { .. })
+            })
+    }
+
+    /// Resolves a compile-time pointer value: a compile-time object name or
+    /// null.
+    fn compile_time_pointer_value(&mut self, value: NodeId) -> Option<Option<String>> {
+        match self.node_kind(value).clone() {
+            NodeKind::Unary(unary) if unary.op == crate::ast::UnaryOp::Reference => {
+                self.compile_time_object_reference(unary.operand).map(Some)
+            }
+            _ => self.compile_time_object_reference(value).map(Some),
+        }
+    }
+
+    fn store_compile_time_pointer(
+        &mut self,
+        object_name: &str,
+        field_name: &str,
+        value: Option<String>,
+    ) {
+        self.compile_time_pointer_fields
+            .entry(object_name.to_string())
+            .or_default()
+            .insert(field_name.to_string(), value);
+    }
+
     fn execute_top_level_assignment(
         &mut self,
         target: &NodeId,
@@ -3516,6 +3582,31 @@ impl<'a> Sema<'a> {
         if let NodeKind::MemberAccess(member) = self.node_kind(*target).clone() {
             if matches!(self.node_kind(member.base), NodeKind::This) {
                 if let Some(object_name) = self.compile_time_this_stack.last().cloned() {
+                    if self.compile_time_pointer_field(&object_name, &member.name) {
+                        if let Some(value) = self.compile_time_pointer_value(*value) {
+                            self.store_compile_time_pointer(&object_name, &member.name, value);
+                            return;
+                        }
+                    }
+                    self.suppress_errors += 1;
+                    let evaluated = self.eval_const_int(*value);
+                    self.suppress_errors -= 1;
+                    if let Some(evaluated) = evaluated {
+                        if let Some(object) = self.compile_time_objects.get_mut(&object_name) {
+                            object.fields.insert(member.name.clone(), evaluated);
+                        }
+                        return;
+                    }
+                }
+            }
+            if matches!(self.node_kind(member.base), NodeKind::MemberAccess(_)) {
+                if let Some(object_name) = self.compile_time_object_reference(member.base) {
+                    if self.compile_time_pointer_field(&object_name, &member.name) {
+                        if let Some(value) = self.compile_time_pointer_value(*value) {
+                            self.store_compile_time_pointer(&object_name, &member.name, value);
+                            return;
+                        }
+                    }
                     self.suppress_errors += 1;
                     let evaluated = self.eval_const_int(*value);
                     self.suppress_errors -= 1;
@@ -3529,6 +3620,12 @@ impl<'a> Sema<'a> {
             }
             if let NodeKind::Name(base) = self.node_kind(member.base) {
                 if self.compile_time_objects.contains_key(&base.name) {
+                    if self.compile_time_pointer_field(&base.name, &member.name) {
+                        if let Some(value) = self.compile_time_pointer_value(*value) {
+                            self.store_compile_time_pointer(&base.name, &member.name, value);
+                            return;
+                        }
+                    }
                     self.suppress_errors += 1;
                     let evaluated = self.eval_const_int(*value);
                     self.suppress_errors -= 1;
@@ -3644,6 +3741,7 @@ impl<'a> Sema<'a> {
         self.compile_time_heap.clear();
         self.compile_time_objects.clear();
         self.compile_time_object_order.clear();
+        self.compile_time_pointer_fields.clear();
         self.compile_time_this_stack.clear();
         self.compile_time_body_names.clear();
         self.compile_time_phase_b = true;

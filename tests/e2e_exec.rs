@@ -6106,3 +6106,26 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 1);
 }
+
+#[test]
+fn compile_time_objects_support_pointer_fields_and_cycles() {
+    let source = "\
+class Node
+{
+    public Next: pointer Node;
+    public Value: integer(4);
+}
+
+#{
+    heap first: Node = Node();
+    heap second: Node = Node();
+    first.Value = 1;
+    second.Value = 2;
+    first.Next = &second;
+    second.Next = &first;
+    local seen: integer(4) = first.Next.Next.Value;
+}
+
+fixed Main(): integer(4) { return seen; }";
+    assert_eq!(run_program(source), 1);
+}

@@ -5262,6 +5262,15 @@ impl<'a> Sema<'a> {
         if let Some((_, value)) = self.compile_time_this_field(node) {
             return Some(value);
         }
+        if let NodeKind::MemberAccess(access) = self.node_kind(node) {
+            if let Some(object_name) = self.compile_time_object_reference(access.base) {
+                if let Some(object) = self.compile_time_objects.get(&object_name) {
+                    if let Some(value) = object.fields.get(&access.name).copied() {
+                        return Some(value);
+                    }
+                }
+            }
+        }
         match self.node_kind(node).clone() {
             NodeKind::IntegerLiteral(literal) => match literal::decode_integer(&literal.raw) {
                 Ok(value) => {

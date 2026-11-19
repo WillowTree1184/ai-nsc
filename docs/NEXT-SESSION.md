@@ -1,70 +1,84 @@
-# Draft 1.16 conformance evidence
+# Handoff for the next session
 
-Authoritative specification: `docs/grammar/Draft 1.16.md`.
+## State
 
-## Verification gates
+- Branch `main`; last feature commit `3474e62`.
+- **Active goal: 100% Draft 1.16 conformance.** Authoritative specification:
+  `docs/grammar/Draft 1.16.md` (1.153 and earlier are historical only).
+- Gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+  `cargo test` — **429 tests green** (41 lib unit, 141 CLI, 2 codegen/LLVM,
+  1 MCJIT probe, 2 JIT compile-time evaluation, 229 end-to-end execution,
+  10 parser, 3 spec-example conformance).
+- Spec tests read Draft 1.16 directly: 102 `novasharp` fences; all parse except
+  five documented syntax fragments; every complete `Main` example compiles; the
+  demonstration-only semantic-failure set is pinned
+  (`3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`).
 
-```sh
-export CARGO_HOME=/tmp/ainsc-cargo LLVM_SYS_181_PREFIX=/usr/lib/llvm-18
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-```
+## Draft 1.16 migration so far
 
-Current result: **429 tests green**, formatting clean, clippy with zero warnings.
+- Sections/anchors/examples moved from 1.153 to 1.16.
+- Removed old `illegal` / `infinite` keywords and literals; added
+  `float(4/8).NotANumber`, `float(4/8).Infinite`, negative infinity and the
+  `is float(N).NotANumber` `FloatSpecialTarget` (codegen `fcmp uno`).
+- Interfaces declare contract members directly (no extension blocks); class
+  body extensions implement them.
+- Bare instance field names inside methods/extensions resolve through implicit
+  `this` (reads, writes, lvalue, accessor backing).
+- Type-name elision (§3.8.5) for enumeration members, union members and variant
+  states in typed contexts.
+- Global `fixed` constants infer types and drive top-level `#if`.
+- Function-typed fields accept `Block` initializers; `linkable` variables emit
+  external globals.
+- Compile-time thrown objects, catch bindings and class-hierarchy matching are
+  interpreted; scalar-field compile-time objects support fields/dispose/`is`.
+- Existing 1.153 features retained: inline assembly full register barriers,
+  Environment API/facts specialization, `#`/`&` type contracts/mangling,
+  `scoped` duplicates, monomorphization base restriction, runtime default
+  expressions, NOLAA conservative analysis.
 
-| Target | Tests |
-| --- | ---: |
-| lib unit | 41 |
-| CLI/driver | 141 |
-| LLVM codegen | 2 |
-| MCJIT probe | 1 |
-| JIT compile-time evaluation | 2 |
-| end-to-end execution | 229 |
-| parser | 10 |
-| spec-example conformance | 3 |
+## Remaining deviations (also listed in COVERAGE.md)
 
-## Specification examples
+1. **Compile-time non-scalar execution (§11.4)**: constructor/destructor bodies
+   of compile-time objects and non-scalar fields remain unimplemented.
+2. **Interface constant contracts (§3.8.3)**: function/accessor/operator contracts
+   work; non-function constants without initializers are not modelled as
+   class-side constant contracts.
+- The full non-`Main` example scan additionally shows function-valued extension
+  constants and some accessor/`this`-scope examples still diagnosing; these are
+  recorded honestly in `docs/CONFORMANCE.md` and need resolution for literal
+  100%.
 
-`tests/spec_examples.rs` reads Draft 1.16 directly:
+## Next steps
 
-- 102 `novasharp` fenced blocks are discovered;
-- all parse except five documented non-program syntax fragments;
-- every complete `Main` program passes semantic analysis and compiles end to end;
-- demonstration-only `Main` examples with elided bodies are pinned:
-  `3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`, so a new semantic
-  failure cannot hide among skipped examples.
+1. Compile-time object constructor/destructor body interpretation and nested
+   non-scalar fields.
+2. Interface non-function constant contract representation and class-side
+   implementation checking.
+3. Function-valued extension constants and remaining accessor/`this`-scope
+   example gaps from the full `check` scan.
+4. Re-run all 102 spec examples with `ai-nsc check`, separate demo fragments from
+   real gaps, and update the closed documented sets.
+5. Final audit: COVERAGE/AUDIT/README/spec-notes consistency and full gates.
 
-## Draft 1.16 new-feature evidence
+## Where things live
 
-| Area | Evidence |
-| --- | --- |
-| §3.3 float special values | `float(N).NotANumber/Infinite`, negative infinity, `is float(N).NotANumber` (NaN compare), NaN equality, match patterns; old `illegal`/`infinite` removed from lexer/parser |
-| §3.8.3 direct interface contracts | interface bodies declare constants/accessors/operators directly, class-body extensions implement them; e2e interface dispatch/RTTI/inheritance |
-| implicit `this` fields | `Resolution::ThisField` for bare field reads/writes/lvalue/accessor backing in methods |
-| §3.8.5 type-name elision | enum members, union member constructions and variant states in typed contexts |
-| global constants | `fixed Flag = true` inferred from initializer |
-| §5.2 inline assembly | operand-free all-register clobber; operand blocks pin operands and clobber every other target register (x86_64/i686/aarch64/armv7/riscv64 object emission; x86_64 runtime) |
-| §11.9.3 Environment API | EnvironmentFacts module/structure/values, field/parameter/object-field/return specialization, runtime facts comparisons, compile-time rejection of unprovable origins |
-| §8.5/§13.2 `#`/`&` | contracts participate in type equality and mangling; only-contract overloads rejected |
-| §9.5/§10.2/§11.7 | duplicate `scoped` rejected; identifier-only monomorphization base; default expressions are caller-side runtime values |
+- `src/lexer.rs`, `src/literal.rs` — tokens/literal decoding.
+- `src/ast.rs`, `src/ast_clone.rs` — arena AST and subtree cloning.
+- `src/parser/{mod,expr}.rs` — recursive descent.
+- `src/sema/{mod,types,check,generics}.rs` — declarations, layouts, mangling,
+  bodies, generics and EnvironmentFacts specialization.
+- `src/codegen.rs` — inkwell lowering (metadata/vtables/interfaces, heap,
+  dispose, operators, accessors, traps, inline asm, UEFI helpers).
+- `docs/COVERAGE.md` — Draft 1.16 section matrix and deviations.
+- `docs/AUDIT.md` — reproduced conformance defects/fixes (197 entries).
+- `docs/CONFORMANCE.md` — concise final evidence report.
+- `docs/spec-notes/` — spec extracts and known inconsistencies.
 
-## Non-`Main` example diagnostics
+## Conventions
 
-A full `ai-nsc check` scan over all 102 fences reports 32 diagnostics. Most are
-expected demonstration/fragment material: elided function bodies, bare type or
-closure syntax, undefined illustrative names, the launcher's multiple `Main`
-example, and the complete Built-In Library source that necessarily redeclares
-the compiler's built-ins. Real implementation gaps still visible in that scan
-are tracked in `COVERAGE.md` (currently the two deviations below) plus
-function-valued extension constants and some accessor-backing/`this`-scope
-examples; these are not hidden by the `Main`-program conformance test.
-
-## Remaining deviations
-
-See `docs/COVERAGE.md` for the current two real gaps: compile-time
-constructor/destructor bodies and non-scalar fields; non-function interface
-constant contracts. NOLAA conservatism is required by §12.2 and is not a
-deviation.
-
-Audit history: `docs/AUDIT.md` (197 reproduced defects/fixes).
+- Never silently miscompile: unsupported constructs produce an explicit
+  "not implemented yet" diagnostic.
+- Keep every round green (fmt, clippy `-D warnings`, full test suite) and update
+  COVERAGE/AUDIT/NEXT-SESSION in the same round.
+- When the spec changes, re-run `tests/spec_examples.rs` and update the closed
+  documented-failure set, never hide a new failure.

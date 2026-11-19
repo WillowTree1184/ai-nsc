@@ -6,8 +6,8 @@
 - **Active goal: 100% Draft 1.16 conformance.** Authoritative specification:
   `docs/grammar/Draft 1.16.md` (1.153 and earlier are historical only).
 - Gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-  `cargo test` — **428 tests green** (41 lib unit, 141 CLI, 2 codegen/LLVM,
-  1 MCJIT probe, 2 JIT compile-time evaluation, 228 end-to-end execution,
+  `cargo test` — **429 tests green** (41 lib unit, 141 CLI, 2 codegen/LLVM,
+  1 MCJIT probe, 2 JIT compile-time evaluation, 229 end-to-end execution,
   10 parser, 3 spec-example conformance).
 - Spec tests read Draft 1.16 directly: 102 `novasharp` fences; all parse except
   five documented syntax fragments; every complete `Main` example compiles; the
@@ -35,9 +35,9 @@
 
 ## Remaining deviations (also listed in COVERAGE.md)
 
-1. **Compile-time non-scalar execution (§11.4)**: constructor/destructor bodies
-   of compile-time objects, non-scalar fields, thrown object values/catch
-   bindings and class-hierarchy catch matching are not interpreted.
+1. **Compile-time non-scalar execution (§11.4)**: thrown objects/catch bindings
+   and hierarchy matching are now interpreted; constructor/destructor bodies of
+   compile-time objects and non-scalar fields remain unimplemented.
 2. **Interface constant contracts (§3.8.3)**: function/accessor/operator contracts
    work; non-function constants without initializers are not modelled as
    class-side constant contracts.

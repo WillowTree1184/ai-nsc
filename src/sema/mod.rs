@@ -1364,12 +1364,21 @@ struct PendingCompileTimeIf {
 }
 
 /// Control flow produced by a compile-time statement (§11.4).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 enum CompileTimeFlow {
     Normal,
     Break,
     Continue,
-    Throw(Option<String>),
+    Throw(Option<CompileTimeThrow>),
+}
+
+/// A thrown compile-time exception value (§5.11.3, §11.4).
+#[derive(Clone, Debug)]
+pub(crate) struct CompileTimeThrow {
+    /// Thrown type name (syntactic when the type is not resolved).
+    pub name: String,
+    /// Materialised object for catch bindings/hierarchy checks, when available.
+    pub object: Option<CompileTimeObject>,
 }
 
 /// A compile-time non-scalar heap object with scalar field values.
@@ -3934,16 +3943,43 @@ impl<'a> Sema<'a> {
                     CompileTimeFlow::Continue
                 }
                 NodeKind::Throw(throw) => {
-                    let name = match self.node_kind(throw.value) {
-                        NodeKind::Call(call) => match self.node_kind(call.callee) {
-                            NodeKind::Name(name) => Some(name.name.clone()),
-                            NodeKind::MemberAccess(access) => Some(access.name.clone()),
-                            _ => None,
-                        },
-                        NodeKind::Name(name) => Some(name.name.clone()),
-                        _ => None,
-                    };
-                    CompileTimeFlow::Throw(name)
+                    let mut name = String::new();
+                    let mut object = None;
+                    match self.node_kind(throw.value) {
+                        NodeKind::Call(call) => {
+                            let type_name = match self.node_kind(call.callee) {
+                                NodeKind::Name(name) => Some(name.name.clone()),
+                                NodeKind::MemberAccess(access) => Some(access.name.clone()),
+                                _ => None,
+                            };
+                            if let Some(type_name) = type_name {
+                                name = type_name.clone();
+                                if self.compile_time_phase_b {
+                                    if let Some(ty) = self.lookup_type_id(&type_name) {
+                                        let fields = self.compile_time_object_fields(ty);
+                                        object = Some(CompileTimeObject { ty, fields });
+                                    }
+                                }
+                            }
+                        }
+                        NodeKind::Name(variable) => {
+                            if let Some(existing) =
+                                self.compile_time_objects.get(&variable.name).cloned()
+                            {
+                                name = match self.types_of(existing.ty) {
+                                    Type::Named(index) => {
+                                        self.result.type_defs[index as usize].qualified_name.clone()
+                                    }
+                                    _ => variable.name.clone(),
+                                };
+                                object = Some(existing);
+                            } else {
+                                name = variable.name.clone();
+                            }
+                        }
+                        _ => {}
+                    }
+                    CompileTimeFlow::Throw(Some(CompileTimeThrow { name, object }))
                 }
                 NodeKind::Trap(trap) => self.execute_compile_time_trap(&trap),
                 _ => {
@@ -4076,10 +4112,15 @@ impl<'a> Sema<'a> {
     fn execute_compile_time_trap(&mut self, trap: &crate::ast::TrapStmt) -> CompileTimeFlow {
         let body = self.block_statements(trap.body);
         let mut flow = self.execute_compile_time_statements(&body, false);
-        if let CompileTimeFlow::Throw(thrown) = &flow {
+        let thrown = match &flow {
+            CompileTimeFlow::Throw(thrown) => thrown.clone(),
+            _ => None,
+        };
+        if matches!(flow, CompileTimeFlow::Throw(_)) {
             let mut handled = false;
             for catch in &trap.catches {
-                let type_name = catch.ty.and_then(|ty| match self.node_kind(ty) {
+                let catch_type = catch.ty.and_then(|ty| self.resolve_type(ty));
+                let syntactic_name = catch.ty.and_then(|ty| match self.node_kind(ty) {
                     NodeKind::Name(name) => Some(name.name.clone()),
                     NodeKind::NamedType(named) => match self.node_kind(named.name) {
                         NodeKind::Name(name) => Some(name.name.clone()),
@@ -4087,13 +4128,31 @@ impl<'a> Sema<'a> {
                     },
                     _ => None,
                 });
-                let matches =
-                    catch.wildcard || thrown.is_none() || type_name.as_deref() == thrown.as_deref();
+                let matches = catch.wildcard
+                    || thrown.as_ref().map_or(true, |thrown| {
+                        if let (Some(object), Some(catch_type)) = (&thrown.object, catch_type) {
+                            self.is_assignable(object.ty, catch_type)
+                        } else {
+                            syntactic_name.as_deref() == Some(thrown.name.as_str())
+                                || syntactic_name.as_deref() == Some("Exception")
+                        }
+                    });
                 if !matches {
                     continue;
                 }
+                let binding = catch
+                    .name
+                    .clone()
+                    .zip(thrown.as_ref().and_then(|thrown| thrown.object.clone()));
+                if let Some((name, object)) = &binding {
+                    self.compile_time_objects
+                        .insert(name.clone(), object.clone());
+                }
                 let statements = self.block_statements(catch.body);
                 flow = self.execute_compile_time_statements(&statements, false);
+                if let Some((name, _)) = binding {
+                    self.compile_time_objects.remove(&name);
+                }
                 handled = true;
                 break;
             }

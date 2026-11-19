@@ -11,7 +11,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-Current result: **428 tests green**, formatting clean, clippy with zero warnings.
+Current result: **429 tests green**, formatting clean, clippy with zero warnings.
 
 | Target | Tests |
 | --- | ---: |
@@ -20,7 +20,7 @@ Current result: **428 tests green**, formatting clean, clippy with zero warnings
 | LLVM codegen | 2 |
 | MCJIT probe | 1 |
 | JIT compile-time evaluation | 2 |
-| end-to-end execution | 228 |
+| end-to-end execution | 229 |
 | parser | 10 |
 | spec-example conformance | 3 |
 
@@ -52,7 +52,7 @@ Current result: **428 tests green**, formatting clean, clippy with zero warnings
 ## Remaining deviations
 
 See `docs/COVERAGE.md` for the current two real gaps: compile-time
-constructor/destructor/thrown-object semantics and non-function interface
+constructor/destructor bodies and non-scalar fields; non-function interface
 constant contracts. NOLAA conservatism is required by §12.2 and is not a
 deviation.
 

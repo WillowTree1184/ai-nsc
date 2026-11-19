@@ -5859,3 +5859,30 @@ else
 fixed Main(): integer(4) { return Value; }";
     assert_eq!(run_program(source), 5);
 }
+
+#[test]
+fn compile_time_thrown_objects_bind_and_match_exception_hierarchy() {
+    let source = "\
+class MyException: Exception
+{
+    public Code: integer(4);
+}
+
+#{
+    local result: integer(4) = 0;
+    trap
+    {
+        throw MyException();
+    }
+    catch error: Exception
+    {
+        result = error.Code + 7;
+    }
+}
+
+fixed Main(): integer(4)
+{
+    return result;
+}";
+    assert_eq!(run_program(source), 7);
+}

@@ -15,7 +15,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **428 tests**: 41 lib unit, 141 CLI/driver,
+`cargo test` currently runs **429 tests**: 41 lib unit, 141 CLI/driver,
 2 LLVM codegen, 1 MCJIT probe, 2 JIT compile-time evaluation, 228 end-to-end
 execution, 10 parser and 3 spec-example conformance tests. The spec tests read
 `Draft 1.16.md` directly: 102 `novasharp` fences, all parse except five documented
@@ -89,10 +89,10 @@ semantics is pinned (`3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`).
 
 1. **Compile-time non-scalar execution (§11.4)**: top-level blocks interpret
    scalar and scalar-field non-scalar heap objects, field reads/writes, dispose,
-   `is` patterns/bindings, and `trap`/`throw`/`finally` (wildcard/syntactic typed
-   catches). Remaining: constructor/destructor bodies of compile-time objects,
-   non-scalar fields, thrown object values/catch bindings and class-hierarchy
-   catch matching.
+   `is` patterns/bindings, and `trap`/`throw`/`finally` including materialised
+   thrown objects, catch bindings and class-hierarchy matching (when types are
+   resolved). Remaining: constructor/destructor bodies of compile-time objects
+   and non-scalar fields.
 2. **Interface constant contracts (§3.8.3)**: direct function/accessor/operator
    contracts and class-body extension implementations work; non-function
    interface constants without initializers are not modelled as class-side

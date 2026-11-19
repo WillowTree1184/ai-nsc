@@ -5688,3 +5688,15 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 4);
 }
+
+#[test]
+fn compile_time_trap_throw_and_finally_execute() {
+    let source = "\
+#{ trap { throw Exception(); } catch error: Exception { local caught: integer(4) = 4; } finally { local done: integer(4) = 2; } }
+
+fixed Main(): integer(4)
+{
+    return caught * 10 + done;
+}";
+    assert_eq!(run_program(source), 42);
+}

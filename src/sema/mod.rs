@@ -1350,11 +1350,12 @@ struct PendingCompileTimeIf {
 }
 
 /// Control flow produced by a compile-time statement (§11.4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum CompileTimeFlow {
     Normal,
     Break,
     Continue,
+    Throw(Option<String>),
 }
 
 pub(crate) struct Sema<'a> {
@@ -3538,7 +3539,12 @@ impl<'a> Sema<'a> {
         }
         let statements = self.block_statements(block);
         let flow = self.execute_compile_time_statements(&statements, false);
-        if matches!(flow, CompileTimeFlow::Break | CompileTimeFlow::Continue) {
+        if matches!(flow, CompileTimeFlow::Throw(_)) {
+            self.error(
+                self.span_of(node),
+                "uncaught compile-time exception in a top-level '#{}' block",
+            );
+        } else if matches!(flow, CompileTimeFlow::Break | CompileTimeFlow::Continue) {
             self.error(
                 self.span_of(node),
                 "'break'/'continue' outside a compile-time loop",
@@ -3558,7 +3564,10 @@ impl<'a> Sema<'a> {
         }
         let flow = self.execute_compile_time_statements(&[statement], false);
         self.compile_time_deferred = false;
-        if matches!(flow, CompileTimeFlow::Break | CompileTimeFlow::Continue) {
+        if matches!(
+            flow,
+            CompileTimeFlow::Break | CompileTimeFlow::Continue | CompileTimeFlow::Throw(_)
+        ) {
             self.error(
                 self.span_of(statement),
                 "'break'/'continue' outside a compile-time loop",
@@ -3609,14 +3618,24 @@ impl<'a> Sema<'a> {
                 NodeKind::CompileTimeBlock(inner) => {
                     let statements = self.block_statements(inner);
                     let flow = self.execute_compile_time_statements(&statements, in_loop);
-                    if matches!(flow, CompileTimeFlow::Break | CompileTimeFlow::Continue) {
+                    if matches!(
+                        flow,
+                        CompileTimeFlow::Break
+                            | CompileTimeFlow::Continue
+                            | CompileTimeFlow::Throw(_)
+                    ) {
                         return flow;
                     }
                     continue;
                 }
                 NodeKind::Block(inner) => {
                     let flow = self.execute_compile_time_statements(&inner, in_loop);
-                    if matches!(flow, CompileTimeFlow::Break | CompileTimeFlow::Continue) {
+                    if matches!(
+                        flow,
+                        CompileTimeFlow::Break
+                            | CompileTimeFlow::Continue
+                            | CompileTimeFlow::Throw(_)
+                    ) {
                         return flow;
                     }
                     continue;
@@ -3803,6 +3822,19 @@ impl<'a> Sema<'a> {
                     }
                     CompileTimeFlow::Continue
                 }
+                NodeKind::Throw(throw) => {
+                    let name = match self.node_kind(throw.value) {
+                        NodeKind::Call(call) => match self.node_kind(call.callee) {
+                            NodeKind::Name(name) => Some(name.name.clone()),
+                            NodeKind::MemberAccess(access) => Some(access.name.clone()),
+                            _ => None,
+                        },
+                        NodeKind::Name(name) => Some(name.name.clone()),
+                        _ => None,
+                    };
+                    CompileTimeFlow::Throw(name)
+                }
+                NodeKind::Trap(trap) => self.execute_compile_time_trap(&trap),
                 _ => {
                     self.unsupported(
                         self.span_of(*statement),
@@ -3811,7 +3843,10 @@ impl<'a> Sema<'a> {
                     continue;
                 }
             };
-            if matches!(flow, CompileTimeFlow::Break | CompileTimeFlow::Continue) {
+            if matches!(
+                flow,
+                CompileTimeFlow::Break | CompileTimeFlow::Continue | CompileTimeFlow::Throw(_)
+            ) {
                 return flow;
             }
         }
@@ -3923,6 +3958,51 @@ impl<'a> Sema<'a> {
         crate::codegen::jit_call_external(&symbol, &arguments, return_signature).map(|_| ())
     }
 
+    /// Executes a compile-time `trap` statement (§11.4). Phase A handles
+    /// wildcard catches; typed catches defer to phase B where declarations are
+    /// resolved. The thrown value is not materialised, so catch bindings are not
+    /// available inside compile-time handlers.
+    fn execute_compile_time_trap(&mut self, trap: &crate::ast::TrapStmt) -> CompileTimeFlow {
+        let body = self.block_statements(trap.body);
+        let mut flow = self.execute_compile_time_statements(&body, false);
+        if let CompileTimeFlow::Throw(thrown) = &flow {
+            let mut handled = false;
+            for catch in &trap.catches {
+                let type_name = catch.ty.and_then(|ty| match self.node_kind(ty) {
+                    NodeKind::Name(name) => Some(name.name.clone()),
+                    NodeKind::NamedType(named) => match self.node_kind(named.name) {
+                        NodeKind::Name(name) => Some(name.name.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                });
+                let matches =
+                    catch.wildcard || thrown.is_none() || type_name.as_deref() == thrown.as_deref();
+                if !matches {
+                    continue;
+                }
+                let statements = self.block_statements(catch.body);
+                flow = self.execute_compile_time_statements(&statements, false);
+                handled = true;
+                break;
+            }
+            if !handled {
+                return flow;
+            }
+        }
+        if let Some(finally) = trap.finally {
+            let statements = self.block_statements(finally);
+            let finally_flow = self.execute_compile_time_statements(&statements, false);
+            if matches!(finally_flow, CompileTimeFlow::Throw(_)) {
+                return finally_flow;
+            }
+            if matches!(flow, CompileTimeFlow::Normal) {
+                flow = finally_flow;
+            }
+        }
+        flow
+    }
+
     fn execute_compile_time_branches(
         &mut self,
         statement: &crate::ast::IfStmt,
@@ -3966,6 +4046,7 @@ impl<'a> Sema<'a> {
             let errors_before = self.engine.error_count();
             match self.execute_compile_time_statements(&statements, true) {
                 CompileTimeFlow::Break => break,
+                flow @ CompileTimeFlow::Throw(_) => return flow,
                 CompileTimeFlow::Normal | CompileTimeFlow::Continue => {}
             }
             if (!self.compile_time_phase_b && self.compile_time_deferred)
@@ -3987,6 +4068,7 @@ impl<'a> Sema<'a> {
             let errors_before = self.engine.error_count();
             match self.execute_compile_time_statements(&statements, true) {
                 CompileTimeFlow::Break => break,
+                flow @ CompileTimeFlow::Throw(_) => return flow,
                 CompileTimeFlow::Normal | CompileTimeFlow::Continue => {}
             }
             if (!self.compile_time_phase_b && self.compile_time_deferred)
@@ -4155,8 +4237,10 @@ impl<'a> Sema<'a> {
             let statements = self.block_statements(case.body);
             let errors_before = self.engine.error_count();
             let flow = self.execute_compile_time_statements(&statements, in_loop);
-            if matches!(flow, CompileTimeFlow::Break | CompileTimeFlow::Continue)
-                || self.engine.error_count() > errors_before
+            if matches!(
+                flow,
+                CompileTimeFlow::Break | CompileTimeFlow::Continue | CompileTimeFlow::Throw(_)
+            ) || self.engine.error_count() > errors_before
             {
                 return flow;
             }
@@ -4283,6 +4367,7 @@ impl<'a> Sema<'a> {
             let statements = self.block_statements(statement.body);
             match self.execute_compile_time_statements(&statements, true) {
                 CompileTimeFlow::Break => break,
+                flow @ CompileTimeFlow::Throw(_) => return flow,
                 CompileTimeFlow::Normal | CompileTimeFlow::Continue => {}
             }
             value = value.wrapping_add(step);

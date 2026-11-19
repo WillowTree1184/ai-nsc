@@ -3971,3 +3971,20 @@ fn operand_assembly_emits_full_register_barriers_on_supported_architectures() {
         );
     }
 }
+
+#[test]
+fn uncaught_compile_time_throw_is_diagnosed() {
+    let stderr = check_source(
+        "\
+#{ throw Exception(); }
+
+fixed Main(): integer(4)
+{
+    return 0;
+}",
+    );
+    assert!(
+        stderr.contains("uncaught compile-time exception"),
+        "{stderr}"
+    );
+}

@@ -2,7 +2,7 @@
 
 ## State
 
-- Branch `main`; last feature commit `46be93c`.
+- Branch `main`; last feature commit `1d9bc74`.
 - **Active goal: 100% Beta 1.1 conformance.** Authoritative specification:
   `docs/LanguageSpecification/docs/specification/zh-cn.md` (1.153 and earlier are historical only).
 - Gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,

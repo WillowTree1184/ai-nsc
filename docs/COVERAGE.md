@@ -21,7 +21,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **385 tests**: 41 lib unit tests (lexer, literal,
+`cargo test` currently runs **388 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
 that read `docs/grammar/Draft 1.153.md` directly (a closed-set test also asserts that the only spec programs failing semantic analysis are the documented demonstration/inconsistency snippets):
@@ -69,6 +69,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §4.9.6/4.9.7 `&`/`*` reference expressions | ✅ | pointer/reference tests |
 | §4.9.26 `??` with `Optional`/`Result` and all continuations | ✅ | coalescing + user `operator ??` tests |
 | §4.9.27 `?:` conditional expression | ✅ | conditional e2e |
+| §5.2 inline assembly: `assembly [with clobber(...)] { text + @[expr:dir] }`, escapes, placeholders, target syntax | ✅ | lexer keyword/raw-block scanner, parser (Intel-style text preserved, `@@`/`@}`/`@@[` escapes, `@[expr]`/`:in`/`:out`, duplicate/invalid clobber diagnostics), sema (function-body only, no compile-time/module/type/constant positions, lvalue rules, scalar operand types), LLVM InlineAsm lowering (outputs/tied read-write inputs, memory/cc clobber or global barrier, Intel dialect on x86; e2e mov/add) |
 | §5 statements: blocks, locals/fixed, set/compound, if, while/do, for, match, break/continue, return, trap/finally, throw, dispose, export/use | ✅ | statement e2e tests; `finally` executes on fall-through and normal `return` paths (rejected `return` inside `finally`); `do-while` conditions are checked in the body block's scope; `dispose` targets must be heap allocation units (scope-lifetime instances are rejected per §5.8); direct local field pointer dispose targets are supported, arbitrary pointer/container paths are diagnosed (deviation 12); the `local @` no-optimize marker is only accepted immediately after `local` (applying to all items), not per item; runtime statements/expressions are rejected at file/module top level (only declarations, `#{}`, `#if` and `#()` are allowed there) |
 | §5.6 `use` imports (per scope, later imports first, multi-file) | ✅ | use tests |
 | §5.9 `match`: patterns, guards, logical control flow (break/continue/labels) | ✅ | match e2e tests |
@@ -175,3 +176,17 @@ implementing them is conforming and they are therefore not listed as deviations.
     module are recognised syntactically rather than declared in the built-in
     type space. This affects reflection over those built-ins only; all specified
     query forms are evaluated. Tracked for the final §15.2 audit.
+
+14. **Inline-assembly target-syntax validation timing**: invalid target assembly
+    text is rejected by LLVM during object emission (`build`/`emit-obj`), not by
+    `check`; §5.2 asks for a static error. The diagnostic is a compile error when
+    generating code, but the `check` command does not assemble the text. A later
+    round should run LLVM's assembler/MC parser for the selected target during
+    semantic analysis.
+
+15. **No-clobber assembly barrier breadth**: `assembly` without `clobber(...)` is
+    emitted as `sideeffect` with `~{memory}` and `~{cc}` (a global memory/flag
+    barrier). §5.2 also says all registers must be assumed clobbered; LLVM does
+    not expose a portable "clobber all registers" constraint list, so register
+    contents are not conservatively declared clobbered. Programs relying on the
+    strongest barrier semantics should write `clobber(...)` explicitly.

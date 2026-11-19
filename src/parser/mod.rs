@@ -1125,6 +1125,7 @@ impl<'a> Parser<'a> {
             TokenKind::Return => self.parse_return(),
             TokenKind::Throw => self.parse_throw(),
             TokenKind::Trap => self.parse_trap(),
+            TokenKind::Assembly => self.parse_assembly(),
             TokenKind::Dispose => self.parse_dispose(),
             TokenKind::Hash => self.parse_compile_time_statement(),
             TokenKind::LeftBrace => self.parse_block(),
@@ -2416,6 +2417,163 @@ impl<'a> Parser<'a> {
                 finally,
             }),
         ))
+    }
+
+    /// Parses `assembly [with clobber(...)] { ... }` (§5.2). Assembly content
+    /// is read from the raw source so arbitrary target syntax is preserved;
+    /// `@[...]` placeholders are parsed as ordinary expressions.
+    fn parse_assembly(&mut self) -> Option<NodeId> {
+        let start_token = self.position;
+        self.bump(); // assembly
+        let mut clobbers = None;
+        if self.at(TokenKind::Identifier) && self.token_text(self.peek()) == "with" {
+            self.bump();
+            if !(self.at(TokenKind::Identifier) && self.token_text(self.peek()) == "clobber") {
+                self.error_here("expected 'clobber' after 'with'");
+                return None;
+            }
+            self.bump();
+            self.expect(TokenKind::LeftParen, "'(' after 'clobber'")?;
+            let mut names = Vec::new();
+            if !self.at(TokenKind::RightParen) {
+                loop {
+                    let token = self.peek();
+                    let name = match token.kind {
+                        TokenKind::StringLiteral | TokenKind::VerbatimStringLiteral => {
+                            let raw = token.text(self.source);
+                            match crate::literal::decode_string(raw) {
+                                Ok(decoded) => String::from_utf8_lossy(&decoded.bytes).into_owned(),
+                                Err(message) => {
+                                    self.error_at(token.span, message);
+                                    String::new()
+                                }
+                            }
+                        }
+                        _ => {
+                            self.error_here("a clobber name must be a string literal");
+                            String::new()
+                        }
+                    };
+                    if !name.is_empty() && names.contains(&name) {
+                        self.error_at(token.span, format!("duplicate clobber '{name}'"));
+                    }
+                    names.push(name);
+                    self.bump();
+                    if !self.eat(TokenKind::Comma) {
+                        break;
+                    }
+                }
+            }
+            self.expect(TokenKind::RightParen, "')' after clobber list");
+            clobbers = Some(names);
+        }
+        let Some(brace) = self.expect(TokenKind::LeftBrace, "'{' after 'assembly'") else {
+            self.synchronize();
+            return None;
+        };
+        let mut segments = Vec::new();
+        let mut text = String::new();
+        let mut last = brace.span.end as usize;
+        let mut closed = false;
+        while !self.at_end() {
+            let token = self.peek();
+            let token_start = token.span.start as usize;
+            let token_end = token.span.end as usize;
+            if token.kind == TokenKind::RightBrace {
+                text.push_str(&self.source[last..token_start]);
+                self.bump();
+                closed = true;
+                break;
+            }
+            if token.kind == TokenKind::At {
+                let rest = &self.source[token_start..];
+                if rest.starts_with("@@[") {
+                    text.push_str(&self.source[last..token_start]);
+                    text.push_str("@[");
+                    self.bump();
+                    self.bump();
+                    self.bump();
+                    last = self.previous_end();
+                    continue;
+                }
+                if rest.starts_with("@@") {
+                    text.push_str(&self.source[last..token_start]);
+                    text.push('@');
+                    self.bump();
+                    self.bump();
+                    last = self.previous_end();
+                    continue;
+                }
+                if rest.starts_with("@}") {
+                    text.push_str(&self.source[last..token_start]);
+                    text.push('}');
+                    self.bump();
+                    self.bump();
+                    last = self.previous_end();
+                    continue;
+                }
+                if rest.starts_with("@[") {
+                    text.push_str(&self.source[last..token_start]);
+                    if !text.is_empty() {
+                        segments.push(AssemblySegment::Text(std::mem::take(&mut text)));
+                    }
+                    self.bump(); // @
+                    self.bump(); // [
+                    let expression = self.parse_expression()?;
+                    let direction = if self.eat(TokenKind::Colon) {
+                        if self.eat(TokenKind::In) {
+                            AssemblyDirection::In
+                        } else if self.at(TokenKind::Identifier)
+                            && self.token_text(self.peek()) == "out"
+                        {
+                            self.bump();
+                            AssemblyDirection::Out
+                        } else {
+                            self.error_here("unknown assembly operand direction");
+                            self.bump();
+                            AssemblyDirection::ReadWrite
+                        }
+                    } else {
+                        AssemblyDirection::ReadWrite
+                    };
+                    self.expect(TokenKind::RightBracket, "']' after assembly placeholder");
+                    segments.push(AssemblySegment::Placeholder {
+                        expression,
+                        direction,
+                    });
+                    last = self.previous_end();
+                    continue;
+                }
+            }
+            // Ordinary token: include its raw source text (and any adjacent
+            // whitespace/comments) verbatim.
+            text.push_str(&self.source[last..token_end]);
+            last = token_end;
+            self.bump();
+        }
+        if !closed {
+            self.error_here("unterminated assembly block");
+        }
+        if !text.is_empty() {
+            segments.push(AssemblySegment::Text(text));
+        }
+        let span = self.span_between(start_token, self.position);
+        Some(self.ast.push(
+            span,
+            NodeKind::Assembly(AssemblyStmt { clobbers, segments }),
+        ))
+    }
+
+    /// Byte offset just after the previously consumed token.
+    fn previous_end(&self) -> usize {
+        self.position
+            .checked_sub(1)
+            .map_or(0, |index| self.tokens[index].span.end as usize)
+    }
+
+    /// Exact source text of a token.
+    fn token_text(&self, token: Token) -> &str {
+        token.text(self.source)
     }
 
     fn parse_dispose(&mut self) -> Option<NodeId> {

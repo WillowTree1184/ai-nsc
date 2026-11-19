@@ -51,7 +51,7 @@ fn every_spec_example_parses() {
     );
 
     // Examples that are syntax fragments rather than whole programs.
-    const NON_PROGRAM_FRAGMENTS: &[usize] = &[5838, 9220, 9278, 9441, 9454, 9674];
+    const NON_PROGRAM_FRAGMENTS: &[usize] = &[9220, 9278, 9441, 9454, 9674];
 
     let mut failures = Vec::new();
     for (line, source) in &examples {

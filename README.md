@@ -43,7 +43,7 @@ Implemented and tested today:
   `Result<TValue; TAlternative>`, `IIterator<T>`, `IIterable<T>`, `IAllocator`
   and the platform `DefaultAllocator`, plus the compile-time library.
 
-`cargo test` runs **385 tests** (41 lib unit, 121 CLI, 2 LLVM codegen, 205
+`cargo test` runs **388 tests** (41 lib unit, 123 CLI, 2 LLVM codegen, 206
 end-to-end programs, 10 parser, 3 spec-conformance tests that read the
 specification itself: every `novasharp` example parses, and every whole-program
 example that passes semantic analysis is compiled end to end by the CLI).

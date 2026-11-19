@@ -17,14 +17,6 @@ returns 64 bits, duplicate `scoped` is illegal, `MonomorphizationExpression`
 takes an `Identifier`, and accessor member access is explicitly allowed. ai-nsc
 therefore no longer accepts the 1.152 tolerances.
 
-## Inline-assembly examples are syntax fragments
-
-The §5.2 examples write bare `assembly ...` statements at file scope, while the
-prose requires `assembly` to appear inside a function body. The examples are
-treated as syntax fragments (`NON_PROGRAM_FRAGMENTS` in
-`tests/spec_examples.rs`), not as complete programs; the parser/checker enforce
-the function-body placement rule.
-
 ## Type-constructor fragment
 
 The `function(#integer(4), #integer(4))` block around line 9674 is a bare type

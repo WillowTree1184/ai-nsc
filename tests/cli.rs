@@ -3268,3 +3268,88 @@ fixed Main(): integer(4)
     );
     assert!(stderr.contains("unknown name 'Platform'"), "{stderr}");
 }
+
+#[test]
+fn inline_assembly_diagnostics() {
+    let inout = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    local value: integer(4) = 1;
+    assembly { mov @[value:inout], 0 }
+    return 0;
+}",
+    );
+    assert!(
+        inout.contains("unknown assembly operand direction"),
+        "{inout}"
+    );
+    let out_target = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    assembly { mov @[1:out], 0 }
+    return 0;
+}",
+    );
+    assert!(out_target.contains("not assignable"), "{out_target}");
+    let duplicate = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    local value: integer(4) = 1;
+    assembly with clobber(\"memory\", \"memory\") { mov @[value:out], 0 }
+    return 0;
+}",
+    );
+    assert!(duplicate.contains("duplicate clobber"), "{duplicate}");
+    let top_level = check_source(
+        "\
+assembly { }
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(
+        top_level.contains("only allowed inside function bodies"),
+        "{top_level}"
+    );
+    let compile_time = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    #{ assembly { } }
+    return 0;
+}",
+    );
+    assert!(
+        compile_time.contains("must not appear in compile-time code"),
+        "{compile_time}"
+    );
+}
+
+#[test]
+fn inline_assembly_escapes_emit_ir() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-asm-escapes-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(
+        &path,
+        "fixed Main(): integer(4)\n{\n    assembly\n    {\n        # @@\n    }\n    return 0;\n}",
+    )
+    .expect("write");
+    let output = ai_nsc()
+        .args(["emit-ir", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

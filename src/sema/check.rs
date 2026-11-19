@@ -6758,6 +6758,7 @@ impl<'a> Sema<'a> {
             }
             NodeKind::Throw(statement) => self.check_throw_statement(&statement),
             NodeKind::Trap(statement) => self.check_trap_statement(node, &statement),
+            NodeKind::Assembly(statement) => self.check_assembly_statement(node, &statement),
             NodeKind::Dispose(statement) => self.check_dispose_statement(&statement),
             NodeKind::Heap(declaration) => self.check_heap_statement(node, &declaration),
             NodeKind::Class(_)
@@ -7472,6 +7473,60 @@ impl<'a> Sema<'a> {
             self.result.heap_default_allocator_locals.insert(local);
         }
         self.result.local_declarations.insert(node, vec![local]);
+    }
+
+    /// Checks an inline-assembly statement (§5.2).
+    fn check_assembly_statement(&mut self, node: NodeId, statement: &AssemblyStmt) {
+        if self.current_function.is_none() {
+            self.error(
+                self.span_of(node),
+                "'assembly' must appear inside a function body (§5.2)",
+            );
+            return;
+        }
+        if self.compile_time_depth > 0
+            || self.compile_time_expression_depth > 0
+            || !self.compile_time_constants.is_empty()
+        {
+            self.error(
+                self.span_of(node),
+                "'assembly' must not appear in compile-time code (§5.2)",
+            );
+            return;
+        }
+        if self.in_verbatim {
+            self.error(
+                self.span_of(node),
+                "the no-optimize marker forbids inline assembly (§14.3.1)",
+            );
+        }
+        for segment in &statement.segments {
+            let AssemblySegment::Placeholder {
+                expression,
+                direction,
+            } = segment
+            else {
+                continue;
+            };
+            let ty = self.check_expr(*expression, None);
+            match direction {
+                AssemblyDirection::Out | AssemblyDirection::ReadWrite => {
+                    self.ensure_assignable(*expression);
+                }
+                AssemblyDirection::In => {}
+            }
+            if let Some(ty) = ty {
+                if !(self.is_integer(ty)
+                    || self.is_boolean(ty)
+                    || matches!(self.type_of(ty), Type::Pointer { .. }))
+                {
+                    self.error(
+                        self.span_of(*expression),
+                        "an assembly operand must be an integer, boolean or pointer value",
+                    );
+                }
+            }
+        }
     }
 
     fn check_dispose_statement(&mut self, statement: &DisposeStmt) {

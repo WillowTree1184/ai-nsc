@@ -5358,3 +5358,24 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 7);
 }
+
+#[test]
+fn inline_assembly_mov_and_readwrite_execute() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local result: integer(4) = 0;
+    local value: integer(4) = 7;
+    assembly with clobber(\"memory\", \"cc\")
+    {
+        mov @[result:out], @[value:in]
+    }
+    local counter: integer(4) = 5;
+    assembly
+    {
+        add @[counter], 1
+    }
+    return result * 10 + counter;
+}";
+    assert_eq!(run_program(source), 76);
+}

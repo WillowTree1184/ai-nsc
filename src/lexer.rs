@@ -149,6 +149,8 @@ pub enum TokenKind {
     Finally,
 
     // --- misc keywords (§2.6) ---------------------------------------------
+    /// `assembly`
+    Assembly,
     /// `dispose`
     Dispose,
     /// `this`
@@ -315,13 +317,13 @@ impl TokenKind {
     #[must_use]
     pub fn keyword(text: &str) -> Option<TokenKind> {
         use TokenKind::{
-            Abstract, Accessor, Aligned, Array, As, Ascii, Base, Basic, Boolean, Break, Cardinal,
-            Case, Catch, Class, Continue, Dispose, Do, Else, Enumeration, Extension, False,
-            Finally, Fixed, Float, For, Function, Heap, If, Illegal, Implicitable, In, Infinite,
-            Integer, Interface, Is, Linkable, Local, Manual, Match, Module, Operator, Override,
-            Owner, Pointer, Private, Protected, Public, Readonly, Return, Scoped, Sealed, Static,
-            Structure, This, Throw, Trap, True, Ucs2, Ucs4, Uninitialized, Union, Use, Utf16,
-            Utf32, Utf8, Variant, Virtual, When, While, Wildcard,
+            Abstract, Accessor, Aligned, Array, As, Ascii, Assembly, Base, Basic, Boolean, Break,
+            Cardinal, Case, Catch, Class, Continue, Dispose, Do, Else, Enumeration, Extension,
+            False, Finally, Fixed, Float, For, Function, Heap, If, Illegal, Implicitable, In,
+            Infinite, Integer, Interface, Is, Linkable, Local, Manual, Match, Module, Operator,
+            Override, Owner, Pointer, Private, Protected, Public, Readonly, Return, Scoped, Sealed,
+            Static, Structure, This, Throw, Trap, True, Ucs2, Ucs4, Uninitialized, Union, Use,
+            Utf16, Utf32, Utf8, Variant, Virtual, When, While, Wildcard,
         };
         Some(match text {
             "class" => Class,
@@ -374,6 +376,7 @@ impl TokenKind {
             "trap" => Trap,
             "catch" => Catch,
             "finally" => Finally,
+            "assembly" => Assembly,
             "dispose" => Dispose,
             "this" => This,
             "owner" => Owner,
@@ -438,6 +441,7 @@ impl TokenKind {
                 | Override
                 | Sealed
                 | Aligned
+                | Assembly
                 | Static
                 | If
                 | Else
@@ -606,6 +610,7 @@ impl TokenKind {
             Trap => "trap",
             Catch => "catch",
             Finally => "finally",
+            Assembly => "assembly",
             Dispose => "dispose",
             This => "this",
             Owner => "owner",

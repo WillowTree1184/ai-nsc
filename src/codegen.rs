@@ -14,16 +14,20 @@ use inkwell::basic_block::BasicBlock;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
 use inkwell::module::Module;
-use inkwell::types::{BasicType, BasicTypeEnum, FunctionType, IntType, StructType};
-use inkwell::values::{
-    BasicValueEnum, CallSiteValue, FunctionValue, GlobalValue, IntValue, PointerValue, ValueKind,
+use inkwell::types::{
+    BasicMetadataTypeEnum, BasicType, BasicTypeEnum, FunctionType, IntType, StructType,
 };
-use inkwell::{AddressSpace, FloatPredicate, IntPredicate};
+use inkwell::values::{
+    BasicMetadataValueEnum, BasicValueEnum, CallSiteValue, FunctionValue, GlobalValue, IntValue,
+    PointerValue, ValueKind,
+};
+use inkwell::{AddressSpace, FloatPredicate, InlineAsmDialect, IntPredicate};
 
 use crate::ast::{
-    ArrayElement, Ast, BinaryExpr, BinaryOp, CallExpr, CastExpr, CoalescingAlternative,
-    ConditionalExpr, ForStmt, ForTarget, IndexExpr, Initializer, IsExpr, IsTarget, MatchStmt,
-    NodeId, NodeKind, Pattern, SetStmt, UnaryExpr, UnaryOp,
+    ArrayElement, AssemblyDirection, AssemblySegment, AssemblyStmt, Ast, BinaryExpr, BinaryOp,
+    CallExpr, CastExpr, CoalescingAlternative, ConditionalExpr, ForStmt, ForTarget, IndexExpr,
+    Initializer, IsExpr, IsTarget, MatchStmt, NodeId, NodeKind, Pattern, SetStmt, UnaryExpr,
+    UnaryOp,
 };
 use crate::literal;
 use crate::sema::types::{Type, TypeId};
@@ -1735,6 +1739,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             NodeKind::Heap(declaration) => self.gen_heap_statement(node, &declaration),
             NodeKind::Trap(statement) => self.gen_trap_statement(node, &statement),
             NodeKind::Throw(statement) => self.gen_throw_statement(&statement),
+            NodeKind::Assembly(statement) => self.gen_assembly_statement(&statement),
             NodeKind::Dispose(statement) => self.gen_dispose_statement(&statement),
             NodeKind::Set(statement) => self.gen_set_statement(&statement),
             NodeKind::CompoundSet(statement) => self.gen_compound_set_statement(node, &statement),
@@ -2734,6 +2739,185 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 .build_load(result_llvm, result_slot, "coalesce_result")
                 .map_err(|error| format!("cannot load coalesced value: {error}"))
         }
+    }
+
+    /// Lowers an inline-assembly statement (§5.2) to an LLVM `call asm`.
+    fn gen_assembly_statement(&mut self, statement: &AssemblyStmt) -> Result<(), String> {
+        struct OutputOperand<'ctx> {
+            ty: BasicTypeEnum<'ctx>,
+            pointer: PointerValue<'ctx>,
+            read_write: Option<BasicValueEnum<'ctx>>,
+        }
+        let mut outputs: Vec<OutputOperand<'ctx>> = Vec::new();
+        let mut inputs: Vec<(usize, BasicValueEnum<'ctx>)> = Vec::new();
+        let mut mapping: HashMap<usize, usize> = HashMap::new();
+        let mut sequence = 0usize;
+        for segment in &statement.segments {
+            let AssemblySegment::Placeholder {
+                expression,
+                direction,
+            } = segment
+            else {
+                continue;
+            };
+            let ty = self
+                .sema
+                .node_types
+                .get(*expression as usize)
+                .copied()
+                .flatten()
+                .ok_or_else(|| "missing assembly operand type".to_string())?;
+            let llvm_ty = self.llvm_type(ty)?;
+            match direction {
+                AssemblyDirection::In => {
+                    let value = self.gen_expr(*expression)?;
+                    inputs.push((sequence, value));
+                }
+                AssemblyDirection::Out => {
+                    let pointer = self
+                        .gen_lvalue(*expression)?
+                        .ok_or_else(|| "assembly output is not addressable".to_string())?;
+                    mapping.insert(sequence, outputs.len());
+                    outputs.push(OutputOperand {
+                        ty: llvm_ty,
+                        pointer,
+                        read_write: None,
+                    });
+                }
+                AssemblyDirection::ReadWrite => {
+                    let pointer = self
+                        .gen_lvalue(*expression)?
+                        .ok_or_else(|| "assembly operand is not addressable".to_string())?;
+                    let value = self
+                        .builder
+                        .build_load(llvm_ty, pointer, "asm_input")
+                        .map_err(|error| format!("cannot load assembly operand: {error}"))?;
+                    mapping.insert(sequence, outputs.len());
+                    outputs.push(OutputOperand {
+                        ty: llvm_ty,
+                        pointer,
+                        read_write: Some(value),
+                    });
+                }
+            }
+            sequence += 1;
+        }
+        // LLVM constraint order: outputs first, then inputs. Read-write operands
+        // use an output constraint plus a tied input `"N"`; inputs-only use "r".
+        let mut constraints: Vec<String> = outputs.iter().map(|_| "=r".to_string()).collect();
+        let mut args: Vec<BasicValueEnum<'ctx>> = Vec::new();
+        let mut arg_types: Vec<BasicMetadataTypeEnum<'ctx>> = Vec::new();
+        let tied_inputs: Vec<(usize, BasicValueEnum<'ctx>)> = outputs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, output)| output.read_write.map(|value| (index, value)))
+            .collect();
+        for (index, value) in &tied_inputs {
+            constraints.push(index.to_string());
+            args.push(*value);
+            arg_types.push((*value).get_type().into());
+        }
+        let input_base = outputs.len() + tied_inputs.len();
+        for (offset, (sequence, value)) in inputs.iter().enumerate() {
+            mapping.insert(*sequence, input_base + offset);
+            constraints.push("r".to_string());
+            args.push(*value);
+            arg_types.push((*value).get_type().into());
+        }
+        match statement.clobbers.as_deref() {
+            None => {
+                // No clobber declaration: assume all registers, flags and memory
+                // are clobbered -> a global barrier (§5.2).
+                constraints.push("~{memory}".to_string());
+                constraints.push("~{cc}".to_string());
+            }
+            Some(names) => {
+                for name in names {
+                    constraints.push(format!("~{{{name}}}"));
+                }
+            }
+        }
+        let output_types: Vec<BasicTypeEnum<'ctx>> =
+            outputs.iter().map(|output| output.ty).collect();
+        let output_type: Option<BasicTypeEnum<'ctx>> = match output_types.len() {
+            0 => None,
+            1 => Some(output_types[0]),
+            _ => Some(self.context.struct_type(&output_types, false).into()),
+        };
+        let function_type = match output_type {
+            Some(ty) => ty.fn_type(&arg_types, false),
+            None => self.context.void_type().fn_type(&arg_types, false),
+        };
+        let mut assembly = String::new();
+        let mut placeholder_index = 0usize;
+        for segment in &statement.segments {
+            match segment {
+                AssemblySegment::Text(text) => assembly.push_str(text),
+                AssemblySegment::Placeholder { .. } => {
+                    assembly.push('$');
+                    assembly.push_str(
+                        &mapping
+                            .get(&placeholder_index)
+                            .copied()
+                            .ok_or_else(|| "missing assembly operand mapping".to_string())?
+                            .to_string(),
+                    );
+                    placeholder_index += 1;
+                }
+            }
+        }
+        let target = self.options.target.as_deref().unwrap_or(crate::HOST_TRIPLE);
+        let dialect = if target.starts_with("x86_64")
+            || target.starts_with("i386")
+            || target.starts_with("i486")
+            || target.starts_with("i586")
+            || target.starts_with("i686")
+        {
+            Some(InlineAsmDialect::Intel)
+        } else {
+            None
+        };
+        let asm_pointer = self.context.create_inline_asm(
+            function_type,
+            assembly,
+            constraints.join(","),
+            true,
+            false,
+            dialect,
+            false,
+        );
+        let call_args: Vec<BasicMetadataValueEnum<'ctx>> =
+            args.iter().map(|value| (*value).into()).collect();
+        let call = self
+            .builder
+            .build_indirect_call(function_type, asm_pointer, &call_args, "asm")
+            .map_err(|error| format!("cannot emit inline assembly: {error}"))?;
+        let Some(value) = call.try_as_basic_value().basic() else {
+            return Ok(());
+        };
+        if outputs.is_empty() {
+            return Ok(());
+        }
+        let output_values: Vec<BasicValueEnum<'ctx>> = if outputs.len() == 1 {
+            vec![value]
+        } else {
+            let BasicValueEnum::StructValue(struct_value) = value else {
+                return Err("inline assembly returned an unexpected value".to_string());
+            };
+            (0..outputs.len())
+                .map(|index| {
+                    self.builder
+                        .build_extract_value(struct_value, index as u32, "asm_output")
+                        .map_err(|error| format!("cannot extract assembly output: {error}"))
+                })
+                .collect::<Result<_, _>>()?
+        };
+        for (index, output) in outputs.iter().enumerate() {
+            self.builder
+                .build_store(output.pointer, output_values[index])
+                .map_err(|error| format!("cannot store assembly output: {error}"))?;
+        }
+        Ok(())
     }
 
     fn gen_dispose_statement(&mut self, statement: &crate::ast::DisposeStmt) -> Result<(), String> {

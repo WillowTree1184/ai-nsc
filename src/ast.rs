@@ -139,6 +139,8 @@ pub enum NodeKind {
     Set(SetStmt),
     /// `target op= value` statement.
     CompoundSet(CompoundSetStmt),
+    /// `assembly ...` inline-assembly statement (§5.2).
+    Assembly(AssemblyStmt),
     /// `dispose target` statement.
     Dispose(DisposeStmt),
     /// `if` statement.
@@ -686,6 +688,40 @@ pub struct CompoundSetStmt {
     pub value: NodeId,
     /// The arithmetic/bitwise operator combined with the assignment.
     pub op: BinaryOp,
+}
+
+/// Operand direction of an inline-assembly placeholder (§5.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssemblyDirection {
+    /// No marker: read then write.
+    ReadWrite,
+    /// `:in`: input only.
+    In,
+    /// `:out`: output only.
+    Out,
+}
+
+/// One piece of inline-assembly content (§5.2).
+#[derive(Clone, Debug)]
+pub enum AssemblySegment {
+    /// Literal assembly text (escapes already decoded).
+    Text(String),
+    /// `@[Expression(:in|:out)]`.
+    Placeholder {
+        /// Operand expression.
+        expression: NodeId,
+        /// Operand direction.
+        direction: AssemblyDirection,
+    },
+}
+
+/// `assembly [with clobber(...)] { ... }` statement (§5.2).
+#[derive(Clone, Debug)]
+pub struct AssemblyStmt {
+    /// Clobber declarations, if written.
+    pub clobbers: Option<Vec<String>>,
+    /// Assembly text and operand placeholders in source order.
+    pub segments: Vec<AssemblySegment>,
 }
 
 /// `dispose target` (§5.8).

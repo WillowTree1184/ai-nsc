@@ -71,6 +71,7 @@ impl Ast {
             NodeKind::CompoundSet(stmt) => {
                 NodeKind::CompoundSet(self.clone_compound_set_stmt(stmt))
             }
+            NodeKind::Assembly(stmt) => NodeKind::Assembly(self.clone_assembly_stmt(stmt)),
             NodeKind::Dispose(stmt) => NodeKind::Dispose(self.clone_dispose_stmt(stmt)),
             NodeKind::If(stmt) => NodeKind::If(self.clone_if_stmt(stmt)),
             NodeKind::While(stmt) => NodeKind::While(self.clone_loop_stmt(stmt)),
@@ -476,6 +477,26 @@ impl Ast {
     }
 
     /// Clones a `dispose` statement.
+    fn clone_assembly_stmt(&mut self, stmt: &AssemblyStmt) -> AssemblyStmt {
+        AssemblyStmt {
+            clobbers: stmt.clobbers.clone(),
+            segments: stmt
+                .segments
+                .iter()
+                .map(|segment| match segment {
+                    AssemblySegment::Text(text) => AssemblySegment::Text(text.clone()),
+                    AssemblySegment::Placeholder {
+                        expression,
+                        direction,
+                    } => AssemblySegment::Placeholder {
+                        expression: self.clone_subtree(*expression),
+                        direction: *direction,
+                    },
+                })
+                .collect(),
+        }
+    }
+
     fn clone_dispose_stmt(&mut self, stmt: &DisposeStmt) -> DisposeStmt {
         DisposeStmt {
             target: self.clone_subtree(stmt.target),

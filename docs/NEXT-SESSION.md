@@ -2,7 +2,7 @@
 
 ## State
 
-- Branch `main`; last feature commit `76597e1` (Platform.Is target + member shadow scopes).
+- Branch `main`; last feature commit `d537a78` (compile-time do-while; §14.3.2 clarification).
 - **Active goal: 100% draft-1.152 conformance, no more no less** (no
   compatibility syntax beyond the draft; no unimplemented normative rules).
   `git status` is clean.

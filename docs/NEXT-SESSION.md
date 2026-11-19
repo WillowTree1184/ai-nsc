@@ -2,7 +2,7 @@
 
 ## State
 
-- Branch `main`; last feature commit `4b38a69` (index accessors + operator/accessor scopes).
+- Branch `main`; last feature commit `c914bfe` (§11.4 block scoping/end-product retention).
 - **Active goal: 100% draft-1.152 conformance, no more no less** (no
   compatibility syntax beyond the draft; no unimplemented normative rules).
   `git status` is clean.

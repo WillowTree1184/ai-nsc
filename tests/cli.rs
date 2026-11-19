@@ -3020,3 +3020,46 @@ fixed Main(): integer(4)
     );
     assert!(stderr.contains("unknown name 'number'"), "{stderr}");
 }
+
+#[test]
+fn top_level_statements_are_rejected() {
+    let stderr = check_source(
+        "\
+if true { }
+while true { }
+for i: integer(4) in 0..5 { }
+1 + 2;
+
+fixed Main(): integer(4)
+{
+    return 0;
+}",
+    );
+    assert!(
+        stderr
+            .matches("only allowed inside function bodies")
+            .count()
+            >= 4,
+        "{stderr}"
+    );
+}
+
+#[test]
+fn module_level_statements_are_rejected() {
+    let stderr = check_source(
+        "\
+module M
+{
+    while true { }
+}
+
+fixed Main(): integer(4)
+{
+    return 0;
+}",
+    );
+    assert!(
+        stderr.contains("only allowed inside function bodies"),
+        "{stderr}"
+    );
+}

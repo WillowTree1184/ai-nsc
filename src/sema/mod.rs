@@ -2537,10 +2537,46 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Whether a node is a declaration allowed at file/module top level (§5,
+    /// §11.4). Statements and runtime expressions are function-body-only; a
+    /// top-level `#()` compile-time expression statement is allowed.
+    fn top_level_declaration_allowed(&self, node: NodeId) -> bool {
+        match self.node_kind(node) {
+            NodeKind::Module(_)
+            | NodeKind::Class(_)
+            | NodeKind::Structure(_)
+            | NodeKind::Interface(_)
+            | NodeKind::Enumeration(_)
+            | NodeKind::Variant(_)
+            | NodeKind::Union(_)
+            | NodeKind::Extension(_)
+            | NodeKind::Accessor(_)
+            | NodeKind::Operator(_)
+            | NodeKind::Local(_)
+            | NodeKind::Fixed(_)
+            | NodeKind::Heap(_)
+            | NodeKind::Linkable(_)
+            | NodeKind::Use(_)
+            | NodeKind::CompileTimeBlock(_)
+            | NodeKind::CompileTimeIf(_) => true,
+            NodeKind::ExpressionStmt(expression) => {
+                matches!(self.node_kind(expression), NodeKind::CompileTimeExpr(_))
+            }
+            _ => false,
+        }
+    }
+
     /// Pass 1: walk the declaration structure creating module scopes and named
     /// type stubs.
     fn declare_types(&mut self, nodes: &[NodeId], top_level: bool) {
         for &node in nodes {
+            if top_level && !self.top_level_declaration_allowed(node) {
+                self.error(
+                    self.span_of(node),
+                    "statements and expressions are only allowed inside function bodies (§5)",
+                );
+                continue;
+            }
             match self.node_kind(node) {
                 NodeKind::Module(declaration) => {
                     let module_scope = self.create_child_scope();

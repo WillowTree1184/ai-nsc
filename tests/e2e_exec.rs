@@ -5171,9 +5171,6 @@ fixed Main(): integer(4)
 #[test]
 fn compile_time_match_and_do_while_execute_in_top_level_blocks() {
     let source = "\
-{
-}
-
 #{ 
     local x: integer(4) = 2;
     match x

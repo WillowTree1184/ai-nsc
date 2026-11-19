@@ -3,20 +3,20 @@
 ## State
 
 - Branch `main`; last feature commit `98d5900`.
-- **Active goal: 100% Draft 1.161 conformance.** Authoritative specification:
-  `docs/grammar/Draft 1.161.md` (1.153 and earlier are historical only).
+- **Active goal: 100% Draft 1.162 conformance.** Authoritative specification:
+  `docs/grammar/Draft 1.162.md` (1.153 and earlier are historical only).
 - Gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
   `cargo test` — **429 tests green** (41 lib unit, 141 CLI, 2 codegen/LLVM,
   1 MCJIT probe, 2 JIT compile-time evaluation, 229 end-to-end execution,
   10 parser, 3 spec-example conformance).
-- Spec tests read Draft 1.161 directly: 102 `novasharp` fences; all parse except
+- Spec tests read Draft 1.162 directly: 102 `novasharp` fences; all parse except
   five documented syntax fragments; every complete `Main` example compiles; the
   demonstration-only semantic-failure set is pinned
   (`3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`).
 
-## Draft 1.161 migration so far
+## Draft 1.162 migration so far
 
-- Sections/anchors/examples moved from 1.153 to 1.161.
+- Sections/anchors/examples moved from 1.153 to 1.162.
 - Removed old `illegal` / `infinite` keywords and literals; added
   `float(4/8).NotANumber`, `float(4/8).Infinite`, negative infinity and the
   `is float(N).NotANumber` `FloatSpecialTarget` (codegen `fcmp uno`).
@@ -69,7 +69,7 @@
   bodies, generics and EnvironmentFacts specialization.
 - `src/codegen.rs` — inkwell lowering (metadata/vtables/interfaces, heap,
   dispose, operators, accessors, traps, inline asm, UEFI helpers).
-- `docs/COVERAGE.md` — Draft 1.161 section matrix and deviations.
+- `docs/COVERAGE.md` — Draft 1.162 section matrix and deviations.
 - `docs/AUDIT.md` — reproduced conformance defects/fixes (197 entries).
 - `docs/CONFORMANCE.md` — concise final evidence report.
 - `docs/spec-notes/` — spec extracts and known inconsistencies.

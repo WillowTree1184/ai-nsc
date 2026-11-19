@@ -1,4 +1,4 @@
-# Draft 1.161 specification inconsistencies
+# Draft 1.162 specification inconsistencies
 
 The specification is a moving draft. This file records the places where a
 literal reading of the grammar contradicts the prose or the spec's own examples,

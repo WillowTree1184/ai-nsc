@@ -1,6 +1,6 @@
-# Draft 1.161 conformance evidence
+# Draft 1.162 conformance evidence
 
-Authoritative specification: `docs/grammar/Draft 1.161.md`.
+Authoritative specification: `docs/grammar/Draft 1.162.md`.
 
 ## Verification gates
 
@@ -26,7 +26,7 @@ Current result: **429 tests green**, formatting clean, clippy with zero warnings
 
 ## Specification examples
 
-`tests/spec_examples.rs` reads Draft 1.161 directly:
+`tests/spec_examples.rs` reads Draft 1.162 directly:
 
 - 102 `novasharp` fenced blocks are discovered;
 - all parse except five documented non-program syntax fragments;
@@ -35,7 +35,7 @@ Current result: **429 tests green**, formatting clean, clippy with zero warnings
   `3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`, so a new semantic
   failure cannot hide among skipped examples.
 
-## Draft 1.161 new-feature evidence
+## Draft 1.162 new-feature evidence
 
 | Area | Evidence |
 | --- | --- |
@@ -67,4 +67,4 @@ constructor/destructor bodies and non-scalar fields; non-function interface
 constant contracts. NOLAA conservatism is required by §12.2 and is not a
 deviation.
 
-Audit history: `docs/AUDIT.md` (198 reproduced defects/fixes).
+Audit history: `docs/AUDIT.md` (199 reproduced defects/fixes).

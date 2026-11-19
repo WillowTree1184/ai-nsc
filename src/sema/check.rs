@@ -166,6 +166,7 @@ impl<'a> Sema<'a> {
             }
             NodeKind::FunctionType(function) => {
                 let mut parameters = Vec::new();
+                let mut contracts = Vec::new();
                 for parameter in &function.parameters {
                     // `array(Name: Type) T` expands to a pointer parameter and the
                     // binding types in a function type (§3.6.1, §8.2).
@@ -178,19 +179,24 @@ impl<'a> Sema<'a> {
                             {
                                 let element = self.resolve_type(array.element)?;
                                 parameters.push(self.result.types.pointer(Some(element)));
+                                contracts.push((parameter.compile_time, false));
                                 for dimension in &array.dimensions {
                                     let crate::ast::ArrayDimension::Binding { ty, .. } = dimension
                                     else {
                                         continue;
                                     };
                                     parameters.push(self.resolve_type(*ty)?);
+                                    contracts.push((parameter.compile_time, false));
                                 }
                                 continue;
                             }
                         }
                     }
                     match parameter.ty {
-                        Some(ty) => parameters.push(self.resolve_type(ty)?),
+                        Some(ty) => {
+                            parameters.push(self.resolve_type(ty)?);
+                            contracts.push((parameter.compile_time, parameter.by_ref));
+                        }
                         None => {
                             self.error(parameter.span, "function type parameter requires a type");
                             return None;
@@ -205,6 +211,7 @@ impl<'a> Sema<'a> {
                     self.resolve_calling_convention(function.calling_convention);
                 Some(self.result.types.function(
                     parameters,
+                    contracts,
                     function.wildcard,
                     calling_convention,
                     return_type,
@@ -3760,6 +3767,14 @@ impl<'a> Sema<'a> {
             }
         }
         None
+    }
+
+    /// The `#`/`&` contracts of a resolved parameter list, in order.
+    fn parameter_contracts(parameters: &[ParameterInfo]) -> Vec<(bool, bool)> {
+        parameters
+            .iter()
+            .map(|parameter| (parameter.compile_time, parameter.by_ref))
+            .collect()
     }
 
     pub(crate) fn parameter_spellings(&self, parameters: &[ParameterInfo]) -> Vec<String> {
@@ -8492,8 +8507,12 @@ impl<'a> Sema<'a> {
                             .map(|parameter| parameter.ty)
                             .collect::<Vec<_>>();
                         let return_type = self.result.functions[index as usize].return_type;
+                        let contracts = Self::parameter_contracts(
+                            &self.result.functions[index as usize].parameters,
+                        );
                         Some(self.result.types.function(
                             parameters,
+                            contracts,
                             false,
                             self.result.functions[index as usize].calling_convention,
                             return_type,
@@ -8926,8 +8945,11 @@ impl<'a> Sema<'a> {
                     .map(|parameter| parameter.ty)
                     .collect::<Vec<_>>();
                 let return_type = self.result.functions[index as usize].return_type;
+                let contracts =
+                    Self::parameter_contracts(&self.result.functions[index as usize].parameters);
                 Some(self.result.types.function(
                     parameters,
+                    contracts,
                     false,
                     self.result.functions[index as usize].calling_convention,
                     return_type,
@@ -9019,8 +9041,12 @@ impl<'a> Sema<'a> {
                         .map(|parameter| parameter.ty)
                         .collect::<Vec<_>>();
                     let return_type = self.result.functions[index as usize].return_type;
+                    let contracts = Self::parameter_contracts(
+                        &self.result.functions[index as usize].parameters,
+                    );
                     return Some(self.result.types.function(
                         parameters,
+                        contracts,
                         false,
                         self.result.functions[index as usize].calling_convention,
                         return_type,
@@ -10388,6 +10414,7 @@ impl<'a> Sema<'a> {
         let calling_convention = self.resolve_calling_convention(literal.calling_convention);
         let function_type = self.result.types.function(
             parameters.iter().map(|parameter| parameter.ty).collect(),
+            Self::parameter_contracts(&parameters),
             false,
             calling_convention,
             return_type,

@@ -1096,6 +1096,7 @@ impl SemaResult {
             }
             Type::Function {
                 parameters,
+                contracts,
                 wildcard,
                 calling_convention,
                 return_type,
@@ -1104,6 +1105,14 @@ impl SemaResult {
                 for (position, parameter) in parameters.iter().enumerate() {
                     if position > 0 {
                         out.push(',');
+                    }
+                    let (compile_time, by_ref) =
+                        contracts.get(position).copied().unwrap_or((false, false));
+                    if compile_time {
+                        out.push('#');
+                    }
+                    if by_ref {
+                        out.push('&');
                     }
                     self.write_spelling(*parameter, out);
                 }

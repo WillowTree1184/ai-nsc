@@ -3504,3 +3504,35 @@ fn unannotated_assembly_is_a_memory_and_flag_barrier() {
         assert!(ir.contains(clobber), "missing {clobber} in\n{ir}");
     }
 }
+
+#[test]
+fn function_type_contracts_participate_in_equality() {
+    let mismatch = check_source(
+        "\
+fixed Plain(value: integer(4)): integer(4)
+{
+    return value;
+}
+
+fixed Main(): integer(4)
+{
+    local plain: function(integer(4)) integer(4) = Plain;
+    local compile_time: function(#integer(4)) integer(4) = plain;
+    return compile_time(1);
+}",
+    );
+    assert!(
+        mismatch.contains("expected 'function(#integer(4))integer(4)'"),
+        "{mismatch}"
+    );
+    let same = check_source_ok(
+        "\
+fixed Main(): integer(4)
+{
+    local first: function(#integer(4)) integer(4);
+    local second: function(#integer(4)) integer(4) = first;
+    return 0;
+}",
+    );
+    assert!(same.is_empty(), "{same}");
+}

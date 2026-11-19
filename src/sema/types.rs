@@ -55,9 +55,12 @@ pub enum Type {
     },
     /// `function(params) return`.
     Function {
-        /// Parameter types (parameter names, defaults and `&` are not part of
-        /// the type, §3.6.3).
+        /// Parameter types (base types; names/defaults are not part of the
+        /// type, §3.6.3).
         parameters: Vec<TypeId>,
+        /// Per-parameter contract markers (`#` compile-time, `&` by-reference),
+        /// which Draft 1.153 §3.6.3 requires to participate in type equality.
+        contracts: Vec<(bool, bool)>,
         /// Whether the parameter list ends in `wildcard`.
         wildcard: bool,
         /// Explicit calling convention, if written.
@@ -220,12 +223,14 @@ impl TypeStore {
     pub fn function(
         &mut self,
         parameters: Vec<TypeId>,
+        contracts: Vec<(bool, bool)>,
         wildcard: bool,
         calling_convention: Option<i32>,
         return_type: Option<TypeId>,
     ) -> TypeId {
         self.intern(Type::Function {
             parameters,
+            contracts,
             wildcard,
             calling_convention,
             return_type,
@@ -278,6 +283,7 @@ impl TypeStore {
             }
             Type::Function {
                 parameters,
+                contracts,
                 wildcard,
                 calling_convention,
                 return_type,
@@ -286,6 +292,14 @@ impl TypeStore {
                 for (index, parameter) in parameters.iter().enumerate() {
                     if index > 0 {
                         out.push(',');
+                    }
+                    let (compile_time, by_ref) =
+                        contracts.get(index).copied().unwrap_or((false, false));
+                    if compile_time {
+                        out.push('#');
+                    }
+                    if by_ref {
+                        out.push('&');
                     }
                     self.write_spelling(*parameter, out);
                 }
@@ -405,7 +419,13 @@ mod tests {
         assert_eq!(types.spelling(array), "array(3)integer(4)");
         let pointer = types.pointer(Some(integer));
         assert_eq!(types.spelling(pointer), "pointerinteger(4)");
-        let function = types.function(vec![integer], false, None, Some(integer));
+        let function = types.function(
+            vec![integer],
+            vec![(false, false)],
+            false,
+            None,
+            Some(integer),
+        );
         assert_eq!(types.spelling(function), "function(integer(4))integer(4)");
     }
 }

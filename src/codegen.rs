@@ -6608,6 +6608,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     wildcard,
                     return_type,
                     calling_convention,
+                    ..
                 } = self.sema.types.get(callee_type).clone()
                 else {
                     return Err("call target is not callable".to_string());

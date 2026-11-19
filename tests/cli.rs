@@ -535,8 +535,8 @@ fn array_pointer_conversion_warns_without_failing() {
 fixed Main(): integer(4)
 {
     local values[3]: integer(4) = { 1, 2, 3 };
-    local p: pointer integer(4) = Cast<pointer integer(4)>(values);
-    return Cast<integer(4)>(p[1]);
+    local p: pointer integer(4) = (values as pointer integer(4));
+    return (p[1] as integer(4));
 }",
     )
     .expect("write program");
@@ -671,9 +671,9 @@ fn pointer_to_pointer_conversion_warns_without_failing() {
 fixed Main(): integer(4)
 {
     local values[2]: integer(4) = { 1, 2 };
-    local p: pointer integer(4) = Cast<pointer integer(4)>(values);
-    local raw: pointer = Cast<pointer>(p);
-    return Cast<integer(4)>(Cast<pointer integer(4)>(raw)[1]);
+    local p: pointer integer(4) = (values as pointer integer(4));
+    local raw: pointer = (p as pointer);
+    return ((raw as pointer integer(4))[1] as integer(4));
 }",
     )
     .expect("write program");
@@ -697,8 +697,8 @@ fn array_cast_between_different_byte_sizes_is_diagnosed() {
 fixed Main(): integer(4)
 {
     local words[2]: cardinal(4) = { 7, 0 };
-    local bytes: array(3) cardinal(2) = Cast<array(3) cardinal(2)>(words);
-    return Cast<integer(4)>(bytes[0]);
+    local bytes: array(3) cardinal(2) = (words as array(3) cardinal(2));
+    return (bytes[0] as integer(4));
 }",
     );
     assert!(stderr.contains("different byte sizes"), "{stderr}");
@@ -1526,14 +1526,14 @@ extension for array(length: integer(4)) T
 {
     public fixed Size(this: &array(length) T): cardinal(4)
     {
-        return Cast<cardinal(4)>(length);
+        return (length as cardinal(4));
     }
 }
 
 fixed Main(): integer(4)
 {
     local values: array(3) integer(4);
-    return Cast<integer(4)>(values.Size());
+    return (values.Size() as integer(4));
 }",
     );
     assert!(
@@ -1983,7 +1983,7 @@ fixed Main(): integer(4) { return 0; }",
 #[test]
 fn compiler_api_is_restricted_to_compile_time_contexts() {
     let sizeof_direct = check_source(
-        "fixed Main(): integer(4)\n{\n    local size: cardinal(8) = Type.SizeOf<integer(4)>();\n    return Cast<integer(4)>(size);\n}",
+        "fixed Main(): integer(4)\n{\n    local size: cardinal(8) = Type.SizeOf<integer(4)>();\n    return (size as integer(4));\n}",
     );
     assert!(
         sizeof_direct.contains("through '#(...)' or '#if'"),
@@ -2022,7 +2022,7 @@ fn i686_type_sizeof_uses_pointer_width() {
     let source_path = directory.join("program.ns");
     std::fs::write(
         &source_path,
-        "fixed Main(): integer(4)\n{\n    local size: cardinal(4) = #(Type.SizeOf<integer(4)>());\n    return Cast<integer(4)>(size);\n}",
+        "fixed Main(): integer(4)\n{\n    local size: cardinal(4) = #(Type.SizeOf<integer(4)>());\n    return (size as integer(4));\n}",
     )
     .expect("write");
     let executable = directory.join("program");
@@ -2603,4 +2603,19 @@ fixed Main(): integer(4)
 }",
     );
     assert!(!stderr.contains("unexpected"), "{stderr}");
+}
+
+#[test]
+fn legacy_cast_syntax_is_rejected() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    return Cast<integer(4)>(1);
+}",
+    );
+    assert!(
+        stderr.contains("expected") || stderr.contains("unknown name 'Cast'"),
+        "{stderr}"
+    );
 }

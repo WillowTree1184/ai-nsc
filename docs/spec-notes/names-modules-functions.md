@@ -470,7 +470,7 @@ Forms (verbatim grammar in §2.3), as a matrix:
 - Keyword `implicitable` `[L8398]`; **only** conversion operators `[L8399–8400]` (XREF §4.9).
 - With `implicitable`, the conversion **MAY** be invoked implicitly `[L8404]`; without it, the conversion **MUST** be invoked only through a type-conversion expression `[L8405]`.
 - The implicit invocation **MAY** be lossy, i.e. it is **not** constrained by the losslessness rule for implicit conversions `[L8406]` (XREF §1.1).
-- Example `[L8410–8461]`: `implicitable operator HSLColor: function(from: RGBColor) HSLColor` `[L8418]`; non-implicitable conversion back to `RGBColor` `[L8432]`; `Cast<HSLColor>(rgb)` legal `[L8446]`; `local b: HSLColor = rgb;` legal `[L8449]`; `local bad: RGBColor = hsl;` illegal `[L8452–8453]`; `implicitable operator +` illegal `[L8459–8460]`.
+- Example `[L8410–8461]`: `implicitable operator HSLColor: function(from: RGBColor) HSLColor` `[L8418]`; non-implicitable conversion back to `RGBColor` `[L8432]`; `(rgb as HSLColor)` legal `[L8446]`; `local b: HSLColor = rgb;` legal `[L8449]`; `local bad: RGBColor = hsl;` illegal `[L8452–8453]`; `implicitable operator +` illegal `[L8459–8460]`.
 
 ### 3.19 `verbatim` (§9.8)
 

@@ -189,8 +189,6 @@ pub enum TokenKind {
     As,
     /// `extension`
     Extension,
-    /// `Cast`
-    Cast,
     /// `basic`
     Basic,
 
@@ -318,7 +316,7 @@ impl TokenKind {
     pub fn keyword(text: &str) -> Option<TokenKind> {
         use TokenKind::{
             Abstract, Accessor, Aligned, Array, As, Ascii, Base, Basic, Boolean, Break, Cardinal,
-            Case, Cast, Catch, Class, Continue, Dispose, Do, Else, Enumeration, Extension, False,
+            Case, Catch, Class, Continue, Dispose, Do, Else, Enumeration, Extension, False,
             Finally, Fixed, Float, For, Function, Heap, If, Illegal, Implicitable, In, Infinite,
             Integer, Interface, Is, Linkable, Local, Manual, Match, Module, Operator, Override,
             Owner, Pointer, Private, Protected, Public, Readonly, Return, Scoped, Sealed, Static,
@@ -396,7 +394,6 @@ impl TokenKind {
             "is" => Is,
             "as" => As,
             "extension" => Extension,
-            "Cast" => Cast,
             "basic" => Basic,
             _ => return None,
         })
@@ -478,7 +475,6 @@ impl TokenKind {
                 | Is
                 | As
                 | Extension
-                | Cast
                 | Basic
         )
     }
@@ -630,7 +626,6 @@ impl TokenKind {
             Is => "is",
             As => "as",
             Extension => "extension",
-            Cast => "Cast",
             Basic => "basic",
             _ => return None,
         })
@@ -1316,10 +1311,10 @@ mod tests {
             ]
         );
         assert_eq!(
-            kinds("this owner base ascii utf8 utf16 utf32 ucs2 ucs4 wildcard true false illegal infinite uninitialized use is as extension Cast basic"),
+            kinds("this owner base ascii utf8 utf16 utf32 ucs2 ucs4 wildcard true false illegal infinite uninitialized use is as extension basic"),
             vec![
                 This, Owner, Base, Ascii, Utf8, Utf16, Utf32, Ucs2, Ucs4, Wildcard, True, False,
-                Illegal, Infinite, Uninitialized, Use, Is, As, Extension, Cast, Basic, Eof
+                Illegal, Infinite, Uninitialized, Use, Is, As, Extension, Basic, Eof
             ]
         );
         assert_eq!(

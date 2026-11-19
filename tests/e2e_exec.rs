@@ -513,8 +513,8 @@ fixed Main(): integer(4)
 {
     local pixel: Pixel = Pixel.Packed(0x01020304);
     local packed: cardinal(4) = pixel.Packed;
-    local first: integer(4) = Cast<integer(4)>(pixel.Channels[0]);
-    local low: integer(4) = Cast<integer(4)>(packed % 256);
+    local first: integer(4) = (pixel.Channels[0] as integer(4));
+    local low: integer(4) = (packed % 256 as integer(4));
     return low + first;
 }";
     // Little-endian: the first channel is the low byte 0x04 = 4, so 4 + 4 = 8.
@@ -862,7 +862,7 @@ structure Fahrenheit
 fixed Main(): integer(4)
 {
     local celsius: Celsius = Celsius(100);
-    local fahrenheit: Fahrenheit = Cast<Fahrenheit>(celsius);
+    local fahrenheit: Fahrenheit = (celsius as Fahrenheit);
     return fahrenheit.Degrees;   // 212
 }";
     assert_eq!(run_program(source), 212);
@@ -1162,8 +1162,8 @@ fixed Main(): integer(4)
     box.Value = 42;
     local other: Box<cardinal(8)>;
     other.Value = 7;
-    local sum: integer(8) = Cast<integer(8)>(other.Value);
-    return box.Get() + Cast<integer(4)>(sum);
+    local sum: integer(8) = (other.Value as integer(8));
+    return box.Get() + (sum as integer(4));
 }";
     assert_eq!(run_program(source), 49);
 }
@@ -1180,7 +1180,7 @@ fixed Main(): integer(4)
 {
     local a: integer(4) = Echo<integer(4)>(7);
     local b: cardinal(8) = Echo<cardinal(8)>(5);
-    return a + Cast<integer(4)>(b);
+    return a + (b as integer(4));
 }";
     assert_eq!(run_program(source), 12);
 }
@@ -1446,10 +1446,10 @@ fixed Main(): integer(4)
 {
     local state: Status = Status.Done;
     local raw: cardinal(2) = state;
-    local back: Status = Cast<Status>(raw);
-    return Cast<integer(4)>(ReturnShort())
-        + Cast<integer(4)>(Status.Idle)
-        + Cast<integer(4)>(back);
+    local back: Status = (raw as Status);
+    return (ReturnShort() as integer(4))
+        + (Status.Idle as integer(4))
+        + (back as integer(4));
 }";
     // Running = 1, Idle = 0, back = Done = 7.
     assert_eq!(run_program(source), 8);
@@ -1604,9 +1604,9 @@ fn array_pointer_casts_reference_the_same_storage() {
 fixed Main(): integer(4)
 {
     local values[3]: integer(4) = { 1, 2, 3 };
-    local p: pointer integer(4) = Cast<pointer integer(4)>(values);
+    local p: pointer integer(4) = (values as pointer integer(4));
     p[0] = 42;
-    Cast<array(3) integer(4)>(p)[1] = 7;
+    (p as array(3) integer(4))[1] = 7;
     return values[0] + values[1] + p[2];
 }";
     assert_eq!(run_program(source), 52);
@@ -1617,8 +1617,8 @@ fn float_to_integer_cast_wraps_out_of_range_values() {
     let source = "\
 fixed Main(): integer(4)
 {
-    local wide: float(8) = Cast<float(8)>(300);
-    return Cast<integer(4)>(Cast<integer(1)>(wide));
+    local wide: float(8) = (300 as float(8));
+    return ((wide as integer(1)) as integer(4));
 }";
     // 300 wraps modulo 256 to 44 (§3.2).
     assert_eq!(run_program(source), 44);
@@ -1630,7 +1630,7 @@ fn byte_escapes_are_raw_bytes() {
 fixed Main(): integer(4)
 {
     local bytes: array(2) cardinal(1) = \"\\xFF\\x41\";
-    return Cast<integer(4)>(bytes[0]) + Cast<integer(4)>(bytes[1]);
+    return (bytes[0] as integer(4)) + (bytes[1] as integer(4));
 }";
     // 0xFF + 0x41 = 320, truncated to the process exit code.
     assert_eq!(run_program(source), 320 % 256);
@@ -1642,15 +1642,15 @@ fn pointer_arithmetic_uses_the_pointee_size() {
 fixed Main(): integer(4)
 {
     local values[4]: integer(4) = { 10, 20, 30, 40 };
-    local first: pointer integer(4) = Cast<pointer integer(4)>(values);
+    local first: pointer integer(4) = (values as pointer integer(4));
     local second: pointer integer(4) = first + 1;
     local third: pointer integer(4) = 1 + second;
     local back: pointer integer(4) = third - 1;
     local count: integer(8) = third - first;
-    return Cast<integer(4)>(second[0])
-        + Cast<integer(4)>(third[0])
-        + Cast<integer(4)>(back[0])
-        + Cast<integer(4)>(count);
+    return (second[0] as integer(4))
+        + (third[0] as integer(4))
+        + (back[0] as integer(4))
+        + (count as integer(4));
 }";
     // 20 + 30 + 20 + 2
     assert_eq!(run_program(source), 72);
@@ -1708,7 +1708,7 @@ fixed Main(): integer(4)
     {
         local a: integer(8) = 3;
         local d: integer(4) = owner.owner.a;
-        b = b + Cast<integer(4)>(owner.a);
+        b = b + (owner.a as integer(4));
         return b + c * 10 + d * 100;
     }
 }";
@@ -1955,10 +1955,10 @@ fn pointer_compound_assignment_scales_by_the_pointee_size() {
 fixed Main(): integer(4)
 {
     local values[4]: integer(4) = { 10, 20, 30, 40 };
-    local p: pointer integer(4) = Cast<pointer integer(4)>(values);
+    local p: pointer integer(4) = (values as pointer integer(4));
     p += 2;
     p -= 1;
-    return Cast<integer(4)>(p[0]);
+    return (p[0] as integer(4));
 }";
     assert_eq!(run_program(source), 20);
 }
@@ -1996,7 +1996,7 @@ fixed Main(): integer(4)
 {
     local size: cardinal(8) = #(Type.SizeOf<Vector3>());
     local int_size: cardinal(8) = #(Type.SizeOf<integer(4)>());
-    return Cast<integer(4)>(size) + Cast<integer(4)>(int_size);
+    return (size as integer(4)) + (int_size as integer(4));
 }";
     assert_eq!(run_program(source), 16);
 }
@@ -2015,7 +2015,7 @@ fixed Main(): integer(4)
 {
     local size: cardinal(8) = #(Type.SizeOf<Vector3>());
     local sum: integer(4) = #(1 + 2 * 3);
-    return Cast<integer(4)>(size) + sum;
+    return (size as integer(4)) + sum;
 }";
     assert_eq!(run_program(source), 19);
 }
@@ -2026,8 +2026,8 @@ fn fixed_array_shapes_convert_explicitly() {
 fixed Main(): integer(4)
 {
     local words[2]: cardinal(4) = { 7, 0 };
-    local bytes: array(4) cardinal(2) = Cast<array(4) cardinal(2)>(words);
-    return Cast<integer(4)>(bytes[0]) + Cast<integer(4)>(bytes[1]);
+    local bytes: array(4) cardinal(2) = (words as array(4) cardinal(2));
+    return (bytes[0] as integer(4)) + (bytes[1] as integer(4));
 }";
     assert_eq!(run_program(source), 7);
 }
@@ -2144,8 +2144,8 @@ fixed Main(): integer(4)
 {
     local mark: boolean = #(Flag);
     local ratio: float(8) = #(Pi * 2.0);
-    local casted: integer(4) = #(Cast<integer(4)>(3.9));
-    if (mark) { return casted + Cast<integer(4)>(ratio); }
+    local casted: integer(4) = #((3.9 as integer(4)));
+    if (mark) { return casted + (ratio as integer(4)); }
     return 0;
 }";
     assert_eq!(run_program(source), 10);
@@ -2157,13 +2157,13 @@ fn array_parameter_sugar_expands_to_pointer_and_length() {
 fixed FirstByte(message[length: cardinal(4)]: cardinal(1)): integer(4)
 {
     if (length < 1) { return 0; }
-    return Cast<integer(4)>(message[0]);
+    return (message[0] as integer(4));
 }
 
 fixed Main(): integer(4)
 {
     local text[3]: cardinal(1) = { 97, 98, 99 };
-    return FirstByte(Cast<pointer cardinal(1)>(text), 3);
+    return FirstByte((text as pointer cardinal(1)), 3);
 }";
     assert_eq!(run_program(source), 97);
 }
@@ -2779,9 +2779,9 @@ class ArenaAllocator : IAllocator
         public fixed Allocate(this: &ArenaAllocator, size: cardinal(8), alignment: cardinal(8)): Result<pointer; AllocateFailedException>
         {
             local origin: pointer integer(1) = &this.Buffer[0];
-            local address: pointer integer(1) = origin + Cast<integer(8)>(this.Offset);
+            local address: pointer integer(1) = origin + (this.Offset as integer(8));
             this.Offset += size;
-            return Result<pointer; AllocateFailedException>.Value(Cast<pointer>(address));
+            return Result<pointer; AllocateFailedException>.Value((address as pointer));
         }
 
         public fixed Deallocate(this: &ArenaAllocator, block: pointer): Result<; DeallocateFailedException>
@@ -2837,7 +2837,7 @@ fixed Main(): integer(4)
     {
         caught = 2;
     }
-    return result + Cast<integer(4)>(Arena.Offset) + caught;
+    return result + (Arena.Offset as integer(4)) + caught;
 }";
     // 7 + 4 + two 4-byte node allocations + the caught failure path
     assert_eq!(run_program(source), 21);
@@ -3038,9 +3038,9 @@ class CountingAllocator : IAllocator
         public fixed Allocate(this: &CountingAllocator, size: cardinal(8), alignment: cardinal(8)): Result<pointer; AllocateFailedException>
         {
             local origin: pointer integer(1) = &Arena.Buffer[0];
-            local address: pointer integer(1) = origin + Cast<integer(8)>(Arena.Offset);
+            local address: pointer integer(1) = origin + (Arena.Offset as integer(8));
             Arena.Offset += size;
-            return Result<pointer; AllocateFailedException>.Value(Cast<pointer>(address));
+            return Result<pointer; AllocateFailedException>.Value((address as pointer));
         }
 
         public fixed Deallocate(this: &CountingAllocator, block: pointer): Result<; DeallocateFailedException>
@@ -3221,7 +3221,7 @@ fixed Main(): integer(4)
 {
     local natural: cardinal(8) = #(Type.SizeOf<Natural>());
     local packed: cardinal(8) = #(Type.SizeOf<Packed>());
-    return Cast<integer(4)>(natural) * 10 + Cast<integer(4)>(packed);
+    return (natural as integer(4)) * 10 + (packed as integer(4));
 }";
     // natural: 8 bytes; packed: 5 bytes
     assert_eq!(run_program(source), 85);
@@ -3242,7 +3242,7 @@ fixed Main(): integer(4)
     word.A = 0x01020304;
     local low_byte: cardinal(1) = word.B;
     word.B = 0xFF;
-    local high_byte: integer(4) = (Cast<integer(4)>(word.A) >> 16) & 0xFF;
+    local high_byte: integer(4) = ((word.A as integer(4)) >> 16) & 0xFF;
     local score: integer(4) = 0;
     if (low_byte == 0x02) { score += 1; }
     if (high_byte == 0xFF) { score += 2; }
@@ -3403,7 +3403,7 @@ fixed Main(): integer(4)
     local sum: integer(4) = 0;
     for value: integer(1) in values
     {
-        sum += Cast<integer(4)>(value);
+        sum += (value as integer(4));
     }
     return total + sum;
 }";
@@ -3538,8 +3538,8 @@ fn compile_time_expressions_emit_their_end_products() {
 fixed Main(): integer(4)
 {
     local value: integer(4) = #(2 + 3);
-    local other: integer(8) = #(Cast<integer(8)>(7) * 2);
-    return value + Cast<integer(4)>(other);
+    local other: integer(8) = #((7 as integer(8)) * 2);
+    return value + (other as integer(4));
 }";
     // (2+3) + (7*2)
     assert_eq!(run_program(source), 19);
@@ -3552,7 +3552,7 @@ extension for array(length: cardinal(4)) T
 {
     public fixed Size(this: &array(length) T): cardinal(4)
     {
-        return Cast<cardinal(4)>(length);
+        return (length as cardinal(4));
     }
 }
 
@@ -3560,7 +3560,7 @@ fixed Main(): integer(4)
 {
     local values: array(3) integer(4) = { 1, 2, 3 };
     local letters: array(5) cardinal(4) = { 1, 2, 3, 4, 5 };
-    return Cast<integer(4)>(values.Size()) + Cast<integer(4)>(letters.Size());
+    return (values.Size() as integer(4)) + (letters.Size() as integer(4));
 }";
     // 3 + 5
     assert_eq!(run_program(source), 8);
@@ -3573,7 +3573,7 @@ extension for array(length: cardinal(4)) T
 {
     public accessor Size: cardinal(4)
     {
-        get = (this: &array(length) T) cardinal(4) => { return Cast<cardinal(4)>(length); }
+        get = (this: &array(length) T) cardinal(4) => { return (length as cardinal(4)); }
     }
 }
 
@@ -3581,7 +3581,7 @@ fixed Main(): integer(4)
 {
     local values: array(4) integer(4) = { 1, 2, 3, 4 };
     local letters: array(7) integer(4) = { 1, 2, 3, 4, 5, 6, 7 };
-    return Cast<integer(4)>(values.Size) + Cast<integer(4)>(letters.Size);
+    return (values.Size as integer(4)) + (letters.Size as integer(4));
 }";
     // 4 + 7
     assert_eq!(run_program(source), 11);
@@ -3594,7 +3594,7 @@ extension for array(length: cardinal(4)) T
 {
     operator +(left: array(length) T, right: array(length) T): integer(4)
     {
-        return Cast<integer(4)>(length) * 2;
+        return (length as integer(4)) * 2;
     }
 }
 
@@ -3802,7 +3802,7 @@ extension for array(length: cardinal(4)) T
 {
     operator ==(left: array(length) T, right: array(length) T): boolean
     {
-        return Cast<integer(8)>(length) == 3;
+        return (length as integer(8)) == 3;
     }
 }
 
@@ -4102,7 +4102,7 @@ fixed Main(): integer(4)
 #[test]
 fn right_shift_is_logical_for_signed_integers() {
     let source = "\
-fixed Shifted: integer(4) = Cast<integer(4)>(-1) >> 1;
+fixed Shifted: integer(4) = (-1 as integer(4)) >> 1;
 
 fixed Main(): integer(4)
 {
@@ -4129,9 +4129,9 @@ fixed Main(): integer(4)
     local huge: float(8) = 2147483648.0;
     local negative: float(8) = -2147483904.0;
     local score: integer(4) = 0;
-    if (Cast<integer(4)>(not_a_number) == 0) { score += 1; }
-    if (Cast<integer(4)>(huge) == -2147483648) { score += 2; }
-    if (Cast<integer(4)>(negative) == 2147483392) { score += 4; }
+    if ((not_a_number as integer(4)) == 0) { score += 1; }
+    if ((huge as integer(4)) == -2147483648) { score += 2; }
+    if ((negative as integer(4)) == 2147483392) { score += 4; }
     return score;
 }";
     // out-of-range conversions wrap (§3.2); NaN is deterministic
@@ -4461,8 +4461,8 @@ fn compile_time_functions_use_the_jit_for_full_language_bodies() {
     let source = "\
 fixed Halved(value: integer(4)): integer(4)
 {
-    local scaled: float(8) = Cast<float(8)>(value) / 2.0;
-    return Cast<integer(4)>(scaled);
+    local scaled: float(8) = (value as float(8)) / 2.0;
+    return (scaled as integer(4));
 }
 
 #{
@@ -4590,7 +4590,7 @@ fn array_parameter_expansion_works_in_function_types_and_literals() {
 fixed Apply(handler: function(message[length: cardinal(4)]: cardinal(1)) integer(4)): integer(4)
 {
     local bytes: array(3) cardinal(1) = \"\\x01\\x02\\x03\";
-    return handler(Cast<pointer cardinal(1)>(bytes), 3);
+    return handler((bytes as pointer cardinal(1)), 3);
 }
 
 fixed Main(): integer(4)
@@ -4598,7 +4598,7 @@ fixed Main(): integer(4)
     return Apply(
         (array(length: cardinal(4)) cardinal(1)) integer(4) =>
         {
-            return Cast<integer(4)>(length);
+            return (length as integer(4));
         });
 }";
     assert_eq!(run_program(source), 3);
@@ -4683,7 +4683,7 @@ fixed Main(): integer(4)
     local o = Vector3(0, 0, 0);
     local p = Vector3(1.5, 2.5, 3.5);
     if (o.X != 0.0) { return 1; }
-    return Cast<integer(4)>(p.X) + Cast<integer(4)>(p.Y) + Cast<integer(4)>(p.Z);
+    return (p.X as integer(4)) + (p.Y as integer(4)) + (p.Z as integer(4));
 }";
     // 1 + 2 + 3
     assert_eq!(run_program(source), 6);
@@ -4761,7 +4761,7 @@ fixed Main(): integer(4)
     a <<<= 1;
     if (a != c) { return 1; }
     if (f != 100.0) { return 2; }
-    return Cast<integer(4)>(c) * 10 + Cast<integer(4)>(d);
+    return (c as integer(4)) * 10 + (d as integer(4));
 }";
     // c = 0b00000011 = 3, d = 0b11000000 = 192 -> 3*10 + 192 = 222.
     assert_eq!(run_program(source), 222);

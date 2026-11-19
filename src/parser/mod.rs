@@ -2388,7 +2388,6 @@ impl<'a> Parser<'a> {
                 | TokenKind::Caret
                 | TokenKind::Ampersand
                 | TokenKind::Star
-                | TokenKind::Cast
                 | TokenKind::Hash
         ) || (self.peek_kind().is_keyword() && !self.at(TokenKind::Eof))
     }

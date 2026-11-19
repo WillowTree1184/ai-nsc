@@ -471,11 +471,11 @@ local DoNothing() = () => { };
 
 // 合法：显式转换为浮点
 local i: integer(4) = 100;
-local f: float(8) = Cast<float(8)>(i);
+local f: float(8) = (i as float(8));
 
 // 合法：显式转换为布尔
 local zero: integer(4) = 0;
-local b: boolean = Cast<boolean>(zero); // false
+local b: boolean = (zero as boolean); // false
 
 // 非法：省略括号
 // local bad: integer = 42;
@@ -538,10 +538,10 @@ fixed LogNote(message[length: cardinal(4)]: cardinal(1))
 }
 
 // 合法：数组显式转指针
-local p: pointer integer(4) = Cast<pointer integer(4)>(arr);
+local p: pointer integer(4) = (arr as pointer integer(4));
 
 // 合法：指针显式转定长数组
-local back: array(5) integer(4) = Cast<array(5) integer(4)>(p);
+local back: array(5) integer(4) = (p as array(5) integer(4));
 
 // 非法：数组大小为负
 // local bad: array(-1) integer(4);
@@ -558,7 +558,7 @@ local p: pointer integer(4);
 local raw: pointer;
 
 // 合法：指针类型转换
-local pf: pointer float(4) = Cast<pointer float(4)>(p);
+local pf: pointer float(4) = (p as pointer float(4));
 
 // 非法：省略目标类型的指针解引用
 // local pv: pointer;
@@ -616,7 +616,7 @@ local Cdecl: function(value: integer(4); CDeclaration);
 local CdeclEmpty: function(; CDeclaration);
 
 // 合法：将 function(wildcard) 类型转换为 function(boolean) 类型
-local Foo: function(value: boolean) = Cast<function(boolean)>(AnyArgs);
+local Foo: function(value: boolean) = (AnyArgs as function(boolean));
 // 危险：该转换不校验目标签名
 
 // 合法：推断出的函数类型保留参数名
@@ -625,7 +625,7 @@ fixed anotherFunction(a: integer(4)): integer(4)
     return a;
 }
 
-local foo = Cast<function(a: integer(4))>(anotherFunction);
+local foo = (anotherFunction as function(a: integer(4)));
 // foo 的类型为 function(a: integer(4))
 
 // 非法：省略参数类型标注
@@ -900,7 +900,7 @@ local s: Status = Status.Running;
 local i: integer(4) = s;
 
 // 合法：显式转换
-local another: Status = Cast<Status>(2);
+local another: Status = (2 as Status);
 
 // 非法：成员值重复
 // enumeration Bad: integer(4)
@@ -1308,11 +1308,11 @@ fixed Main(): integer(4)
     local a: integer(4) = 5;
 
     // 合法：基本类型之间的显式转换
-    local b: integer(2) = Cast<integer(2)>(a);
+    local b: integer(2) = (a as integer(2));
 
     // 合法：布尔到数值的显式转换
     local flag: boolean = true;
-    local n: integer(4) = Cast<integer(4)>(flag); // 1
+    local n: integer(4) = (flag as integer(4)); // 1
 
     return 0;
 }
@@ -1339,7 +1339,7 @@ structure RGBColor
 
 // 合法：优先选取用户定义的转换运算符
 local hsl: HSLColor = HSLColor();
-local rgb: RGBColor = Cast<RGBColor>(hsl);
+local rgb: RGBColor = (hsl as RGBColor);
 ```
 
 ## 4.5 函数调用表达式  (spec line 3931)
@@ -3279,7 +3279,7 @@ fixed Main(): integer(4)
     local hsl: HSLColor = HSLColor();
 
     // 合法：经类型转换表达式调用
-    local a: HSLColor = Cast<HSLColor>(rgb);
+    local a: HSLColor = (rgb as HSLColor);
 
     // 合法：经隐式转换调用
     local b: HSLColor = rgb;

@@ -344,7 +344,6 @@ impl<'a> Parser<'a> {
                 self.bump();
                 Some(self.ast.push(span, NodeKind::Base))
             }
-            TokenKind::Cast => self.parse_cast(),
             TokenKind::Hash => self.parse_compile_time_expression(),
             TokenKind::LeftBrace => self.parse_array_literal(),
             TokenKind::LeftParen => self.parse_parenthesis_or_function_literal(),
@@ -354,22 +353,6 @@ impl<'a> Parser<'a> {
                 Some(self.ast.push(name_span, NodeKind::Name(NameExpr { name })))
             }
         }
-    }
-
-    fn parse_cast(&mut self) -> Option<NodeId> {
-        let start_token = self.position;
-        self.bump(); // Cast
-        self.expect(TokenKind::Less, "'<' after 'Cast'");
-        let type_ = self.parse_type()?;
-        self.expect(TokenKind::Greater, "'>' after cast type");
-        self.expect(TokenKind::LeftParen, "'(' after cast type");
-        let value = self.parse_expression()?;
-        self.expect(TokenKind::RightParen, "')' after cast operand");
-        let span = self.span_between(start_token, self.position);
-        Some(
-            self.ast
-                .push(span, NodeKind::Cast(CastExpr { type_, value })),
-        )
     }
 
     fn parse_compile_time_expression(&mut self) -> Option<NodeId> {

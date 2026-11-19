@@ -13,7 +13,7 @@
 | 4 | 表达式 | 3540–3629 | `Expression` sum type (34 alternatives); link table L3583–3617; **evaluation order** L3623–3628 |
 | 4.1 | 值表达式 | 3630–3659 | `Identifier` / `Literal` / access forms; identifier MUST be defined & accessible |
 | 4.2 | 括号表达式 | 3661–3676 | `( Expression )`; precedence override |
-| 4.3 | 类型转换表达式 | 3678–3750 | `Cast<Type>(Expression)`; conversion-operator priority; no implicit except `implicitable` |
+| 4.3 | 类型转换表达式 | 3678–3750 | `(Expression as Type)`; conversion-operator priority; no implicit except `implicitable` |
 | 4.4 | 访问表达式 | 3752–3772 | `.` and `->` declared; 4 alternatives |
 | 4.4.1 | 成员访问表达式 | 3773–3818 | source kinds; member resolution order; static/payload-less variant rules |
 | 4.4.2 | 指针成员访问表达式 | 3819–3852 | deref-then-access; typed pointee required; assignment overwrites storage |
@@ -672,7 +672,7 @@ Precedence levels are exactly the 16 rows of L4513–4528; **higher number = low
 
 ### 4.12 Illegal cases explicitly stated in this range
 
-- `Cast<T>(x)` where no explicit conversion exists → compiler error (L3700–3701).
+- `(x as T)` where no explicit conversion exists → compiler error (L3700–3701).
 - Member access: member not in source type/inheritance chain; module member not a module declaration; static member via instance; non-static via type; accessor via member access (L3811) → errors (L3796–3811).
 - Pointer member access on a non-pointer, untyped pointee, static member → error (L3838–3846).
 - Indexing a non-array type without an index accessor; non-cardinal index without conversion → error (L3867–3872). Out-of-bounds runtime → `OutOfRangeException` (L3893).
@@ -705,7 +705,7 @@ Precedence levels are exactly the 16 rows of L4513–4528; **higher number = low
 
 | # | Lines | Section | One-line description |
 |---|---|---|---|
-| 1 | 3711–3750 | 4.3 | `Cast<integer(2)>(a)`, bool→int cast, and user conversion operator `RGBColor(from: HSLColor)` preferred over builtin rules |
+| 1 | 3711–3750 | 4.3 | `(a as integer(2))`, bool→int cast, and user conversion operator `RGBColor(from: HSLColor)` preferred over builtin rules |
 | 2 | 3931–4010 | 4.5 | Calls: positional, default omission, named, reordered, mixed, reference parameter mutation, immediately-invoked function literal, zero-arg calls, pointer-to-function call, plus four commented illegal cases |
 | 3 | 4059–4108 | 4.6 | `Point(0,0)`, `Cat()` default ctor, assignment overwrite; illegal interface construction, arity mismatch, `heap Point(...)` |
 | 4 | 4156–4223 | 4.7 | Union `Pixel.RGBA(Color(...))`, heap+union, variant `Status.Loading(50)`, payload-less `Status.Done` as member value; illegal `Status.Done()`, wrong payload type, unknown member |
@@ -748,7 +748,7 @@ Precedence levels are exactly the 16 rows of L4513–4528; **higher number = low
 
 **OQ-13 (`-infinite` tokenization).** `InfinityTarget = [ "-" ] "infinite"` (L4236) makes `-` part of the **target**, not a `NegateExpression`; but `-infinite` is also legal as a standalone expression (`local lower: float(4) = -infinite;`, L4736) where it *is* the negate operator applied to the `infinite` literal (or a signed literal). *Proposed interpretation:* in `is` context, parse `-` as part of the target; elsewhere, unary negate. Whitespace is not constrained by the EBNF (OQ-14).
 
-**OQ-14 (whitespace in multi-token targets).** `"infinite"`, `"illegal"`, `Cast` and `is` are word tokens; the spec does not state whether `- infinite` (space) is a valid `InfinityTarget`, nor whether `Cast <T> (x)` is valid. *Proposed interpretation:* require the exact adjacency the examples show (`Cast<T>(x)`, `-infinite`, `a is B`); reject whitespace inside `Cast<...>` but allow it around `is` and after `-` — unspecified.
+**OQ-14 (whitespace in multi-token targets).** `"infinite"`, `"illegal"`, `Cast` and `is` are word tokens; the spec does not state whether `- infinite` (space) is a valid `InfinityTarget`, nor whether `Cast <T> (x)` is valid. *Proposed interpretation:* require the exact adjacency the examples show (`(x as T)`, `-infinite`, `a is B`); reject whitespace inside `Cast<...>` but allow it around `is` and after `-` — unspecified.
 
 **OQ-15 (index accessor applicability / array-with-indexer).** L3871 says the source type must be an array **or** carry an index accessor; L3876 says array → builtin. If a class/struct is an array type and also declares an indexer (not shown in range), the array builtin wins by L3876. *Proposed interpretation:* arrays can never have user indexers; indexers are only for class/structure types. Also: indexer parameter types are arbitrary (L4400), but the index expression type is constrained to cardinal/convertible (L3867) — that constraint should apply only to **builtin array** indexing; for indexers, applicability should be ordinary overload resolution. This is a real inconsistency: L3867 is stated unconditionally, yet L4400 allows any index parameter types.
 

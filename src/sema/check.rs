@@ -31,11 +31,12 @@ impl<'a> Sema<'a> {
         match self.node_kind(node).clone() {
             NodeKind::BasicType(basic) => self.resolve_basic_type(&basic),
             NodeKind::ArrayType(array) => {
+                enum DimensionValue {
+                    Size(u64),
+                    Runtime(NodeId),
+                }
                 let mut dimensions = Vec::new();
-                let mut runtime: Option<NodeId> = None;
-                let mut position = 0usize;
                 for dimension in &array.dimensions {
-                    position += 1;
                     match dimension {
                         ArrayDimension::Size(expression) => {
                             // A dimension may reference a bound dimension by name
@@ -54,34 +55,27 @@ impl<'a> Sema<'a> {
                                         })
                                     });
                                 if let Some(length) = bound {
-                                    dimensions.push(length);
+                                    dimensions.push(DimensionValue::Size(length));
                                     continue;
                                 }
                             }
                             if !self.is_compile_time_constant(*expression) {
                                 // Runtime dimensions are only allowed inside a
-                                // function body (§3.6.1), and only as the leading
-                                // dimension (the VLA value carries one length).
-                                if self.in_function_body && runtime.is_none() && position == 1 {
-                                    runtime = Some(*expression);
-                                    continue;
-                                }
-                                if self.in_function_body && runtime.is_none() {
-                                    self.unsupported(
+                                // function body (§3.6.1); any dimension position
+                                // may be runtime.
+                                if !self.in_function_body {
+                                    self.error(
                                         self.span_of(*expression),
-                                        "non-leading variable-length array dimensions",
+                                        "array size must be compile-time constant here",
                                     );
                                     return None;
                                 }
-                                self.error(
-                                    self.span_of(*expression),
-                                    "array size must be compile-time constant here",
-                                );
-                                return None;
+                                dimensions.push(DimensionValue::Runtime(*expression));
+                                continue;
                             }
                             let value = self.eval_const_int(*expression)?;
                             match u64::try_from(value) {
-                                Ok(size) => dimensions.push(size),
+                                Ok(size) => dimensions.push(DimensionValue::Size(size)),
                                 Err(_) => {
                                     self.error(
                                         self.span_of(*expression),
@@ -98,7 +92,7 @@ impl<'a> Sema<'a> {
                                 .rev()
                                 .find_map(|lengths| lengths.get(name).copied());
                             match bound {
-                                Some(length) => dimensions.push(length),
+                                Some(length) => dimensions.push(DimensionValue::Size(length)),
                                 None => {
                                     self.unsupported(
                                         self.span_of(node),
@@ -111,39 +105,56 @@ impl<'a> Sema<'a> {
                     }
                 }
                 let element = self.resolve_type(array.element)?;
-                if let Some(length_expression) = runtime {
-                    // Remaining (compile-time) dimensions form the element type,
-                    // e.g. `array(rows, 3) T` is a VLA of `array(3) T`.
-                    let element = if dimensions.is_empty() {
-                        element
-                    } else {
-                        self.result.types.array(dimensions, element)
-                    };
-                    let length_type = self.check_expr(length_expression, None)?;
-                    if !self.is_integer(length_type) {
-                        self.error(
-                            self.span_of(length_expression),
-                            "array length must be an integer or cardinal",
-                        );
-                        return None;
+                // Build the type from the innermost dimension outwards. A runtime
+                // dimension becomes a VLA level; compile-time dimensions before it
+                // form the outer array. `array(3, n) T` is therefore an array of
+                // three `{pointer, length}` VLA rows (§3.6.1).
+                let mut ty = element;
+                let mut known: Vec<u64> = Vec::new();
+                for dimension in dimensions.iter().rev() {
+                    match dimension {
+                        DimensionValue::Size(length) => known.insert(0, *length),
+                        DimensionValue::Runtime(expression) => {
+                            if !known.is_empty() {
+                                ty = self.result.types.array(known.clone(), ty);
+                                known.clear();
+                            }
+                            let length_type = self.check_expr(*expression, None)?;
+                            if !self.is_integer(length_type) {
+                                self.error(
+                                    self.span_of(*expression),
+                                    "array length must be an integer or cardinal",
+                                );
+                                return None;
+                            }
+                            ty = self.result.types.intern(Type::Vla {
+                                element: ty,
+                                length: length_type,
+                            });
+                        }
                     }
-                    return Some(self.result.types.intern(Type::Vla {
-                        element,
-                        length: length_type,
-                    }));
+                }
+                if !known.is_empty() {
+                    ty = self.result.types.array(known, ty);
                 }
                 // Nested fixed arrays are one array with combined dimensions
                 // (`array(3) array(4) T` == `array(3,4) T`, §3.6.1).
-                match self.result.types.get(element).clone() {
+                match self.result.types.get(ty).clone() {
                     Type::Array {
-                        dimensions: inner,
+                        dimensions: outer,
                         element: inner_element,
-                    } => {
-                        let mut combined = dimensions;
-                        combined.extend(inner);
-                        Some(self.result.types.array(combined, inner_element))
-                    }
-                    _ => Some(self.result.types.array(dimensions, element)),
+                    } => match self.result.types.get(inner_element).clone() {
+                        Type::Array {
+                            dimensions: inner,
+                            element: innermost,
+                        } => {
+                            let mut combined = outer;
+                            combined.extend(inner);
+                            Some(self.result.types.array(combined, innermost))
+                        }
+                        _ => Some(self.result.types.array(outer, inner_element)),
+                    },
+                    _ => Some(ty),
                 }
             }
             NodeKind::PointerType(target) => {
@@ -701,6 +712,15 @@ impl<'a> Sema<'a> {
         }
         self.resolve_pending_accessors();
         let _ = is_class;
+    }
+
+    /// Whether a type is or contains a variable-length array (§3.6.1).
+    fn type_contains_vla(&self, ty: TypeId) -> bool {
+        match self.result.types.get(ty) {
+            Type::Vla { .. } => true,
+            Type::Array { element, .. } => self.type_contains_vla(*element),
+            _ => false,
+        }
     }
 
     pub(crate) fn types_of(&self, ty: TypeId) -> Type {
@@ -6616,7 +6636,7 @@ impl<'a> Sema<'a> {
         for (local, item) in locals.iter().zip(declaration.items.iter()) {
             if item.init.is_some() {
                 if let Some(info) = self.local_info(*local) {
-                    if matches!(self.types_of(info.ty), Type::Vla { .. }) {
+                    if self.type_contains_vla(info.ty) {
                         self.error(
                             item.span,
                             "a variable-length array cannot have an initializer",
@@ -6637,7 +6657,7 @@ impl<'a> Sema<'a> {
                 .copied()
                 .flatten()
             {
-                if matches!(self.types_of(ty), Type::Vla { .. }) {
+                if self.type_contains_vla(ty) {
                     self.error(
                         self.span_of(node),
                         "a variable-length array cannot be a constant",

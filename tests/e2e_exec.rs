@@ -5216,3 +5216,21 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 3);
 }
+
+#[test]
+fn non_leading_runtime_array_dimensions_are_allocated_and_indexed() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local rows: cardinal(4) = 2;
+    local columns: cardinal(4) = 3;
+    local grid: array(rows, columns) integer(4);
+    grid[1][2] = 7;
+
+    local nested: array(2) array(columns) integer(4);
+    nested[1][2] = 5;
+
+    return grid[1][2] + nested[1][2];
+}";
+    assert_eq!(run_program(source), 12);
+}

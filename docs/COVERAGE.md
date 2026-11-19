@@ -21,7 +21,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **362 tests**: 41 lib unit tests (lexer, literal,
+`cargo test` currently runs **366 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
 that read `docs/grammar/Draft 1.152.md` directly:
@@ -47,7 +47,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | Literal decoding: integer/float/character/string, encodings, raw `\x` bytes | ✅ | `src/literal.rs` unit tests |
 | §3.1–3.2 type constructors, basic types, no implicit basic conversions | ✅ | e2e arithmetic, casts, comparison tests |
 | §3.3–3.5 value/reference semantics, `&` by-reference parameters, scoped storage | ✅ | by-ref parameter and alias e2e tests |
-| §3.6.1 arrays: fixed layout, indexing bounds, literals/repeat/range, array↔pointer casts, array parameter expansion, **VLA** | ✅ | e2e arrays/bounds/VLA tests; multi-dimensional VLAs with a leading runtime dimension supported; non-leading runtime dimensions diagnosed |
+| §3.6.1 arrays: fixed layout, indexing bounds, literals/repeat/range, array↔pointer casts, array parameter expansion, **VLA** | ✅ | e2e arrays/bounds/VLA tests; runtime dimensions are supported at any position in a function body. Multi-dimensional VLAs are represented as nested `{pointer, length}` levels (`array(2, n) T` is an array of two VLA rows; `array(n, m) T` is a VLA of VLA rows), with codegen allocating each row's buffer and initialising nested VLA storage; VLA initializers and VLA constants/returns remain rejected |
 | §3.6.2 pointers: member access, `p ± i`, `p - q`, casts, `&`/`*` expressions | ✅ | e2e pointer tests |
 | §3.6.3 function types, `wildcard`, calling conventions | ✅ | function value/closures tests; C/SystemV/Win64 LLVM conventions, others diagnosed |
 | §3.7.1 classes: layout, inheritance, vtable/RTTI, construction, destructors, statics, abstract/sealed/static class | ✅ | class e2e tests, constructor-chain checks; a class/interface-typed field always occupies a reference (pointer) even when the field refers to the class being laid out (self-referential `Next: Node`), so instance size and codegen field offsets agree |
@@ -116,8 +116,6 @@ implementing them is conforming and they are therefore not listed as deviations.
    interpreted; such blocks are lowered with a warning or an explicit
    unsupported diagnostic, so §11.4's full compile-time execution remains
    partially implemented.
-2. **Non-leading runtime array dimensions** are diagnosed (multi-dimensional
-   VLAs with a leading runtime dimension are supported).
 5. **`@` no-optimize markers** (§14.3.1): marked expressions, blocks, `local
    @Name` and `fixed @Name` force the enclosing function to `optnone`, are
    rejected in compile-time contexts, and marked expressions materialise literal

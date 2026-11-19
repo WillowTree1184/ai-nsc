@@ -3091,59 +3091,175 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         }
     }
 
-    /// Allocates the runtime buffer of a VLA local and stores `{pointer, length}`
-    /// (§3.6.1).
-    fn gen_vla_allocation(
+    /// Whether a type is or contains a variable-length array (§3.6.1).
+    fn type_contains_vla(&self, ty: TypeId) -> bool {
+        match self.sema.types.get(ty) {
+            crate::sema::types::Type::Vla { .. } => true,
+            crate::sema::types::Type::Array { element, .. } => self.type_contains_vla(*element),
+            _ => false,
+        }
+    }
+
+    /// Flattens `array(3) array(n) T` dimension syntax into `[3, n]`.
+    fn flat_array_dimensions(&self, node: NodeId) -> Vec<crate::ast::ArrayDimension> {
+        let mut dimensions = Vec::new();
+        let mut current = node;
+        while let NodeKind::ArrayType(array) = self.ast.node(current).kind.clone() {
+            dimensions.extend(array.dimensions.iter().cloned());
+            current = array.element;
+        }
+        dimensions
+    }
+
+    /// Emits a loop allocating the nested VLA elements of one array/VLA level.
+    fn gen_vla_row_loop(
         &mut self,
-        type_node: NodeId,
-        local: u32,
+        base: PointerValue<'ctx>,
+        count: IntValue<'ctx>,
+        element_size: u64,
+        dimensions: &[crate::ast::ArrayDimension],
+        dimension_offset: usize,
         element: TypeId,
-        length_type: TypeId,
     ) -> Result<(), String> {
-        let length_expression = match self.ast.node(type_node).kind.clone() {
-            NodeKind::ArrayType(array) => match array.dimensions.first() {
-                Some(crate::ast::ArrayDimension::Size(expression)) => *expression,
-                _ => return Err("VLA type has no size expression".to_string()),
-            },
-            _ => return Err("VLA declaration has no array type".to_string()),
-        };
-        let length_value = self.gen_expr(length_expression)?;
-        let length_i64 = self.as_i64(length_value.into_int_value())?;
-        let (element_size, _) = self.sema.size_align(element);
-        let bytes = self
+        let function = self.current_llvm_function()?;
+        let index_slot = self
             .builder
-            .build_int_mul(
-                length_i64,
-                self.context.i64_type().const_int(element_size, false),
-                "vla_bytes",
+            .build_alloca(self.context.i64_type(), "vla_index")
+            .map_err(|error| format!("cannot allocate VLA index: {error}"))?;
+        self.builder
+            .build_store(index_slot, self.context.i64_type().const_zero())
+            .map_err(|error| format!("cannot initialize VLA index: {error}"))?;
+        let header = self.context.append_basic_block(function, "vla_header");
+        let body = self.context.append_basic_block(function, "vla_body");
+        let exit = self.context.append_basic_block(function, "vla_exit");
+        self.builder
+            .build_unconditional_branch(header)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(header);
+        let index = self
+            .builder
+            .build_load(self.context.i64_type(), index_slot, "vla_index")
+            .map_err(|error| format!("cannot load VLA index: {error}"))?
+            .into_int_value();
+        let condition = self
+            .builder
+            .build_int_compare(IntPredicate::SLT, index, count, "vla_more")
+            .map_err(|error| format!("cannot compare VLA index: {error}"))?;
+        self.builder
+            .build_conditional_branch(condition, body, exit)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(body);
+        let element_address = self.address_with_size(base, element_size, index)?;
+        self.gen_vla_storage(element_address, dimensions, dimension_offset, element)?;
+        let next = self
+            .builder
+            .build_int_add(
+                index,
+                self.context.i64_type().const_int(1, false),
+                "vla_next",
             )
-            .map_err(|error| format!("cannot compute VLA size: {error}"))?;
-        let buffer = self
-            .builder
-            .build_array_alloca(self.context.i8_type(), bytes, "vla_buffer")
-            .map_err(|error| format!("cannot allocate VLA: {error}"))?;
+            .map_err(|error| format!("cannot increment VLA index: {error}"))?;
+        self.builder
+            .build_store(index_slot, next)
+            .map_err(|error| format!("cannot store VLA index: {error}"))?;
+        self.builder
+            .build_unconditional_branch(header)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(exit);
+        Ok(())
+    }
+
+    /// Initialises the nested VLA storage of a value of type `ty` at
+    /// `destination` (§3.6.1). Each VLA level stores `{buffer, length}` and
+    /// allocates a buffer for its elements; arrays of VLAs initialise every row.
+    fn gen_vla_storage(
+        &mut self,
+        destination: PointerValue<'ctx>,
+        dimensions: &[crate::ast::ArrayDimension],
+        dimension_offset: usize,
+        ty: TypeId,
+    ) -> Result<(), String> {
+        match self.sema.types.get(ty).clone() {
+            crate::sema::types::Type::Vla { element, length } => {
+                let length_expression = match dimensions.get(dimension_offset) {
+                    Some(crate::ast::ArrayDimension::Size(expression)) => *expression,
+                    _ => return Err("VLA type has no size expression".to_string()),
+                };
+                let length_value = self.gen_expr(length_expression)?;
+                let length_i64 = self.as_i64(length_value.into_int_value())?;
+                let (element_size, _) = self.sema.size_align(element);
+                let bytes = self
+                    .builder
+                    .build_int_mul(
+                        length_i64,
+                        self.context.i64_type().const_int(element_size, false),
+                        "vla_bytes",
+                    )
+                    .map_err(|error| format!("cannot compute VLA size: {error}"))?;
+                let buffer = self
+                    .builder
+                    .build_array_alloca(self.context.i8_type(), bytes, "vla_buffer")
+                    .map_err(|error| format!("cannot allocate VLA: {error}"))?;
+                let struct_type = self.llvm_type(ty)?.into_struct_type();
+                let data_field = self
+                    .builder
+                    .build_struct_gep(struct_type, destination, 0, "vla_data")
+                    .map_err(|error| format!("cannot store VLA pointer: {error}"))?;
+                self.builder
+                    .build_store(data_field, buffer)
+                    .map_err(|error| format!("cannot store VLA pointer: {error}"))?;
+                let length_field = self
+                    .builder
+                    .build_struct_gep(struct_type, destination, 1, "vla_length")
+                    .map_err(|error| format!("cannot store VLA length: {error}"))?;
+                let _ = length;
+                self.builder
+                    .build_store(length_field, length_value)
+                    .map_err(|error| format!("cannot store VLA length: {error}"))?;
+                if self.type_contains_vla(element) {
+                    self.gen_vla_row_loop(
+                        buffer,
+                        length_i64,
+                        element_size,
+                        dimensions,
+                        dimension_offset + 1,
+                        element,
+                    )?;
+                }
+                Ok(())
+            }
+            crate::sema::types::Type::Array {
+                dimensions: fixed,
+                element,
+            } => {
+                if self.type_contains_vla(element) {
+                    let count: u64 = fixed.iter().product();
+                    let count = self.context.i64_type().const_int(count, false);
+                    let (element_size, _) = self.sema.size_align(element);
+                    self.gen_vla_row_loop(
+                        destination,
+                        count,
+                        element_size,
+                        dimensions,
+                        dimension_offset + fixed.len(),
+                        element,
+                    )?;
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Allocates storage for a local whose type is or contains VLAs (§3.6.1).
+    fn gen_nested_vla_local(&mut self, type_node: NodeId, local: u32) -> Result<(), String> {
         let slot = *self
             .local_slots
             .get(&local)
             .ok_or_else(|| "missing VLA slot".to_string())?;
-        let local_ty = self.result_local_type(local)?;
-        let struct_type = self.llvm_type(local_ty)?.into_struct_type();
-        let pointer_field = self
-            .builder
-            .build_struct_gep(struct_type, slot, 0, "vla_data")
-            .map_err(|error| format!("cannot store VLA pointer: {error}"))?;
-        self.builder
-            .build_store(pointer_field, buffer)
-            .map_err(|error| format!("cannot store VLA pointer: {error}"))?;
-        let length_field = self
-            .builder
-            .build_struct_gep(struct_type, slot, 1, "vla_length")
-            .map_err(|error| format!("cannot store VLA length: {error}"))?;
-        let _ = length_type;
-        self.builder
-            .build_store(length_field, length_value)
-            .map_err(|error| format!("cannot store VLA length: {error}"))?;
-        Ok(())
+        let ty = self.result_local_type(local)?;
+        let dimensions = self.flat_array_dimensions(type_node);
+        self.gen_vla_storage(slot, &dimensions, 0, ty)
     }
 
     /// The declared type of a local of the current function.
@@ -3189,8 +3305,8 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             // Variable-length arrays allocate their buffer at declaration time
             // (§3.6.1).
             if let (Some(type_node), Some(info)) = (type_node, self.local_info(*local)) {
-                if let Type::Vla { element, length } = self.sema.types.get(info.ty).clone() {
-                    self.gen_vla_allocation(*type_node, *local, element, length)?;
+                if self.type_contains_vla(info.ty) {
+                    self.gen_nested_vla_local(*type_node, *local)?;
                     continue;
                 }
             }

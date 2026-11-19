@@ -2894,3 +2894,20 @@ fn nolaa_use_after_dispose_through_an_alias_warns() {
     assert!(output.status.success(), "{stderr}");
     assert!(stderr.contains("used after 'dispose'"), "{stderr}");
 }
+
+#[test]
+fn nested_variable_length_arrays_cannot_have_initializers() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    local columns: cardinal(4) = 2;
+    local matrix: array(2, columns) integer(4) = { 1, 2, 3, 4 };
+    return 0;
+}",
+    );
+    assert!(
+        stderr.contains("variable-length array cannot have an initializer"),
+        "{stderr}"
+    );
+}

@@ -5886,3 +5886,37 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 7);
 }
+
+#[test]
+fn coalescing_throw_supports_explicit_exception_on_empty_optional() {
+    let source = "\
+class MyException: Exception { }
+
+fixed Main(): integer(4)
+{
+    local maybe: Optional<integer(4)> = Optional<integer(4)>.Null;
+    trap
+    {
+        local value = maybe ?? throw MyException();
+    }
+    catch wildcard { return 5; }
+    return 0;
+}";
+    assert_eq!(run_program(source), 5);
+}
+
+#[test]
+fn bare_coalescing_throw_throws_any_alternative_payload() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local result: Result<integer(4); integer(4)> = Result<integer(4); integer(4)>.Alternative(7);
+    trap
+    {
+        local value: integer(4) = result ?? throw;
+    }
+    catch wildcard { return 9; }
+    return 0;
+}";
+    assert_eq!(run_program(source), 9);
+}

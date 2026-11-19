@@ -11500,10 +11500,10 @@ impl<'a> Sema<'a> {
                 }
             }
             CoalescingAlternative::Throw(exception) => {
-                if alternative_type == TypeId::VOID {
+                if alternative_type == TypeId::VOID && exception.is_none() {
                     self.error(
                         span,
-                        "the alternative carries no value; '?? throw' requires an exception",
+                        "the alternative carries no payload; a bare '?? throw' requires one",
                     );
                     return None;
                 }

@@ -4916,3 +4916,17 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 1);
 }
+
+#[test]
+fn top_level_compile_time_do_while_executes() {
+    let source = "\
+#{ local counter: integer(4) = 0; do { counter = counter + 1; } while (counter < 3); }
+
+local value: integer(4) = counter;
+
+fixed Main(): integer(4)
+{
+    return value;
+}";
+    assert_eq!(run_program(source), 3);
+}

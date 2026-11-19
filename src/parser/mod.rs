@@ -1555,7 +1555,16 @@ impl<'a> Parser<'a> {
                 }
             }
             self.expect(TokenKind::RightParen, "')' in accessor member");
+            // Accessor parameters belong to the getter/setter body scope (§6.4).
+            self.push_shadow_scope();
+            if member.this_type.is_some() {
+                self.declare_shadow_name("this");
+            }
+            if member.value_type.is_some() {
+                self.declare_shadow_name("value");
+            }
             member.body = self.parse_block();
+            self.pop_shadow_scope();
         }
         let end = self.span_between(start_token, self.position);
         member.span = end;

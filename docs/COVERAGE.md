@@ -88,7 +88,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §3.6.3 function types: `wildcard`, calling conventions, defaults, type equality/conversion | ✅ | `wildcard` matches unchecked trailing arguments (fixed prefix validated; small ints/bools promoted, `float(4)`→`f64`, arrays/VLAs decay to pointers); variadic declarations emitted; explicit calling conventions accepted after parameters/wildcard, bare `CallingConvention` member names resolved, `CDeclaration` uses the LLVM default C convention, `SystemVAMD64`/`MicrosoftX64` map to their LLVM conventions (method `wildcard` signatures still share the fixed-prefix matcher) |
 | §3.8.2 accessor `this` without `&` for reference targets | ✅ | reference/value target validation (missing/extra `&`, wrong `this` type), extension blocks require `this`, static/free accessors reject it; block-shorthand receivers work for classes and structures (e2e) |
 | §8.2 `array(Name: Type) T` parameter expansion | ✅ | function declaration parameters (`Name[dims]: T`), function type constructors and function literal parameter lists; sema expands to a pointer parameter followed by the binding parameters (e2e) |
-| §10 generics / monomorphization | 🟡 | types/functions/constraints/extension-for-generic/caching/mangling; including methods that declare their own type parameters and array extension targets (methods); remaining: array extension indexers and monomorphization-volume optimization (§14.3.2, not implemented) |
+| §10 generics / monomorphization | 🟡 | types/functions/constraints/extension-for-generic/caching/mangling; including methods that declare their own type parameters and array extension targets (methods); remaining: array extension indexers. §14.3.2 optimisation directives are permissions, not requirements, so their absence is not a conformance gap. |
 | §11.1–11.7 compile-time: `#(...)`, `#if`/`#else`, `#{}` blocks (incl. top-level and cross-file order), `#` constant parameters, compile-time boundary | ✅ | compile-time e2e tests; blocks are lowered as runtime equivalents of compile-time results (semantics-preserving approximation) |
 | §11.8 compiler API: `Type.SizeOf<T>`, `Compiler.LogNote/LogWarning/LogError/Assert`, `Platform.Is`, `NOLAA.Abandon/Bind/AssumeNoDemandNext` | ✅ | compiler API tests |
 | §12 memory model: locals/heap/dispose/destructors, `manual`, custom `IAllocator` + `DefaultAllocator`, NOLAA (double-dispose/early-dispose/never-disposed warnings, alias/store demand tracking, auto-insertion at block-end/return/break/continue safe points, Bind groups) | ✅ | heap/dispose/allocation/NOLAA tests; NOLAA analysis is deliberately conservative (escapes are exempt) |
@@ -99,6 +99,9 @@ means the area has tests, not that every conceivable defect is ruled out.
 ## Known deviations / remaining backlog
 
 These are deliberate, documented limitations rather than silent miscompiles:
+
+(§14.3.2 volume/speed optimisations are stated as permissions in the draft; not
+implementing them is conforming and they are therefore not listed as deviations.)
 
 1. **Compile-time blocks**: integer `#(...)` end products are folded (#64),
    compile-time-only blocks are not emitted (#71) and side effects are warned
@@ -122,7 +125,6 @@ These are deliberate, documented limitations rather than silent miscompiles:
    block-end/return/break/continue auto-dispose, alias/store demand tracking,
    `NOLAA.Bind` groups and `NOLAA.AssumeNoDemandNext`; general CFG safe-point
    insertion and complete alias analysis are not implemented.
-7. **Monomorphization volume optimization** (§14.3.2) is not implemented.
 8. **Target selection**: `--target` configures code generation, object emission
    and the semantic data layout for x86_64, aarch64, riscv64, i686 (runs natively
    on x86_64 hosts) and armv7 (cross-link with `--sysroot` + LLVM lld, run under

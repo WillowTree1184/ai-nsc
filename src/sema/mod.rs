@@ -3313,6 +3313,7 @@ impl<'a> Sema<'a> {
                 NodeKind::While(while_statement) => {
                     self.execute_compile_time_while(&while_statement)
                 }
+                NodeKind::DoWhile(do_while) => self.execute_compile_time_do_while(&do_while),
                 NodeKind::For(for_statement) => self.execute_compile_time_for(&for_statement),
                 NodeKind::Break(_) => {
                     if !in_loop {
@@ -3500,6 +3501,39 @@ impl<'a> Sema<'a> {
             if (!self.compile_time_phase_b && self.compile_time_deferred)
                 || self.engine.error_count() > errors_before
             {
+                break;
+            }
+        }
+        CompileTimeFlow::Normal
+    }
+
+    /// Executes a compile-time `do { ... } while (...)` loop (§5.9.4, §11.4).
+    fn execute_compile_time_do_while(
+        &mut self,
+        statement: &crate::ast::DoWhileStmt,
+    ) -> CompileTimeFlow {
+        loop {
+            let statements = self.block_statements(statement.body);
+            let errors_before = self.engine.error_count();
+            match self.execute_compile_time_statements(&statements, true) {
+                CompileTimeFlow::Break => break,
+                CompileTimeFlow::Normal | CompileTimeFlow::Continue => {}
+            }
+            if (!self.compile_time_phase_b && self.compile_time_deferred)
+                || self.engine.error_count() > errors_before
+            {
+                break;
+            }
+            let condition = self
+                .eval_compile_time_bool(statement.condition, 0)
+                .unwrap_or_else(|| {
+                    self.error(
+                        self.span_of(statement.condition),
+                        "compile-time blocks cannot branch on run-time values (§11.4)",
+                    );
+                    false
+                });
+            if !condition {
                 break;
             }
         }

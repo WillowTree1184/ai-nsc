@@ -5545,3 +5545,20 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 7);
 }
+
+#[test]
+fn environment_module_members_are_materialised() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local facts: EnvironmentFacts = Environment.Target;
+    local kind: EnvironmentKind = Environment.Kind;
+    local platform: PlatformKind = facts.Platform;
+    if (kind == EnvironmentKind.Target && platform == PlatformKind.Linux)
+    {
+        return 3;
+    }
+    return 0;
+}";
+    assert_eq!(run_program(source), 3);
+}

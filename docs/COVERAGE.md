@@ -21,7 +21,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **408 tests**: 41 lib unit tests (lexer, literal,
+`cargo test` currently runs **409 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
 that read `docs/grammar/Draft 1.153.md` directly (a closed-set test also asserts that the only spec programs failing semantic analysis are the documented demonstration/inconsistency snippets):
@@ -177,16 +177,15 @@ implementing them is conforming and they are therefore not listed as deviations.
     tracked and disposed; arbitrary pointer/container/field paths still require
     full points-to analysis and are diagnosed rather than guessed.
 
-13. **`EnvironmentFacts`/`Environment` materialisation is partial**: the
-    `EnvironmentFacts` structure (Platform/Architecture fields) and the
-    `Environment.Current`/`Host`/`Target` values are now built-in types/values;
-    field reads, `PlatformIs`/`ArchitectureIs` on frozen facts (including locals
-    initialized from those values) fold at compile time and the facts value can
-    flow into runtime storage. Still not materialised: the `Environment` module
-    declaration and the declared `EnvironmentFacts` member functions for unknown
-    facts values (for example a facts-typed parameter whose value is not tracked);
-    those forms are diagnosed rather than miscompiled. Tracked for the final
-    §15.2 audit.
+13. **`EnvironmentFacts`/`Environment` member functions are partial**: the
+    `EnvironmentFacts` structure, the `Environment` module with its
+    Kind/Current/Host/Target constants, and frozen facts values are materialised;
+    field reads and `PlatformIs`/`ArchitectureIs` on frozen facts (including
+    locals initialized from those values) fold at compile time, and facts values
+    can flow into runtime storage. Still missing: declared member functions on a
+    facts-typed parameter/value whose origin is not statically tracked; those
+    forms are diagnosed instead of miscompiled. Tracked for the final §15.2
+    audit.
 
 14. **No-clobber assembly barrier breadth**: an operand-free `assembly` block
     without `clobber(...)` now declares all target GPR/vector registers,

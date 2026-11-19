@@ -2031,6 +2031,29 @@ impl<'a> Sema<'a> {
         type_id
     }
 
+    /// Pushes a synthetic constant global into the current scope.
+    fn push_builtin_global(&mut self, name: &str, ty: TypeId) -> u32 {
+        let index = self.result.globals.len() as u32;
+        let scope = self.scope_path.clone();
+        let spelling = self.spelling(ty);
+        let mangled = mangle_function(&scope, name, &[spelling]);
+        self.result.globals.push(GlobalInfo {
+            name: name.to_string(),
+            accessibility: crate::ast::Accessibility::Public,
+            verbatim: false,
+            scoped: Vec::new(),
+            scope,
+            ty,
+            init: None,
+            fixed: true,
+            mangled,
+            node: NodeId::default(),
+            span: Span::default(),
+        });
+        self.declare(name.to_string(), Symbol::Global(index), Span::default());
+        index
+    }
+
     /// Pushes a synthetic interface declaration (Built-In Library, §15.2).
     fn push_builtin_interface(&mut self, name: &str) -> TypeId {
         let index = self.result.type_defs.len() as TypeDefId;
@@ -2333,8 +2356,9 @@ impl<'a> Sema<'a> {
                 "Other", "X86", "X86_64", "Arm", "Arm64", "RiscV32", "RiscV64",
             ],
         );
-        self.push_builtin_enumeration("EnvironmentKind", false, 4, &["Host", "Target"]);
-        self.push_builtin_structure(
+        let environment_kind =
+            self.push_builtin_enumeration("EnvironmentKind", false, 4, &["Host", "Target"]);
+        let environment_facts = self.push_builtin_structure(
             "EnvironmentFacts",
             &[
                 ("Platform", platform_kind, 0),
@@ -2343,6 +2367,21 @@ impl<'a> Sema<'a> {
             8,
             4,
         );
+        // Built-in `Environment` module with the frozen facts constants (§15.2).
+        let module_scope = self.create_child_scope();
+        self.declare(
+            "Environment".to_string(),
+            Symbol::Module(module_scope),
+            Span::default(),
+        );
+        self.scope_stack.push(module_scope);
+        self.scope_path.push("Environment".to_string());
+        self.push_builtin_global("Kind", environment_kind);
+        self.push_builtin_global("Current", environment_facts);
+        self.push_builtin_global("Host", environment_facts);
+        self.push_builtin_global("Target", environment_facts);
+        self.scope_path.pop();
+        self.scope_stack.pop();
         const NAMES: [&str; 6] = [
             "Exception",
             "NotImplementedException",

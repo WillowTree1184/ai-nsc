@@ -21,7 +21,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **410 tests**: 41 lib unit tests (lexer, literal,
+`cargo test` currently runs **411 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
 that read `docs/grammar/Draft 1.153.md` directly (a closed-set test also asserts that the only spec programs failing semantic analysis are the documented demonstration/inconsistency snippets):
@@ -125,19 +125,13 @@ are not listed.
    fixed-point summaries, callees checked after a caller (fall back to escape),
    and pointer-member dispose through complex paths. `docs/NOLAA.md` tracks the
    migration plan.
-4. **Value-type explicit-allocator returns**: a heap class instance returned from
-   another function carries its explicit allocator in the class header and can be
-   disposed by the caller; a returned *structure* allocated with an explicit
-   allocator has no instance header and its caller-side `dispose` is diagnosed.
-   The allocation-size rule (§5.5: storage size exactly fits the type value)
-   rules out simply prefixing the instance with allocator metadata.
-5. **EnvironmentFacts member queries on untracked facts**: the
+4. **EnvironmentFacts member queries on untracked facts**: the
    `EnvironmentFacts` structure/module, frozen Current/Host/Target values and
    `PlatformIs`/`ArchitectureIs` declarations are materialised; queries on
    frozen facts and locals initialized from them fold at compile time. A query on
    a facts-typed parameter/value whose origin is not statically tracked is
    explicitly diagnosed (§11.9.3 requires compile-time evaluation).
-6. **Operand-block assembly all-register barrier**: an operand-free `assembly`
+5. **Operand-block assembly all-register barrier**: an operand-free `assembly`
    block without `clobber(...)` declares all target GPR/vector registers, flags
    and memory clobbered. An assembly block with operands cannot declare every
    register because LLVM needs registers free for operand allocation, so it

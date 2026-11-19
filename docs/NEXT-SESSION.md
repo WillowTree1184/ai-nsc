@@ -7,8 +7,8 @@
   authoritative specification is `docs/grammar/Draft 1.153.md`; Draft 1.152 is
   historical only.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  — **410 tests green** (41 lib unit, 138 CLI, 2 codegen/LLVM, 1 MCJIT probe,
-  2 JIT compile-time evaluation, 213 end-to-end execution, 10 parser, 3
+  — **411 tests green** (41 lib unit, 138 CLI, 2 codegen/LLVM, 1 MCJIT probe,
+  2 JIT compile-time evaluation, 214 end-to-end execution, 10 parser, 3
   spec-example conformance). The spec-conformance tests read `Draft 1.153.md`:
   all 97 `novasharp` examples parse (the bare inline-assembly block and the bare
   function-type fragment are recorded as syntax fragments), and every whole
@@ -64,7 +64,7 @@
   dominator/CFG placement for nested paths + read-only parameter summaries +
   field-write/escape fixed point.
 - Older remaining gaps (still valid): compile-time non-scalar heap, throw/trap
-  and `is` match patterns; value-type explicit-allocator returned-heap ownership.
+  and `is` match patterns.
 - Targets: x86_64/aarch64/riscv64; i686 build+run on x86_64 hosts; armv7
   cross-linked with `--sysroot` + lld and run under qemu-arm; x86_64 UEFI builds
   a freestanding EFI application (qemu+OVMF boot test). riscv32 is object-only

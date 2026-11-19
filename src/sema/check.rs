@@ -7759,6 +7759,18 @@ impl<'a> Sema<'a> {
         let Some(Symbol::Local(local)) = self.lookup(&name.name).cloned() else {
             return;
         };
+        let unit_is_reference = |this: &Self, index: usize| {
+            this.heap_units
+                .get(index)
+                .and_then(|unit| this.local_info(unit.local))
+                .is_some_and(|info| {
+                    matches!(this.types_of(info.ty), Type::Named(owner)
+                    if matches!(
+                        this.result.type_defs[owner as usize].kind,
+                        TypeDefKind::Class | TypeDefKind::Interface
+                    ))
+                })
+        };
         if !self.heap_unit_locals.contains_key(&local) {
             if let Some(index) = self
                 .heap_alias_units
@@ -7766,21 +7778,29 @@ impl<'a> Sema<'a> {
                 .copied()
                 .or_else(|| self.pointer_aliases.get(&local).copied())
             {
-                self.heap_units[index as usize].escaped = true;
-                self.heap_units[index as usize].returned = true;
+                // Only reference-type units transfer ownership on return;
+                // value-type units are copied and must be disposed in the callee.
+                if unit_is_reference(self, index as usize) {
+                    self.heap_units[index as usize].escaped = true;
+                    self.heap_units[index as usize].returned = true;
+                }
             }
             if let Some(units) = self.element_heap_aliases.get(&local).cloned() {
                 for unit in units {
-                    self.heap_units[unit as usize].escaped = true;
-                    self.heap_units[unit as usize].returned = true;
+                    if unit_is_reference(self, unit as usize) {
+                        self.heap_units[unit as usize].escaped = true;
+                        self.heap_units[unit as usize].returned = true;
+                    }
                 }
             }
             return;
         }
         for peer in self.heap_group_peers(local) {
             if let Some(index) = self.heap_unit_locals.get(&peer).copied() {
-                self.heap_units[index].escaped = true;
-                self.heap_units[index].returned = true;
+                if unit_is_reference(self, index) {
+                    self.heap_units[index].escaped = true;
+                    self.heap_units[index].returned = true;
+                }
             }
         }
     }

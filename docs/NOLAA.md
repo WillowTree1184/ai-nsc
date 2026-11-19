@@ -59,9 +59,7 @@ intraprocedural heuristics in `src/sema/check.rs` to a full analysis.
    graph (currently a syntactic return/dispose pre-pass).
 4. **Diagnostics from analysis**: produce all four warning classes from the
    analysis result rather than sequential checking state.
-5. **Value-type explicit-allocator returns**: allocation-descriptor/registry
-   design for structures (class instances already carry the allocator slot).
-6. **Tests**: branch/loop safe points, pointer/container aliases, parameter
+5. **Tests**: branch/loop safe points, pointer/container aliases, parameter
    escapes, SCC cycles, custom allocators, manual units.
 
 ## Architecture target

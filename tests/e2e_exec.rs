@@ -5562,3 +5562,36 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 3);
 }
+
+#[test]
+fn returned_heap_structure_is_copied_and_disposed_in_the_callee() {
+    let source = "\
+local destroyed: integer(4) = 0;
+
+structure Token
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Destruct(this: &Token)
+        {
+            destroyed = destroyed + 1;
+        }
+    }
+}
+
+fixed Make(): Token
+{
+    heap token: Token = Token();
+    token.Value = 5;
+    return token;
+}
+
+fixed Main(): integer(4)
+{
+    local made: Token = Make();
+    return made.Value + destroyed * 10;
+}";
+    assert_eq!(run_program(source), 15);
+}

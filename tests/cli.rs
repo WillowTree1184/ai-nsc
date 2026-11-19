@@ -2761,3 +2761,20 @@ fixed Main(): integer(4)
         "{stderr}"
     );
 }
+
+#[test]
+fn runtime_assignment_to_a_compile_time_block_variable_is_rejected() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    #{ local value: integer(4) = 1; }
+    value = 2;
+    return value;
+}",
+    );
+    assert!(
+        stderr.contains("may only be assigned at compile time"),
+        "{stderr}"
+    );
+}

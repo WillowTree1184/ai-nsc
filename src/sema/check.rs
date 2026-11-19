@@ -5021,7 +5021,21 @@ impl<'a> Sema<'a> {
             self.current_owner = None;
         }
         self.bodies_checked = self.result.functions.len();
+        self.finalize_compile_time_block_locals();
         self.check_return_paths();
+    }
+
+    /// Marks locals of dropped function-body `#{}` blocks as dead so code
+    /// generation does not allocate their storage (§11.4).
+    fn finalize_compile_time_block_locals(&mut self) {
+        let records = std::mem::take(&mut self.compile_time_block_records);
+        for (block, function, locals) in records {
+            if self.result.compile_time_only_blocks.contains(&block) {
+                for local in locals {
+                    self.result.dead_locals.insert((function, local));
+                }
+            }
+        }
     }
 
     /// Diagnoses functions with a non-empty return type that can fall off the end
@@ -5246,6 +5260,10 @@ impl<'a> Sema<'a> {
         let id = locals.len() as LocalId;
         if self.compile_time_depth > 0 {
             self.compile_time_local_ids.push((function_index, id));
+            if let Some(block) = self.compile_time_block_stack.last().copied() {
+                self.compile_time_block_local_owners
+                    .insert((function_index, id), block);
+            }
         }
         locals.push(LocalInfo {
             name: name.clone(),
@@ -6081,7 +6099,14 @@ impl<'a> Sema<'a> {
                 self.compile_time_constants
                     .push(std::collections::HashMap::new());
                 self.compile_time_depth += 1;
-                self.check_block(block);
+                // `#{}` does not constitute a scope: its declarations belong to
+                // the enclosing compile-time scope (§11.4).
+                self.compile_time_block_stack.push(node);
+                let statements = self.block_statements(block);
+                for statement in statements {
+                    self.check_statement(statement);
+                }
+                self.compile_time_block_stack.pop();
                 self.compile_time_depth -= 1;
                 // Compile-time side effects cannot be preserved at run time; the
                 // block is lowered as an equivalent at run time (§11.4 warning).
@@ -6093,14 +6118,15 @@ impl<'a> Sema<'a> {
                 }
                 let compile_time_only = self.compile_time_only_block(block);
                 self.compile_time_constants.pop();
+                if let Some(function) = self.current_function {
+                    let locals_after = self.result.functions[function as usize].locals.len();
+                    let locals = (locals_before..locals_after)
+                        .map(|local| local as LocalId)
+                        .collect();
+                    self.compile_time_block_records
+                        .push((node, function, locals));
+                }
                 if compile_time_only {
-                    // No run-time end products: drop the block's locals so code
-                    // generation does not reserve storage for them (§11.4).
-                    if let Some(function) = self.current_function {
-                        self.result.functions[function as usize]
-                            .locals
-                            .truncate(locals_before);
-                    }
                     self.result.compile_time_only_blocks.insert(node);
                 }
             }
@@ -6362,6 +6388,17 @@ impl<'a> Sema<'a> {
         match self.node_kind(node).clone() {
             NodeKind::Name(name) => match self.lookup(&name.name).cloned() {
                 Some(Symbol::Local(local)) => {
+                    if self.compile_time_depth == 0
+                        && self.current_function.is_some_and(|function| {
+                            self.compile_time_block_local_owners
+                                .contains_key(&(function, local))
+                        })
+                    {
+                        self.error(
+                            self.span_of(node),
+                            "a compile-time block variable may only be assigned at compile time (§11.4)",
+                        );
+                    }
                     if let Some(info) = self.local_info(local) {
                         if info.fixed {
                             self.error(self.span_of(node), "cannot assign to a constant");
@@ -7931,6 +7968,20 @@ impl<'a> Sema<'a> {
     fn check_symbol_expr(&mut self, node: NodeId, name: &str, symbol: Symbol) -> Option<TypeId> {
         match symbol {
             Symbol::Local(local) => {
+                if self.compile_time_depth == 0 {
+                    // A runtime use of a function-body compile-time variable gives
+                    // the declaring `#{}` block a runtime end product, so it must
+                    // be emitted instead of dropped (§11.4).
+                    if let Some(function) = self.current_function {
+                        if let Some(block) = self
+                            .compile_time_block_local_owners
+                            .get(&(function, local))
+                            .copied()
+                        {
+                            self.result.compile_time_only_blocks.remove(&block);
+                        }
+                    }
+                }
                 if self.compile_time_depth > 0 {
                     let declared_in_block = self.current_function.is_some_and(|function| {
                         self.compile_time_local_ids.contains(&(function, local))

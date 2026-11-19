@@ -1197,6 +1197,15 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 if matches!(local.storage, Storage::Capture(_)) {
                     continue;
                 }
+                // Locals of dropped compile-time-only blocks need no storage
+                // (§11.4).
+                if self
+                    .sema
+                    .dead_locals
+                    .contains(&(self.current_function, local_index as u32))
+                {
+                    continue;
+                }
                 let llvm_type = if matches!(local.storage, Storage::Heap | Storage::Reference) {
                     self.context.ptr_type(AddressSpace::default()).into()
                 } else {

@@ -82,6 +82,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §4.9.15/§4.9.16 circular shifts `<<<`/`>>>` (and `<<<=`/`>>>=`) | ✅ | integer/cardinal operands, count taken modulo the operand bit width, no sign extension; runtime lowering and constant folding; compound forms supported |
 | §5.9.5 directional ranges `..<`, `..<=`, `..>`, `..>=`; inferred `for` binding types | ✅ | parser/lexer, default step from the operator direction, direction-specific loop conditions, explicit types inferred from array/iterator/range targets; array-literal range expansion honours direction; step/direction contradictions diagnosed |
 | §11.7 lazy two-phase conditional evaluation | ✅ | enabled automatically when a top-level/module `#if` condition references a not-yet-produced **immutable** binding (`#{}` `fixed` constant, `#` constant parameter, generic/type/platform constant): unconditional `#{}` execute first in file/source order, deferred `#if` settle in dependency rounds and lock their selected branch once (declarations collected, branch `#{}` executed once); `local`/mutable forward dependencies are diagnosed; a round that settles nothing reports a no-progress static error (e.g. mutual dependencies); Draft 1.152 removed fixed-point/oscillation detection and candidate-error buffering, so none is implemented. Top-level `#()` statements are parsed and executed (compiler-API calls in the declaration pass, other expressions in the second pass); forward bindings are shared across the whole program, and deferred `#if` declarations are restored into their original module scope during settlement. |
+| §11.2/§11.4 compile-time execution: top-level `#{}`/`#if`/`#()`, function-body `#{}` scope and end products | 🟡 | top-level blocks interpret constants, assignments, if/while/do-while/for-range, API calls and compile-time calls; `#{}` does not scope declarations and retained end products stay visible; function-body blocks keep their end products when read at run time and reject run-time writes; full interpretation of run-time-only statements in `#{}` is still pending |
 | §11.9 compiler API: Type/Compiler/Platform/NOLAA, `#if` platform queries | ✅ | compile-time contexts (`#{}`, `#(...)`, `#if`) may call the API; runtime code must wrap Type/Compiler/Platform calls in `#(...)`/`#if` (NOLAA markers remain run-time statements); `Type.SizeOf` returns a pointer-width value (i686 = 4); `Platform.Is` evaluates against the selected `--target` (`PlatformKind` from the target triple; host when no target; UEFI is `Other`); standard platform names only (the compiler defines no extension names, permitted by §11.9.3) |
 | §14.3.1 no-optimize marker: `@(expr)`, `@{ block }`, `local @Name`, `fixed @Name`, verbatim bodies | ✅ | parsed and enforced (nested markers, `#` inside markers and constant folding of marked storages rejected; `optnone` for marked bodies; e2e tests) |
 | §5.9.5 `for` without an iteration variable (range only) | ✅ | parser/sema/codegen; range type inferred from the first non-literal expression and all range expressions must share it (literal `1` adopts `x`'s type in `for 1..x`); e2e ascending/descending/labelled-break and mixed-type diagnostics |
@@ -103,11 +104,16 @@ These are deliberate, documented limitations rather than silent miscompiles:
 (§14.3.2 volume/speed optimisations are stated as permissions in the draft; not
 implementing them is conforming and they are therefore not listed as deviations.)
 
-1. **Compile-time blocks**: integer `#(...)` end products are folded (#64),
-   compile-time-only blocks are not emitted (#71) and side effects are warned
-   about (#75); blocks containing run-time statements are still lowered as
-   run-time equivalents, so full compile-time execution is not implemented
-   (§11.4 exact wording).
+1. **Compile-time blocks**: `#{}` no longer opens a lexical scope: its
+   declarations stay in the enclosing compile-time scope and are visible to
+   later code. Compile-time-only blocks are dropped (their locals are marked
+   dead for codegen) and side effects warn (#75). A later **runtime** read of a
+   block-declared variable keeps the block emitted as the carrier of its end
+   product, while a runtime **assignment** to such a variable is diagnosed per
+   §11.4. Arbitrary run-time-only statements inside `#{}` (e.g. `match`, heap
+   allocation, `throw`/`trap`) are still not interpreted; such blocks are
+   lowered with a warning or an explicit unsupported diagnostic, so §11.4's
+   full compile-time execution remains only partially implemented.
 2. **Non-leading runtime array dimensions** are diagnosed (multi-dimensional
    VLAs with a leading runtime dimension are supported).
 5. **`@` no-optimize markers** mirror the old `verbatim` behaviour (optnone

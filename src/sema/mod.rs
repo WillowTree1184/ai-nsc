@@ -953,6 +953,9 @@ pub struct SemaResult {
     /// `#{}` blocks that have no run-time end products and need no code
     /// generation (§11.4).
     pub compile_time_only_blocks: HashSet<NodeId>,
+    /// Locals whose declaring compile-time block is dropped: code generation must
+    /// not allocate storage for them (§11.4).
+    pub dead_locals: HashSet<(u32, LocalId)>,
     /// Methods belonging to non-named owners (array extensions, §3.8.3).
     pub owner_methods: HashMap<TypeId, Vec<u32>>,
     /// Accessors belonging to non-named owners (array extensions, §3.8.3).
@@ -1224,6 +1227,9 @@ pub fn analyze_with_options(
         two_phase_future_fixed: std::collections::HashSet::new(),
         two_phase_future_locals: std::collections::HashSet::new(),
         two_phase_pending: Vec::new(),
+        compile_time_block_stack: Vec::new(),
+        compile_time_block_local_owners: HashMap::new(),
+        compile_time_block_records: Vec::new(),
         in_verbatim: false,
         compile_time_depth: 0,
         compile_time_expression_depth: 0,
@@ -1337,6 +1343,12 @@ pub(crate) struct Sema<'a> {
     two_phase_future_locals: std::collections::HashSet<String>,
     /// Deferred top-level/module `#if` conditions awaiting settlement.
     two_phase_pending: Vec<PendingCompileTimeIf>,
+    /// Stack of `#{}` blocks currently being checked in a function body.
+    compile_time_block_stack: Vec<NodeId>,
+    /// Locals declared by function-body `#{}` blocks, mapped to their block.
+    compile_time_block_local_owners: HashMap<(u32, LocalId), NodeId>,
+    /// Function-body `#{}` blocks with their function and declared locals.
+    compile_time_block_records: Vec<(NodeId, u32, Vec<LocalId>)>,
     /// Whether the code being checked is inside a `verbatim` target (§9.8).
     pub(crate) in_verbatim: bool,
     /// Nesting depth of `#{}` compile-time blocks (§11.7).

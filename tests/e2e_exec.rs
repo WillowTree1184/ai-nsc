@@ -4985,3 +4985,27 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 0);
 }
+
+#[test]
+fn function_body_compile_time_block_end_products_are_retained() {
+    // `#{}` does not constitute a scope and its declarations/end products stay
+    // available to the enclosing function (§11.4).
+    let source = "\
+fixed Main(): integer(4)
+{
+    #{ local value: integer(4) = 1; }
+    return value;
+}";
+    assert_eq!(run_program(source), 1);
+}
+
+#[test]
+fn function_body_compile_time_block_assignments_execute_before_the_return_value() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    #{ local value: integer(4) = 1; value = 2; }
+    return value;
+}";
+    assert_eq!(run_program(source), 2);
+}

@@ -21,7 +21,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **409 tests**: 41 lib unit tests (lexer, literal,
+`cargo test` currently runs **410 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
 that read `docs/grammar/Draft 1.153.md` directly (a closed-set test also asserts that the only spec programs failing semantic analysis are the documented demonstration/inconsistency snippets):
@@ -70,10 +70,10 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §4.9.26 `??` with `Optional`/`Result` and all continuations | ✅ | coalescing + user `operator ??` tests |
 | §4.9.27 `?:` conditional expression | ✅ | conditional e2e |
 | §5.2 inline assembly: `assembly [with clobber(...)] { text + @[expr:dir] }`, escapes, placeholders, target syntax | ✅ | lexer keyword/raw-block scanner, parser (Intel-style text preserved, `@@`/`@}`/`@@[` escapes, `@[expr]`/`:in`/`:out`, duplicate/invalid clobber diagnostics), sema (function-body only, no compile-time/module/type/constant positions, lvalue rules, scalar operand types), LLVM InlineAsm lowering (outputs/tied read-write inputs, memory/cc clobber or global barrier, Intel dialect on x86; e2e mov/add); `check` now code-generates and assembles assembly-containing programs to a temporary object so invalid target text is a static error |
-| §5 statements: blocks, locals/fixed, set/compound, if, while/do, for, match, break/continue, return, trap/finally, throw, dispose, export/use | ✅ | statement e2e tests; `finally` executes on fall-through and normal `return` paths (rejected `return` inside `finally`); `do-while` conditions are checked in the body block's scope; `dispose` targets must be heap allocation units (scope-lifetime instances are rejected per §5.8); direct local field pointer dispose targets are supported, arbitrary pointer/container paths are diagnosed (deviation 12); the `local @` no-optimize marker is only accepted immediately after `local` (applying to all items), not per item; runtime statements/expressions are rejected at file/module top level (only declarations, `#{}`, `#if` and `#()` are allowed there) |
-| §5.6 `use` imports (per scope, later imports first, multi-file) | ✅ | use tests |
-| §5.9 `match`: patterns, guards, logical control flow (break/continue/labels) | ✅ | match e2e tests |
-| §5.9.5 `for`: arrays, VLA, ranges, `&` element alias, `IIterator`/`IIterable` targets | ✅ | for e2e tests |
+| §5 statements: blocks, locals/fixed, set/compound, if, while/do, for, match, break/continue, return, trap/finally, throw, dispose, export/use | ✅ | statement e2e tests; `finally` executes on fall-through and normal `return` paths (rejected `return` inside `finally`); `do-while` conditions are checked in the body block's scope; `dispose` targets must be heap allocation units (scope-lifetime instances are rejected per §5.9); direct local field pointer dispose targets are supported, arbitrary pointer/container paths are diagnosed (deviation 12); the `local @` no-optimize marker is only accepted immediately after `local` (applying to all items), not per item; runtime statements/expressions are rejected at file/module top level (only declarations, `#{}`, `#if` and `#()` are allowed there) |
+| §5.7 `use` imports (per scope, later imports first, multi-file) | ✅ | use tests |
+| §5.10.6 `match`: patterns, guards, logical control flow (break/continue/labels) | ✅ | match e2e tests |
+| §5.10.5 `for`: arrays, VLA, ranges, `&` element alias, `IIterator`/`IIterable` targets | ✅ | for e2e tests |
 | §6 names/scopes: modules, shadowing, `owner` chains, imports | ✅ | scope/owner/use tests |
 | §7 modules (including nested modules and modules inside type bodies) | ✅ | module e2e tests |
 | §8 functions: parameters, defaults, by-ref, array parameter sugar, `#` compile-time constants, nested functions | ✅ | parameter/call tests; `#` on functions, methods and operators |
@@ -81,12 +81,12 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §9 modifiers: accessibility, `scoped`, `readonly`, `implicitable`, `manual`, `abstract`/`sealed`/`virtual`/`override`, `aligned`, `static` | ✅ | all enforced; every modifier may appear at most once (Draft 1.153 §9.5, including duplicate `scoped`); `verbatim` was removed in favour of the `@` marker (see §14.3.1) |
 | §4.3 type conversion `Expression as Type` | ✅ | only the `as` operator at the `is` precedence is accepted; the Draft 1.13 `Cast<T>(value)` syntax was removed from the grammar and is now rejected |
 | §4.9.15/§4.9.16 circular shifts `<<<`/`>>>` (and `<<<=`/`>>>=`) | ✅ | integer/cardinal operands, count taken modulo the operand bit width, no sign extension; runtime lowering and constant folding; compound forms supported |
-| §5.9.5 directional ranges `..<`, `..<=`, `..>`, `..>=`; inferred `for` binding types | ✅ | parser/lexer, default step from the operator direction, direction-specific loop conditions, explicit types inferred from array/iterator/range targets; array-literal range expansion honours direction; step/direction contradictions diagnosed |
+| §5.10.5 directional ranges `..<`, `..<=`, `..>`, `..>=`; inferred `for` binding types | ✅ | parser/lexer, default step from the operator direction, direction-specific loop conditions, explicit types inferred from array/iterator/range targets; array-literal range expansion honours direction; step/direction contradictions diagnosed |
 | §11.7 lazy two-phase conditional evaluation | ✅ | enabled automatically when a top-level/module `#if` condition references a not-yet-produced **immutable** binding (`#{}` `fixed` constant, `#` constant parameter, generic/type/platform constant): unconditional `#{}` execute first in file/source order, deferred `#if` settle in dependency rounds and lock their selected branch once (declarations collected, branch `#{}` executed once); `local`/mutable forward dependencies are diagnosed; a round that settles nothing reports a no-progress static error (e.g. mutual dependencies); Draft 1.153 removed fixed-point/oscillation detection and candidate-error buffering, so none is implemented. Top-level `#()` statements are parsed and executed (compiler-API calls in the declaration pass, other expressions in the second pass); forward bindings are shared across the whole program, and deferred `#if` declarations are restored into their original module scope during settlement. |
 | §11.2/§11.4 compile-time execution: top-level `#{}`/`#if`/`#()`, function-body `#{}` scope and end products | 🟡 | top-level blocks and compile-time functions interpret constants, assignments, if/while/do-while/for-range, `match` with value/comparison/wildcard patterns and guards, API calls and compile-time calls; `#{}` does not scope declarations and retained end products stay visible; function-body blocks keep their end products when read at run time and reject run-time writes; scalar compile-time `heap` allocation/assignment/`dispose` is interpreted (the unit is freed with compile-time execution and is not visible at run time); non-scalar compile-time heap objects, `throw`/`trap` and `is` match patterns remain unimplemented in compile-time interpretation |
 | §11.9 compiler API: Type/Compiler/Environment/NOLAA, `#if` environment queries | ✅ | compile-time contexts (`#{}`, `#(...)`, `#if`) may call the API; runtime code must wrap Type/Compiler/Environment calls in `#(...)`/`#if` (NOLAA markers remain run-time statements); Draft 1.153 §11.9.3 replaces `Platform` with `Environment`: `Current`/`Host`/`Target` facts are frozen, `PlatformIs`/`ArchitectureIs` compare canonical names byte-exactly and case-sensitively, unknown names answer false, `Other` has no name, and `#if` conditions use direct calls. `Type.SizeOf` returns a 64-bit unsigned value (32-bit targets use the low 32 bits; i686 test verifies). The compiler defines no extension names (permitted by §11.9.3). Current follows the target/program environment; Host gives the compiler-host facts explicitly. Value queries (`Environment.Current.Platform`/`.Architecture`, `Environment.Kind`) fold to `PlatformKind`/`ArchitectureKind`/`EnvironmentKind` constants; the `EnvironmentFacts` structure and `Environment.Current`/`Host`/`Target` values are built-in and can be stored in locals (field/query folding works for those constants), and cross-target architecture objects are emitted for x86_64/aarch64/riscv64 |
 | §14.3.1 no-optimize marker: `@(expr)`, `@{ block }`, `local @Name`, `fixed @Name`, verbatim bodies | ✅ | parsed and enforced (nested markers, `#` inside markers and constant folding of marked storages rejected; `optnone` for marked bodies; e2e tests) |
-| §5.9.5 `for` without an iteration variable (range only) | ✅ | parser/sema/codegen; range type inferred from the first non-literal expression and all range expressions must share it (literal `1` adopts `x`'s type in `for 1..x`); e2e ascending/descending/labelled-break and mixed-type diagnostics |
+| §5.10.5 `for` without an iteration variable (range only) | ✅ | parser/sema/codegen; range type inferred from the first non-literal expression and all range expressions must share it (literal `1` adopts `x`'s type in `for 1..x`); e2e ascending/descending/labelled-break and mixed-type diagnostics |
 | §3.6.3 function types: `wildcard`, calling conventions, defaults, type equality/conversion | ✅ | `wildcard` matches unchecked trailing arguments (fixed prefix validated; small ints/bools promoted, `float(4)`→`f64`, arrays/VLAs decay to pointers); variadic declarations emitted; explicit calling conventions accepted after parameters/wildcard, bare `CallingConvention` member names resolved, `CDeclaration` uses the LLVM default C convention, `SystemVAMD64`/`MicrosoftX64` map to their LLVM conventions (method `wildcard` signatures still share the fixed-prefix matcher) |
 | §3.8.2 accessor `this` without `&` for reference targets | ✅ | reference/value target validation (missing/extra `&`, wrong `this` type), extension blocks require `this`, static/free accessors reject it; block-shorthand receivers work for classes and structures (e2e) |
 | §8.2 `array(Name: Type) T` parameter expansion | ✅ | function declaration parameters (`Name[dims]: T`), function type constructors and function literal parameter lists; sema expands to a pointer parameter followed by the binding parameters (e2e); parameter/argument/generic-parameter lists reject trailing commas/semicolons because the §8.2/§3.6.3/§10.1 grammars do not allow them; Draft 1.153 §11.7 no longer requires default expressions to be compile-time constants, and the e2e test shows a default calling a runtime function twice (caller-side evaluation) |
@@ -127,7 +127,7 @@ implementing them is conforming and they are therefore not listed as deviations.
    whitespace before a keyword, `(`, `{` or declared name) are diagnosed, a
    `fixed @Name` must not use a `@` expression as its initial value, and a
    `local @Name` initializer may not perform compile-time evaluation (§14.3.1).
-6. **Compile-time libraries for external `linkable` functions** (§5.5: "编译期
+6. **Compile-time libraries for external `linkable` functions** (§5.6: "编译期
    所需的库必须由编译器命令参数提供"): on the host target the compiler process's
    own C library acts as the compile-time library, so calls such as `printf` in
    `#{}` execute at compile time through a cached JIT trampoline (side effects
@@ -177,15 +177,15 @@ implementing them is conforming and they are therefore not listed as deviations.
     tracked and disposed; arbitrary pointer/container/field paths still require
     full points-to analysis and are diagnosed rather than guessed.
 
-13. **`EnvironmentFacts`/`Environment` member functions are partial**: the
-    `EnvironmentFacts` structure, the `Environment` module with its
-    Kind/Current/Host/Target constants, and frozen facts values are materialised;
-    field reads and `PlatformIs`/`ArchitectureIs` on frozen facts (including
-    locals initialized from those values) fold at compile time, and facts values
-    can flow into runtime storage. Still missing: declared member functions on a
-    facts-typed parameter/value whose origin is not statically tracked; those
-    forms are diagnosed instead of miscompiled. Tracked for the final §15.2
-    audit.
+13. **`EnvironmentFacts` member functions are partial**: the `EnvironmentFacts`
+    structure (with declared `PlatformIs`/`ArchitectureIs` members), the
+    `Environment` module and Kind/Current/Host/Target constants, and frozen facts
+    values are materialised; field reads and member queries on frozen facts
+    (including locals initialized from those values) fold at compile time, and
+    facts values can flow into runtime storage. Still missing: resolving member
+    queries on a facts-typed parameter/value whose origin is not statically
+    tracked; those forms are explicitly diagnosed instead of miscompiled.
+    Tracked for the final §15.2 audit.
 
 14. **No-clobber assembly barrier breadth**: an operand-free `assembly` block
     without `clobber(...)` now declares all target GPR/vector registers,

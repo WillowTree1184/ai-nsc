@@ -3898,3 +3898,23 @@ fixed Main(): integer(4)
         "stored parameter must be treated as escaping: {escaping}"
     );
 }
+
+#[test]
+fn environment_queries_require_statically_known_facts() {
+    let stderr = check_source(
+        "\
+fixed IsLinux(facts: EnvironmentFacts): boolean
+{
+    return #(facts.PlatformIs(\"Linux\"));
+}
+
+fixed Main(): integer(4)
+{
+    return 0;
+}",
+    );
+    assert!(
+        stderr.contains("environment facts known at compile time"),
+        "{stderr}"
+    );
+}

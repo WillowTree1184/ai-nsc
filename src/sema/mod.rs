@@ -2054,6 +2054,82 @@ impl<'a> Sema<'a> {
         index
     }
 
+    /// Declares a synthetic built-in method without a body (its calls are
+    /// folded or diagnosed by semantic analysis).
+    fn push_builtin_method_decl(
+        &mut self,
+        owner: TypeId,
+        name: &str,
+        parameters: &[(&str, TypeId)],
+        return_type: Option<TypeId>,
+    ) -> u32 {
+        let Type::Named(owner_index) = self.result.types.get(owner) else {
+            return 0;
+        };
+        let owner_index = *owner_index;
+        let qualified = self.result.type_defs[owner_index as usize]
+            .qualified_name
+            .clone();
+        let scope: Vec<String> = qualified.split('.').map(str::to_string).collect();
+        let mut all_parameters = vec![ParameterInfo {
+            name: "this".to_string(),
+            ty: owner,
+            by_ref: true,
+            default: None,
+            compile_time: false,
+        }];
+        for (name, ty) in parameters {
+            all_parameters.push(ParameterInfo {
+                name: (*name).to_string(),
+                ty: *ty,
+                by_ref: false,
+                default: None,
+                compile_time: false,
+            });
+        }
+        let spellings = self.parameter_spellings(&all_parameters);
+        let mangled = mangle_function(&scope, name, &spellings);
+        let index = self.result.functions.len() as u32;
+        self.result.functions.push(FunctionInfo {
+            name: name.to_string(),
+            scope,
+            node: NodeId::default(),
+            body: None,
+            parameters: all_parameters,
+            wildcard: false,
+            method_of: Some(owner),
+            static_owner: None,
+            is_virtual: false,
+            is_override: false,
+            is_sealed: false,
+            accessibility: crate::ast::Accessibility::Public,
+            calling_convention: None,
+            scoped: Vec::new(),
+            is_abstract: false,
+            return_type,
+            mangled,
+            exposed_symbol: None,
+            generic_parameters: Vec::new(),
+            generic_arguments: Vec::new(),
+            template: None,
+            decl_scope: 0,
+            generic_env: HashMap::new(),
+            environment: false,
+            captures: Vec::new(),
+            constant_values: HashMap::new(),
+            locals: Vec::new(),
+            span: Span::default(),
+        });
+        let definition = &mut self.result.type_defs[owner_index as usize];
+        definition
+            .methods
+            .entry(name.to_string())
+            .or_default()
+            .push(index);
+        definition.method_list.push(index);
+        index
+    }
+
     /// Pushes a synthetic interface declaration (Built-In Library, §15.2).
     fn push_builtin_interface(&mut self, name: &str) -> TypeId {
         let index = self.result.type_defs.len() as TypeDefId;
@@ -2382,6 +2458,18 @@ impl<'a> Sema<'a> {
         self.push_builtin_global("Target", environment_facts);
         self.scope_path.pop();
         self.scope_stack.pop();
+        let character = self.result.types.integer(false, 1);
+        let character_pointer = self.result.types.pointer(Some(character));
+        let cardinal4 = self.result.types.integer(false, 4);
+        let boolean = TypeId::BOOLEAN;
+        for name in ["PlatformIs", "ArchitectureIs"] {
+            self.push_builtin_method_decl(
+                environment_facts,
+                name,
+                &[("name", character_pointer), ("length", cardinal4)],
+                Some(boolean),
+            );
+        }
         const NAMES: [&str; 6] = [
             "Exception",
             "NotImplementedException",

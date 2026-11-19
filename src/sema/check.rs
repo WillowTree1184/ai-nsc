@@ -11690,7 +11690,19 @@ impl<'a> Sema<'a> {
                 if !matches!(access.name.as_str(), "PlatformIs" | "ArchitectureIs") {
                     return None;
                 }
-                let host = self.environment_fact_source(access.base)?;
+                let Some(host) = self.environment_fact_source(access.base) else {
+                    let base_type = self.check_expr(access.base, None);
+                    if base_type.is_some_and(|ty| {
+                        matches!(self.lookup_type_id("EnvironmentFacts"), Some(facts) if facts == ty)
+                    }) {
+                        self.error(
+                            self.span_of(node),
+                            "environment queries require environment facts known at compile time (§11.9.3)",
+                        );
+                        return Some(None);
+                    }
+                    return None;
+                };
                 if !self.in_compile_time_code() && self.environment_eval_depth == 0 {
                     self.error(
                         self.span_of(node),

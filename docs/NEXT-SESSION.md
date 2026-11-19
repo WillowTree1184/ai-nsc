@@ -7,7 +7,7 @@
   authoritative specification is `docs/grammar/Draft 1.153.md`; Draft 1.152 is
   historical only.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  — **409 tests green** (41 lib unit, 137 CLI, 2 codegen/LLVM, 1 MCJIT probe,
+  — **410 tests green** (41 lib unit, 138 CLI, 2 codegen/LLVM, 1 MCJIT probe,
   2 JIT compile-time evaluation, 213 end-to-end execution, 10 parser, 3
   spec-example conformance). The spec-conformance tests read `Draft 1.153.md`:
   all 97 `novasharp` examples parse (the bare inline-assembly block and the bare
@@ -45,8 +45,8 @@
      in the built-in type space (queries are compile-time folded) and the
      `#if` direct-call-only nuance for `#()` wrapping. EnvironmentFacts structure
      and Current/Host/Target values plus the Environment module are materialised
-     (AUDIT #174/#175); remaining: member functions for facts values whose origin
-     is not statically tracked.
+     (AUDIT #174/#175/#176); remaining: queries on facts values whose origin is
+     not statically tracked are explicitly diagnosed.
   3. §8.5/§13.2 `#`/`&`: participate in type equality but not overload
      signature; only-contract overloads forbidden; mangling hash includes
      contract markers.

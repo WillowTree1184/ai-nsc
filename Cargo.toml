@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.75"
 description = "NovaSharp Compiler (Rapid Prototype) Developed by AI"
 publish = false
-license = "MIT"
+license = "Apache-2.0"
 
 [[bin]]
 name = "ai-nsc"

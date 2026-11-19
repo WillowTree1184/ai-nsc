@@ -2,7 +2,7 @@
 
 ## State
 
-- Branch `main`; last feature commit `6a67e85` (§14.3.1 no-optimize semantics and @ spacing).
+- Branch `main`; last feature commit `$(git rev-parse --short HEAD)`
 - **Active goal: 100% draft-1.152 conformance, no more no less** (no
   compatibility syntax beyond the draft; no unimplemented normative rules).
   `git status` is clean.

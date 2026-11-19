@@ -619,6 +619,12 @@ impl<'a> Sema<'a> {
                             format!("duplicate field '{}'", field.name),
                         );
                     }
+                    if ty == type_id {
+                        self.error(
+                            self.span_of(*member),
+                            "a field type must not be its declaring type (§3.9.1)",
+                        );
+                    }
                     let field_scoped = self.resolve_scoped_targets(
                         &field.modifiers,
                         Some(type_id),
@@ -1121,29 +1127,10 @@ impl<'a> Sema<'a> {
             }
         }
         if !is_method {
-            if is_abstract {
-                self.error(
-                    self.span_of(node),
-                    "an extension-scoped function requires a body",
-                );
-                return None;
-            }
-            let parameters = self.resolve_parameters(&function)?;
-            let return_type = function.return_type.and_then(|ty| self.resolve_type(ty));
-            let calling_convention = self.resolve_calling_convention(function.calling_convention);
-            if let Some(Initializer::Block(body_block)) = declaration.init {
-                self.register_function(FunctionDeclaration {
-                    node,
-                    name: declaration.name.clone(),
-                    body: body_block,
-                    parameters,
-                    wildcard: function.wildcard,
-                    return_type,
-                    method_of: None,
-                    exposed_symbol: None,
-                    calling_convention,
-                });
-            }
+            self.error(
+                self.span_of(node),
+                "an extension function constant must be a method or 'static fixed' (§3.9.3)",
+            );
             return None;
         }
         let this_parameter = &function.parameters[this_position.unwrap_or(0)];

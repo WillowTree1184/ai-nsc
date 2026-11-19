@@ -4013,3 +4013,28 @@ fn linkable_variable_without_initializer_is_an_external_global() {
         "{ir}"
     );
 }
+
+#[test]
+fn non_static_extension_function_without_this_is_rejected() {
+    let stderr = check_source(
+        "\
+class Counter
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Helper(value: integer(4)): integer(4)
+        {
+            return value;
+        }
+    }
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(
+        stderr.contains("must be a method or 'static fixed'"),
+        "{stderr}"
+    );
+}

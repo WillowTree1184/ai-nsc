@@ -3159,7 +3159,7 @@ structure Vec2
 
 extension for Vec2
 {
-    public fixed Sum(left: Vec2, right: Vec2): integer(4)
+    public static fixed Sum(left: Vec2, right: Vec2): integer(4)
     {
         return left.X + right.X + left.Y + right.Y;
     }
@@ -3176,7 +3176,7 @@ fixed Main(): integer(4)
     local b: Vec2;
     b.X = 3;
     b.Y = 4;
-    return counter.Read() + Sum(a, b);
+    return counter.Read() + Vec2.Sum(a, b);
 }";
     // 2 + 10
     assert_eq!(run_program(source), 12);
@@ -5079,7 +5079,7 @@ fn self_referential_class_fields_have_reference_layout() {
     let source = "\
 class Node
 {
-    public Next: Node;
+    public Next: pointer Node;
     public Value: integer(4);
 }
 
@@ -5089,7 +5089,7 @@ fixed Main(): integer(4)
     heap second: Node = Node();
     first.Value = 1;
     second.Value = 2;
-    first.Next = second;
+    first.Next = &second;
     return first.Value + second.Value;
 }";
     assert_eq!(run_program(source), 3);
@@ -5102,7 +5102,7 @@ local destroyed: integer(4) = 0;
 
 class Node
 {
-    public Next: Node;
+    public Next: pointer Node;
 
     extension
     {
@@ -5117,8 +5117,8 @@ fixed Run(): integer(4)
 {
     heap first: Node = Node();
     heap second: Node = Node();
-    first.Next = second;
-    second.Next = first;
+    first.Next = &second;
+    second.Next = &first;
     return 0;
 }
 

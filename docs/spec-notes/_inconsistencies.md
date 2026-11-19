@@ -3,9 +3,9 @@
 The specification is a moving draft. This file records the places where a
 literal reading of the grammar contradicts the prose or the spec's own examples,
 and what ai-nsc does about each one. Line numbers refer to
-`docs/grammar/Draft 1.153.md`.
+`docs/grammar/Draft 1.162.md`.
 
-## Draft 1.153 resolved the earlier contradictions
+## Earlier contradictions resolved by Draft 1.153
 
 Draft 1.152 had several self-contradictions that were previously accommodated
 (expression-bodied function literals, `case pattern:` single-statement bodies,
@@ -70,3 +70,14 @@ questions. The ones that shape the implementation most:
 5. Inline assembly lowering details (operand constraint spelling, target syntax
    validation) are only partially specified; ai-nsc documents its choices in
    COVERAGE/AUDIT.
+
+## Draft 1.162 extension function-constant contradiction
+
+§3.9.3 states that an extension function constant without `this` and without
+`static` **must** be rejected ("扩展中的函数常量必须为方法或 `static fixed`；
+不带 `this` 参数且不带 `static` 的函数常量必须报错"). The §8.1 example block
+around line 8015 nevertheless labels `public fixed F: function() { }` as a
+legal "普通函数常量". ai-nsc follows the normative §3.9.3 rule; the example
+(example start line 7979) is therefore in the documented semantic-failure set
+and is not silently accepted. If a later draft changes §3.9.3 to allow this
+form, the rule and this whitelist entry should be removed together.

@@ -170,7 +170,7 @@ fn only_documented_spec_programs_fail_semantics() {
     use ainsc::diagnostics::DiagnosticEngine;
     use ainsc::sema;
 
-    const DOCUMENTED: &[usize] = &[3873, 4849, 4917, 6723, 6791, 6853, 7032, 9009, 10688];
+    const DOCUMENTED: &[usize] = &[3873, 4849, 4917, 6723, 6791, 6853, 7032, 7979, 9009, 10688];
     let spec = std::fs::read_to_string(spec_path()).expect("read the language specification");
     let examples = nova_examples(&spec);
     let mut failing = Vec::new();

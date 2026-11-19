@@ -1262,6 +1262,7 @@ pub fn analyze_with_options(
         heap_reference_locals: HashSet::new(),
         heap_custom_reference_locals: HashSet::new(),
         disposing_parameters: HashMap::new(),
+        parameter_escapes: HashMap::new(),
         pointer_aliases: HashMap::new(),
         element_heap_aliases: HashMap::new(),
         local_blocks: HashMap::new(),
@@ -1388,6 +1389,8 @@ pub(crate) struct Sema<'a> {
     pub(crate) heap_custom_reference_locals: HashSet<LocalId>,
     /// Parameter positions disposed by each function (interprocedural NOLAA).
     pub(crate) disposing_parameters: HashMap<u32, Vec<usize>>,
+    /// Per-function flags: whether each parameter's reference may escape.
+    pub(crate) parameter_escapes: HashMap<u32, Vec<bool>>,
     /// Pointer locals aliasing a heap unit (`local p = &heapUnit;`).
     pub(crate) pointer_aliases: HashMap<LocalId, u32>,
     /// Local containers holding heap units through element writes (`bucket[i] = unit`).

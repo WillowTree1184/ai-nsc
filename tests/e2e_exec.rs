@@ -3792,8 +3792,9 @@ fixed Main(): integer(4)
     local result: integer(4) = Run();
     return result + destroyed * 10;
 }";
-    // The second call is a demand again, so no auto-dispose happens.
-    assert_eq!(run_program(source), 6);
+    // The second call is still a demand, so the two calls cannot be separated by
+    // an early dispose; disposal happens at the safe point after the second call.
+    assert_eq!(run_program(source), 16);
 }
 
 #[test]

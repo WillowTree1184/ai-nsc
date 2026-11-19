@@ -32,6 +32,12 @@ intraprocedural heuristics in `src/sema/check.rs` to a full analysis.
   abandonment.
 - Interprocedural ownership for references returned by functions (default
   allocator, plus explicit-allocator class instances via the class-header slot).
+- Read-only parameter summaries: parameters whose reference is not returned,
+  stored, thrown, captured or passed on are marked read-only while the callee
+  body is checked; a caller that passes a heap unit to such a parameter keeps the
+  unit alive and can dispose it at the caller's safe point. Summaries are built
+  while checking bodies, so callers checked before the callee fall back to the
+  conservative escape rule.
 - Interprocedural parameter disposal: a function whose top-level body directly
   disposes a class parameter owns that unit; call sites mark the argument unit
   disposed (so the caller does not free it again) and reject non-heap arguments;

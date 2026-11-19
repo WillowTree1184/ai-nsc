@@ -2751,6 +2751,44 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         }
     }
 
+    /// All target registers assumed clobbered by an operand-free unannotated
+    /// assembly block (§5.2). Blocks with operands cannot list every register:
+    /// LLVM needs registers free for its own operand allocation.
+    fn all_register_clobbers(target: &str) -> Vec<&'static str> {
+        if target.starts_with("x86_64") {
+            vec![
+                "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "r8", "r9", "r10", "r11", "r12",
+                "r13", "r14", "r15", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6",
+                "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15",
+            ]
+        } else if target.starts_with("i686")
+            || target.starts_with("i386")
+            || target.starts_with("i486")
+            || target.starts_with("i586")
+        {
+            vec!["eax", "ebx", "ecx", "edx", "esi", "edi", "ebp"]
+        } else if target.starts_with("aarch64") || target.starts_with("arm64") {
+            vec![
+                "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12",
+                "x13", "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23", "x24",
+                "x25", "x26", "x27", "x28", "x29", "x30",
+            ]
+        } else if target.starts_with("arm") {
+            vec![
+                "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12",
+                "lr",
+            ]
+        } else if target.starts_with("riscv64") || target.starts_with("riscv32") {
+            vec![
+                "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13",
+                "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23", "x24", "x25",
+                "x26", "x27", "x28", "x29", "x30", "x31",
+            ]
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Lowers an inline-assembly statement (§5.2) to an LLVM `call asm`.
     fn gen_assembly_statement(&mut self, statement: &AssemblyStmt) -> Result<(), String> {
         struct OutputOperand<'ctx> {
@@ -2843,6 +2881,12 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 constraints.push("~{flags}".to_string());
                 constraints.push("~{fpsr}".to_string());
                 constraints.push("~{dirflag}".to_string());
+                if outputs.is_empty() && inputs.is_empty() {
+                    let target = self.options.target.as_deref().unwrap_or(crate::HOST_TRIPLE);
+                    for register in Self::all_register_clobbers(target) {
+                        constraints.push(format!("~{{{register}}}"));
+                    }
+                }
             }
             Some(names) => {
                 for name in names {

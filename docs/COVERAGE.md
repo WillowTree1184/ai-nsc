@@ -21,7 +21,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **405 tests**: 41 lib unit tests (lexer, literal,
+`cargo test` currently runs **407 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
 that read `docs/grammar/Draft 1.153.md` directly (a closed-set test also asserts that the only spec programs failing semantic analysis are the documented demonstration/inconsistency snippets):
@@ -185,9 +185,11 @@ implementing them is conforming and they are therefore not listed as deviations.
     type space. This affects reflection over those built-ins only; all specified
     query forms are evaluated. Tracked for the final §15.2 audit.
 
-14. **No-clobber assembly barrier breadth**: `assembly` without `clobber(...)` is
-    emitted as `sideeffect` with `~{memory}` and `~{cc}` (a global memory/flag
-    barrier). §5.2 also says all registers must be assumed clobbered; LLVM does
-    not expose a portable "clobber all registers" constraint list, so register
-    contents are not conservatively declared clobbered. Programs relying on the
-    strongest barrier semantics should write `clobber(...)` explicitly.
+14. **No-clobber assembly barrier breadth**: an operand-free `assembly` block
+    without `clobber(...)` now declares all target GPR/vector registers,
+    condition flags and memory clobbered (§5.2) and remains a global barrier.
+    An assembly block *with operands* cannot declare every register: LLVM needs
+    registers free for operand allocation and rejects such blocks ("requires
+    more registers than available"), so operand blocks still only declare
+    memory/flags and must use explicit `clobber(...)` when they touch other
+    registers.

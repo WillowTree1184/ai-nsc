@@ -5426,6 +5426,8 @@ impl<'a> Sema<'a> {
             let captures = self.result.functions[current].captures.clone();
             let constant_values = self.result.functions[current].constant_values.clone();
             self.current_function = Some(current as u32);
+            self.parameter_escapes
+                .insert(current as u32, vec![false; parameters.len()]);
             self.current_owner = method_of.or(static_owner);
             self.loop_labels.clear();
             self.heap_units.clear();
@@ -6498,6 +6500,9 @@ impl<'a> Sema<'a> {
                     };
                     let value_type = self.check_expr(statement.value, Some(accessor_type));
                     if let Some(value_type) = value_type {
+                        if self.is_reference_like(value_type) {
+                            self.mark_reference_parameters(statement.value);
+                        }
                         self.expect_assignable(
                             self.span_of(statement.value),
                             value_type,
@@ -6571,6 +6576,9 @@ impl<'a> Sema<'a> {
                 if let Some(target_type) = target_type {
                     let value_type = self.check_expr(statement.value, Some(target_type));
                     if let Some(value_type) = value_type {
+                        if self.is_reference_like(value_type) {
+                            self.mark_reference_parameters(statement.value);
+                        }
                         self.expect_assignable(
                             self.span_of(statement.value),
                             value_type,
@@ -6848,11 +6856,19 @@ impl<'a> Sema<'a> {
                     (Some(value), Some(expected)) => {
                         let value_type = self.check_expr(value, Some(expected));
                         if let Some(value_type) = value_type {
+                            if self.is_reference_like(value_type) {
+                                self.mark_reference_parameters(value);
+                            }
                             self.expect_assignable(self.span_of(value), value_type, expected);
                         }
                     }
                     (Some(value), None) => {
-                        self.check_expr(value, None);
+                        let value_type = self.check_expr(value, None);
+                        if let Some(value_type) = value_type {
+                            if self.is_reference_like(value_type) {
+                                self.mark_reference_parameters(value);
+                            }
+                        }
                         self.error(
                             self.span_of(node),
                             "a function with the empty return type cannot return a value",
@@ -7055,6 +7071,11 @@ impl<'a> Sema<'a> {
                     continue;
                 }
             };
+            if self.is_reference_like(ty) {
+                if let Some(initializer) = item.init {
+                    self.mark_reference_parameters(initializer);
+                }
+            }
             // An alias to a heap unit is an additional demand on it (§12.2):
             // conservative alias tracking marks the source unit as escaped.
             if let Some(initializer) = item.init {
@@ -7422,7 +7443,12 @@ impl<'a> Sema<'a> {
                 return;
             }
         }
-        self.check_expr(statement.value, None);
+        let value_type = self.check_expr(statement.value, None);
+        if let Some(value_type) = value_type {
+            if self.is_reference_like(value_type) {
+                self.mark_reference_parameters(statement.value);
+            }
+        }
     }
 
     fn check_trap_statement(&mut self, node: NodeId, statement: &TrapStmt) {
@@ -7563,6 +7589,56 @@ impl<'a> Sema<'a> {
             _ => return None,
         };
         self.pointer_aliases.get(&local).copied()
+    }
+
+    /// Marks the current function's parameter (if `local` is one) as escaping.
+    fn mark_parameter_escape(&mut self, local: LocalId) {
+        let Some(function) = self.current_function else {
+            return;
+        };
+        let Some(parameter) = self.local_info(local).and_then(|info| info.parameter) else {
+            return;
+        };
+        if let Some(flags) = self.parameter_escapes.get_mut(&function) {
+            if let Some(flag) = flags.get_mut(parameter as usize) {
+                *flag = true;
+            }
+        }
+    }
+
+    /// Marks reference-like parameters used by `node` as escaping whenever the
+    /// expression itself is stored/returned/throws a reference.
+    fn mark_reference_parameters(&mut self, node: NodeId) {
+        match self.node_kind(node) {
+            NodeKind::Name(name) => {
+                if let Some(Symbol::Local(local)) = self.lookup(&name.name).cloned() {
+                    self.mark_parameter_escape(local);
+                }
+            }
+            NodeKind::Unary(unary) if unary.op == UnaryOp::Reference => {
+                if let NodeKind::Name(name) = self.node_kind(unary.operand) {
+                    if let Some(Symbol::Local(local)) = self.lookup(&name.name).cloned() {
+                        self.mark_parameter_escape(local);
+                    }
+                }
+            }
+            NodeKind::MemberAccess(access) | NodeKind::PointerMemberAccess(access) => {
+                self.mark_reference_parameters(access.base);
+            }
+            NodeKind::Index(access) => self.mark_reference_parameters(access.base),
+            _ => {}
+        }
+    }
+
+    fn is_reference_like(&self, ty: TypeId) -> bool {
+        match self.type_of(ty) {
+            Type::Pointer { .. } => true,
+            Type::Named(index) => matches!(
+                self.result.type_defs[index as usize].kind,
+                TypeDefKind::Class | TypeDefKind::Interface
+            ),
+            _ => false,
+        }
     }
 
     /// Records a demand on all heap units reachable through a local (§12.2).
@@ -7750,6 +7826,9 @@ impl<'a> Sema<'a> {
             let inferred = self.check_expr(initializer, ty);
             self.initializer_depth -= 1;
             if let Some(inferred) = inferred {
+                if self.is_reference_like(inferred) {
+                    self.mark_reference_parameters(initializer);
+                }
                 match ty {
                     Some(ty) => self.expect_assignable(self.span_of(node), inferred, ty),
                     None => ty = Some(inferred),
@@ -11890,11 +11969,11 @@ impl<'a> Sema<'a> {
                             self.result.functions[*index as usize].exposed_symbol.is_some()
                         })
                 );
-            for argument in &call.arguments {
-                if linkable_call {
+            if linkable_call {
+                for argument in &call.arguments {
                     self.note_linkable_abandon(argument.value);
+                    self.note_heap_escape(argument.value);
                 }
-                self.note_heap_escape(argument.value);
             }
         }
         // Generic method calls: `receiver.Method<TypeArgs>(...)` (§10.2).
@@ -12813,46 +12892,66 @@ impl<'a> Sema<'a> {
 
     /// Applies interprocedural NOLAA effects of a resolved plain-function call:
     /// a callee that directly disposes a parameter takes ownership and frees the
-    /// caller's heap unit, so the caller must not dispose it again.
+    /// caller's heap unit; a callee whose parameter is never stored/returned does
+    /// not make the argument escape. Unknown callees stay conservative.
     fn apply_disposing_call_effects(&mut self, mapped: &[NodeId], selected: u32) {
         let function = &self.result.functions[selected as usize];
         if function.method_of.is_some() {
             return;
         }
-        let Some(positions) = self.disposing_parameters.get(&selected).cloned() else {
-            return;
-        };
-        if function.parameters.len() != mapped.len() {
+        let positions = self.disposing_parameters.get(&selected).cloned();
+        let parameters = self.result.functions[selected as usize].parameters.clone();
+        if parameters.len() != mapped.len() {
             return;
         }
-        for position in positions {
-            let Some(value) = mapped.get(position).copied() else {
-                continue;
-            };
-            let local = match self.node_kind(value) {
-                NodeKind::Name(name) => match self.lookup(&name.name).cloned() {
-                    Some(Symbol::Local(local)) => Some(local),
+        let escapes = self.parameter_escapes.get(&selected).cloned();
+        for (position, value) in mapped.iter().enumerate() {
+            let disposing = positions
+                .as_ref()
+                .is_some_and(|positions| positions.contains(&position));
+            if disposing {
+                let local = match self.node_kind(*value) {
+                    NodeKind::Name(name) => match self.lookup(&name.name).cloned() {
+                        Some(Symbol::Local(local)) => Some(local),
+                        _ => None,
+                    },
                     _ => None,
-                },
-                _ => None,
-            };
-            if let Some(unit) = self.heap_source_unit(value) {
-                self.heap_units[unit as usize].disposed = true;
-                self.heap_units[unit as usize].maybe_disposed = false;
-                if let Some(local) = local {
-                    self.disposed_locals.insert(local);
-                    self.certain_disposed_locals.insert(local);
-                }
-            } else if self.heap_reference_kind(value).is_some() {
-                if let Some(local) = local {
-                    self.disposed_locals.insert(local);
-                    self.certain_disposed_locals.insert(local);
+                };
+                if let Some(unit) = self.heap_source_unit(*value) {
+                    self.heap_units[unit as usize].disposed = true;
+                    self.heap_units[unit as usize].maybe_disposed = false;
+                    if let Some(local) = local {
+                        self.disposed_locals.insert(local);
+                        self.certain_disposed_locals.insert(local);
+                    }
+                } else if self.heap_reference_kind(*value).is_some() {
+                    if let Some(local) = local {
+                        self.disposed_locals.insert(local);
+                        self.certain_disposed_locals.insert(local);
+                    }
+                } else {
+                    self.error(
+                        self.span_of(*value),
+                        "an argument passed to a disposing parameter must point to a heap allocation unit (§5.8)",
+                    );
                 }
             } else {
-                self.error(
-                    self.span_of(value),
-                    "an argument passed to a disposing parameter must point to a heap allocation unit (§5.8)",
-                );
+                let read_only = escapes
+                    .as_ref()
+                    .and_then(|flags| flags.get(position))
+                    .is_some_and(|escaped| !escaped);
+                if !read_only {
+                    self.note_heap_escape(*value);
+                }
+            }
+            let value_type = self
+                .result
+                .node_types
+                .get(*value as usize)
+                .copied()
+                .flatten();
+            if value_type.is_some_and(|ty| self.is_reference_like(ty)) {
+                self.mark_reference_parameters(*value);
             }
         }
     }
@@ -12860,40 +12959,56 @@ impl<'a> Sema<'a> {
     /// Method/constructor variant of `apply_disposing_call_effects`: mapped
     /// arguments correspond to parameters[1..] (the receiver is implicit).
     fn apply_disposing_method_effects(&mut self, mapped: &[NodeId], selected: u32) {
-        let Some(positions) = self.disposing_parameters.get(&selected).cloned() else {
-            return;
-        };
-        for position in positions {
-            if position == 0 {
-                continue;
-            }
-            let Some(value) = mapped.get(position - 1).copied() else {
-                continue;
-            };
-            let local = match self.node_kind(value) {
-                NodeKind::Name(name) => match self.lookup(&name.name).cloned() {
-                    Some(Symbol::Local(local)) => Some(local),
+        let positions = self.disposing_parameters.get(&selected).cloned();
+        let escapes = self.parameter_escapes.get(&selected).cloned();
+        for (offset, value) in mapped.iter().enumerate() {
+            let position = offset + 1;
+            let disposing = positions
+                .as_ref()
+                .is_some_and(|positions| positions.contains(&position));
+            if disposing {
+                let local = match self.node_kind(*value) {
+                    NodeKind::Name(name) => match self.lookup(&name.name).cloned() {
+                        Some(Symbol::Local(local)) => Some(local),
+                        _ => None,
+                    },
                     _ => None,
-                },
-                _ => None,
-            };
-            if let Some(unit) = self.heap_source_unit(value) {
-                self.heap_units[unit as usize].disposed = true;
-                self.heap_units[unit as usize].maybe_disposed = false;
-                if let Some(local) = local {
-                    self.disposed_locals.insert(local);
-                    self.certain_disposed_locals.insert(local);
-                }
-            } else if self.heap_reference_kind(value).is_some() {
-                if let Some(local) = local {
-                    self.disposed_locals.insert(local);
-                    self.certain_disposed_locals.insert(local);
+                };
+                if let Some(unit) = self.heap_source_unit(*value) {
+                    self.heap_units[unit as usize].disposed = true;
+                    self.heap_units[unit as usize].maybe_disposed = false;
+                    if let Some(local) = local {
+                        self.disposed_locals.insert(local);
+                        self.certain_disposed_locals.insert(local);
+                    }
+                } else if self.heap_reference_kind(*value).is_some() {
+                    if let Some(local) = local {
+                        self.disposed_locals.insert(local);
+                        self.certain_disposed_locals.insert(local);
+                    }
+                } else {
+                    self.error(
+                        self.span_of(*value),
+                        "an argument passed to a disposing parameter must point to a heap allocation unit (§5.8)",
+                    );
                 }
             } else {
-                self.error(
-                    self.span_of(value),
-                    "an argument passed to a disposing parameter must point to a heap allocation unit (§5.8)",
-                );
+                let read_only = escapes
+                    .as_ref()
+                    .and_then(|flags| flags.get(position))
+                    .is_some_and(|escaped| !escaped);
+                if !read_only {
+                    self.note_heap_escape(*value);
+                }
+            }
+            let value_type = self
+                .result
+                .node_types
+                .get(*value as usize)
+                .copied()
+                .flatten();
+            if value_type.is_some_and(|ty| self.is_reference_like(ty)) {
+                self.mark_reference_parameters(*value);
             }
         }
     }

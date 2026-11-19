@@ -3823,7 +3823,7 @@ fixed Main(): integer(4)
 }
 
 #[test]
-fn operand_assembly_relies_on_its_declared_clobbers() {
+fn operand_assembly_pins_operands_and_clobbers_other_registers() {
     use std::sync::atomic::{AtomicU32, Ordering};
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     let directory = std::env::temp_dir().join(format!(
@@ -3917,4 +3917,50 @@ fixed Main(): integer(4)
         stderr.contains("environment facts known at compile time"),
         "{stderr}"
     );
+}
+
+#[test]
+fn operand_assembly_emits_full_register_barriers_on_supported_architectures() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let cases = [
+        ("x86_64-unknown-linux-gnu", "add @[value], 1"),
+        ("aarch64-unknown-linux-gnu", "add @[value], @[value], 1"),
+        ("riscv64-unknown-linux-gnu", "addi @[value], @[value], 1"),
+        (
+            "armv7-unknown-linux-gnueabihf",
+            "add @[value], @[value], #1",
+        ),
+    ];
+    for (target, instruction) in cases {
+        let directory = std::env::temp_dir().join(format!(
+            "ainsc-cli-asm-pinned-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&directory).expect("create temp dir");
+        let path = directory.join("program.ns");
+        std::fs::write(
+            &path,
+            format!(
+                "fixed Main(): integer(4)\n{{\n    local value: integer(4) = 1;\n    assembly {{ {instruction} }}\n    return value;\n}}"
+            ),
+        )
+        .expect("write");
+        let output = ai_nsc()
+            .args([
+                "emit-obj",
+                "--target",
+                target,
+                path.to_str().expect("utf-8 path"),
+            ])
+            .output()
+            .expect("run ai-nsc");
+        let _ = std::fs::remove_dir_all(&directory);
+        assert!(
+            output.status.success(),
+            "{target}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }

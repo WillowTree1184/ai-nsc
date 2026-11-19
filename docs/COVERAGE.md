@@ -21,7 +21,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **411 tests**: 41 lib unit tests (lexer, literal,
+`cargo test` currently runs **412 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
 that read `docs/grammar/Draft 1.153.md` directly (a closed-set test also asserts that the only spec programs failing semantic analysis are the documented demonstration/inconsistency snippets):
@@ -69,7 +69,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §4.9.6/4.9.7 `&`/`*` reference expressions | ✅ | pointer/reference tests |
 | §4.9.26 `??` with `Optional`/`Result` and all continuations | ✅ | coalescing + user `operator ??` tests |
 | §4.9.27 `?:` conditional expression | ✅ | conditional e2e |
-| §5.2 inline assembly: `assembly [with clobber(...)] { text + @[expr:dir] }`, escapes, placeholders, target syntax | ✅ | lexer keyword/raw-block scanner, parser (Intel-style text preserved, `@@`/`@}`/`@@[` escapes, `@[expr]`/`:in`/`:out`, duplicate/invalid clobber diagnostics), sema (function-body only, no compile-time/module/type/constant positions, lvalue rules, scalar operand types), LLVM InlineAsm lowering (outputs/tied read-write inputs, memory/cc clobber or global barrier, Intel dialect on x86; e2e mov/add); `check` now code-generates and assembles assembly-containing programs to a temporary object so invalid target text is a static error |
+| §5.2 inline assembly: `assembly [with clobber(...)] { text + @[expr:dir] }`, escapes, placeholders, target syntax | ✅ | lexer keyword/raw-block scanner, parser (Intel-style text preserved, `@@`/`@}`/`@@[` escapes, `@[expr]`/`:in`/`:out`, duplicate/invalid clobber diagnostics), sema (function-body only, no compile-time/module/type/constant positions, lvalue rules, scalar operand types), LLVM InlineAsm lowering (outputs/tied read-write inputs, memory/cc clobber or global barrier, Intel dialect on x86; unannotated operand blocks pin each operand to a fixed target register and declare every other target register clobbered; e2e x86_64 mov/add and cross-target operand-barrier object emission); `check` now code-generates and assembles assembly-containing programs to a temporary object so invalid target text is a static error |
 | §5 statements: blocks, locals/fixed, set/compound, if, while/do, for, match, break/continue, return, trap/finally, throw, dispose, export/use | ✅ | statement e2e tests; `finally` executes on fall-through and normal `return` paths (rejected `return` inside `finally`); `do-while` conditions are checked in the body block's scope; `dispose` targets must be heap allocation units (scope-lifetime instances are rejected per §5.9); direct local field pointer dispose targets are supported, arbitrary pointer/container paths are diagnosed (deviation 12); the `local @` no-optimize marker is only accepted immediately after `local` (applying to all items), not per item; runtime statements/expressions are rejected at file/module top level (only declarations, `#{}`, `#if` and `#()` are allowed there) |
 | §5.7 `use` imports (per scope, later imports first, multi-file) | ✅ | use tests |
 | §5.10.6 `match`: patterns, guards, logical control flow (break/continue/labels) | ✅ | match e2e tests |
@@ -131,15 +131,13 @@ are not listed.
    frozen facts and locals initialized from them fold at compile time. A query on
    a facts-typed parameter/value whose origin is not statically tracked is
    explicitly diagnosed (§11.9.3 requires compile-time evaluation).
-5. **Operand-block assembly all-register barrier**: an operand-free `assembly`
-   block without `clobber(...)` declares all target GPR/vector registers, flags
-   and memory clobbered. An assembly block with operands cannot declare every
-   register because LLVM needs registers free for operand allocation, so it
-   declares memory/flags and relies on explicit `clobber(...)` for other
-   registers.
 
 ## Capabilities and implementation notes (not deviations)
 
+- Unannotated inline assembly is a full register barrier: operand-free blocks
+  clobber all target registers, and operand blocks pin each operand to a fixed
+  target register, clobbering every other register. `clobber(...)` remains
+  available for explicit declarations. (§5.2)
 - `@` no-optimize markers are fully implemented (§14.3.1): expressions, blocks,
   `local @Name`, `fixed @Name`, `optnone`, literal materialisation, adjacency
   diagnostics and fixed/local initial-value restrictions.

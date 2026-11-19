@@ -7,7 +7,7 @@
   authoritative specification is `docs/grammar/Draft 1.153.md`; Draft 1.152 is
   historical only.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  — **411 tests green** (41 lib unit, 138 CLI, 2 codegen/LLVM, 1 MCJIT probe,
+  — **412 tests green** (41 lib unit, 139 CLI, 2 codegen/LLVM, 1 MCJIT probe,
   2 JIT compile-time evaluation, 214 end-to-end execution, 10 parser, 3
   spec-example conformance). The spec-conformance tests read `Draft 1.153.md`:
   all 97 `novasharp` examples parse (the bare inline-assembly block and the bare

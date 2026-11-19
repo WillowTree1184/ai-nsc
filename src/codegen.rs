@@ -2789,8 +2789,226 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         }
     }
 
+    /// Registers usable as pinned asm operands, so the remaining registers can
+    /// all be declared clobbered for an unannotated operand block.
+    fn pinned_asm_registers(target: &str) -> Option<Vec<&'static str>> {
+        if target.starts_with("x86_64") {
+            Some(vec![
+                "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12", "r13",
+                "r14", "r15",
+            ])
+        } else if target.starts_with("i686")
+            || target.starts_with("i386")
+            || target.starts_with("i486")
+            || target.starts_with("i586")
+        {
+            Some(vec!["eax", "ebx", "ecx", "edx", "esi", "edi"])
+        } else if target.starts_with("aarch64") || target.starts_with("arm64") {
+            Some(
+                [
+                    "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11",
+                    "x12", "x13", "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21", "x22",
+                    "x23", "x24", "x25", "x26", "x27", "x28", "x29", "x30",
+                ]
+                .to_vec(),
+            )
+        } else if target.starts_with("arm") {
+            Some(
+                [
+                    "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11",
+                ]
+                .to_vec(),
+            )
+        } else if target.starts_with("riscv64") || target.starts_with("riscv32") {
+            Some(
+                [
+                    "x1", "x3", "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13",
+                    "x14", "x15", "x16", "x17", "x18", "x19", "x20", "x21", "x22", "x23", "x24",
+                    "x25", "x26", "x27", "x28", "x29", "x30", "x31",
+                ]
+                .to_vec(),
+            )
+        } else {
+            None
+        }
+    }
+
     /// Lowers an inline-assembly statement (§5.2) to an LLVM `call asm`.
+    /// Lowers an unannotated operand block by pinning every operand to a fixed
+    /// register and declaring every other target register clobbered (§5.2).
+    fn gen_pinned_assembly(
+        &mut self,
+        statement: &AssemblyStmt,
+        registers: &[&'static str],
+    ) -> Result<(), String> {
+        struct PinnedOperand<'ctx> {
+            direction: AssemblyDirection,
+            ty: BasicTypeEnum<'ctx>,
+            pointer: Option<PointerValue<'ctx>>,
+            value: Option<BasicValueEnum<'ctx>>,
+            register: &'static str,
+        }
+        let mut operands: Vec<PinnedOperand<'ctx>> = Vec::new();
+        let mut register_index = 0usize;
+        for segment in &statement.segments {
+            let AssemblySegment::Placeholder {
+                expression,
+                direction,
+            } = segment
+            else {
+                continue;
+            };
+            let ty = self
+                .sema
+                .node_types
+                .get(*expression as usize)
+                .copied()
+                .flatten()
+                .ok_or_else(|| "missing assembly operand type".to_string())?;
+            let llvm_ty = self.llvm_type(ty)?;
+            let register = registers[register_index];
+            register_index += 1;
+            let (pointer, value) = match direction {
+                AssemblyDirection::In => (None, Some(self.gen_expr(*expression)?)),
+                AssemblyDirection::Out => {
+                    let pointer = self
+                        .gen_lvalue(*expression)?
+                        .ok_or_else(|| "assembly output is not addressable".to_string())?;
+                    (Some(pointer), None)
+                }
+                AssemblyDirection::ReadWrite => {
+                    let pointer = self
+                        .gen_lvalue(*expression)?
+                        .ok_or_else(|| "assembly operand is not addressable".to_string())?;
+                    let value = self
+                        .builder
+                        .build_load(llvm_ty, pointer, "asm_input")
+                        .map_err(|error| format!("cannot load assembly operand: {error}"))?;
+                    (Some(pointer), Some(value))
+                }
+            };
+            operands.push(PinnedOperand {
+                direction: *direction,
+                ty: llvm_ty,
+                pointer,
+                value,
+                register,
+            });
+        }
+        let output_types: Vec<BasicTypeEnum<'ctx>> =
+            operands.iter().map(|operand| operand.ty).collect();
+        let mut constraints: Vec<String> = operands
+            .iter()
+            .map(|operand| format!("={{{}}}", operand.register))
+            .collect();
+        let mut args: Vec<BasicMetadataValueEnum<'ctx>> = Vec::new();
+        let mut arg_types: Vec<BasicMetadataTypeEnum<'ctx>> = Vec::new();
+        for (index, operand) in operands.iter().enumerate() {
+            if let Some(value) = operand.value {
+                constraints.push(index.to_string());
+                args.push(value.into());
+                arg_types.push(value.get_type().into());
+            }
+        }
+        let target = self.options.target.as_deref().unwrap_or(crate::HOST_TRIPLE);
+        constraints.push("~{memory}".to_string());
+        constraints.push("~{cc}".to_string());
+        constraints.push("~{flags}".to_string());
+        constraints.push("~{fpsr}".to_string());
+        constraints.push("~{dirflag}".to_string());
+        for register in Self::all_register_clobbers(target) {
+            if !operands.iter().any(|operand| operand.register == register) {
+                constraints.push(format!("~{{{register}}}"));
+            }
+        }
+        let output_type: Option<BasicTypeEnum<'ctx>> = match output_types.len() {
+            0 => None,
+            1 => Some(output_types[0]),
+            _ => Some(self.context.struct_type(&output_types, false).into()),
+        };
+        let function_type = match output_type {
+            Some(ty) => ty.fn_type(&arg_types, false),
+            None => self.context.void_type().fn_type(&arg_types, false),
+        };
+        let mut assembly = String::new();
+        let mut placeholder = 0usize;
+        for segment in &statement.segments {
+            match segment {
+                AssemblySegment::Text(text) => assembly.push_str(text),
+                AssemblySegment::Placeholder { .. } => {
+                    assembly.push('$');
+                    assembly.push_str(&placeholder.to_string());
+                    placeholder += 1;
+                }
+            }
+        }
+        let dialect = if target.starts_with("x86_64")
+            || target.starts_with("i386")
+            || target.starts_with("i486")
+            || target.starts_with("i586")
+            || target.starts_with("i686")
+        {
+            Some(InlineAsmDialect::Intel)
+        } else {
+            None
+        };
+        let asm_pointer = self.context.create_inline_asm(
+            function_type,
+            assembly,
+            constraints.join(","),
+            true,
+            false,
+            dialect,
+            false,
+        );
+        let call = self
+            .builder
+            .build_indirect_call(function_type, asm_pointer, &args, "asm")
+            .map_err(|error| format!("cannot emit inline assembly: {error}"))?;
+        let Some(value) = call.try_as_basic_value().basic() else {
+            return Ok(());
+        };
+        let output_values: Vec<BasicValueEnum<'ctx>> = if operands.len() == 1 {
+            vec![value]
+        } else {
+            let BasicValueEnum::StructValue(struct_value) = value else {
+                return Err("inline assembly returned an unexpected value".to_string());
+            };
+            (0..operands.len())
+                .map(|index| {
+                    self.builder
+                        .build_extract_value(struct_value, index as u32, "asm_output")
+                        .map_err(|error| format!("cannot extract assembly output: {error}"))
+                })
+                .collect::<Result<_, _>>()?
+        };
+        for (index, operand) in operands.iter().enumerate() {
+            if matches!(operand.direction, AssemblyDirection::In) {
+                continue;
+            }
+            if let Some(pointer) = operand.pointer {
+                self.builder
+                    .build_store(pointer, output_values[index])
+                    .map_err(|error| format!("cannot store assembly output: {error}"))?;
+            }
+        }
+        Ok(())
+    }
+
     fn gen_assembly_statement(&mut self, statement: &AssemblyStmt) -> Result<(), String> {
+        if statement.clobbers.is_none() {
+            let target = self.options.target.as_deref().unwrap_or(crate::HOST_TRIPLE);
+            if let Some(registers) = Self::pinned_asm_registers(target) {
+                let placeholders = statement
+                    .segments
+                    .iter()
+                    .filter(|segment| matches!(segment, AssemblySegment::Placeholder { .. }))
+                    .count();
+                if placeholders > 0 && placeholders <= registers.len() {
+                    return self.gen_pinned_assembly(statement, &registers);
+                }
+            }
+        }
         struct OutputOperand<'ctx> {
             ty: BasicTypeEnum<'ctx>,
             pointer: PointerValue<'ctx>,

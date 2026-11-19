@@ -3533,9 +3533,22 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Resolves a member access chain to an object name and dotted scalar field
+    /// path (including nested value structures and pointer traversal).
+    fn compile_time_field_path(&self, node: NodeId) -> Option<(String, String)> {
+        let NodeKind::MemberAccess(member) = self.node_kind(node).clone() else {
+            return None;
+        };
+        if let Some(object_name) = self.compile_time_object_reference(member.base) {
+            return Some((object_name, member.name.clone()));
+        }
+        let (object_name, base_path) = self.compile_time_field_path(member.base)?;
+        Some((object_name, format!("{base_path}.{}", member.name)))
+    }
+
     /// Resolves a compile-time object's pointer field type, if the field is a
     /// pointer.
-    fn compile_time_pointer_field(&self, object_name: &str, field_name: &str) -> bool {
+    fn compile_time_reference_field(&self, object_name: &str, field_name: &str) -> bool {
         let Some(object) = self.compile_time_objects.get(object_name) else {
             return false;
         };
@@ -3546,7 +3559,16 @@ impl<'a> Sema<'a> {
             .fields
             .iter()
             .any(|field| {
-                field.name == field_name && matches!(self.types_of(field.ty), Type::Pointer { .. })
+                if field.name != field_name {
+                    return false;
+                }
+                match self.types_of(field.ty) {
+                    Type::Pointer { .. } => true,
+                    Type::Named(index) => {
+                        self.result.type_defs[index as usize].kind == TypeDefKind::Class
+                    }
+                    _ => false,
+                }
             })
     }
 
@@ -3579,10 +3601,29 @@ impl<'a> Sema<'a> {
         value: &NodeId,
         compound: Option<crate::ast::BinaryOp>,
     ) {
+        if let NodeKind::MemberAccess(_) = self.node_kind(*target).clone() {
+            if let Some((object_name, path)) = self.compile_time_field_path(*target) {
+                if self
+                    .compile_time_objects
+                    .get(&object_name)
+                    .is_some_and(|object| object.fields.contains_key(&path))
+                {
+                    self.suppress_errors += 1;
+                    let evaluated = self.eval_const_int(*value);
+                    self.suppress_errors -= 1;
+                    if let Some(evaluated) = evaluated {
+                        if let Some(object) = self.compile_time_objects.get_mut(&object_name) {
+                            object.fields.insert(path, evaluated);
+                        }
+                        return;
+                    }
+                }
+            }
+        }
         if let NodeKind::MemberAccess(member) = self.node_kind(*target).clone() {
             if matches!(self.node_kind(member.base), NodeKind::This) {
                 if let Some(object_name) = self.compile_time_this_stack.last().cloned() {
-                    if self.compile_time_pointer_field(&object_name, &member.name) {
+                    if self.compile_time_reference_field(&object_name, &member.name) {
                         if let Some(value) = self.compile_time_pointer_value(*value) {
                             self.store_compile_time_pointer(&object_name, &member.name, value);
                             return;
@@ -3601,7 +3642,7 @@ impl<'a> Sema<'a> {
             }
             if matches!(self.node_kind(member.base), NodeKind::MemberAccess(_)) {
                 if let Some(object_name) = self.compile_time_object_reference(member.base) {
-                    if self.compile_time_pointer_field(&object_name, &member.name) {
+                    if self.compile_time_reference_field(&object_name, &member.name) {
                         if let Some(value) = self.compile_time_pointer_value(*value) {
                             self.store_compile_time_pointer(&object_name, &member.name, value);
                             return;
@@ -3620,7 +3661,7 @@ impl<'a> Sema<'a> {
             }
             if let NodeKind::Name(base) = self.node_kind(member.base) {
                 if self.compile_time_objects.contains_key(&base.name) {
-                    if self.compile_time_pointer_field(&base.name, &member.name) {
+                    if self.compile_time_reference_field(&base.name, &member.name) {
                         if let Some(value) = self.compile_time_pointer_value(*value) {
                             self.store_compile_time_pointer(&base.name, &member.name, value);
                             return;
@@ -4545,21 +4586,66 @@ impl<'a> Sema<'a> {
             current = base_index;
         }
         for index in chain.into_iter().rev() {
-            let definition = &self.result.type_defs[index as usize];
-            let names: Vec<(String, Option<NodeId>)> = definition
-                .fields
-                .iter()
-                .zip(definition.field_initializers.iter())
-                .map(|(field, initializer)| (field.name.clone(), *initializer))
-                .collect();
-            for (name, initializer) in names {
-                let value = initializer
-                    .and_then(|expression| self.eval_const_int(expression))
-                    .unwrap_or(0);
-                fields.insert(name, value);
-            }
+            self.collect_compile_time_fields(index, "", &mut fields, 0);
         }
         fields
+    }
+
+    /// Collects scalar leaf fields recursively; nested value structures are
+    /// stored under dotted paths like `Inner.Value` (§11.4).
+    fn collect_compile_time_fields(
+        &mut self,
+        index: u32,
+        prefix: &str,
+        fields: &mut HashMap<String, i128>,
+        depth: u32,
+    ) {
+        if depth > 16 {
+            return;
+        }
+        let declared: Vec<(String, TypeId, Option<NodeId>)> = self.result.type_defs[index as usize]
+            .fields
+            .iter()
+            .zip(
+                self.result.type_defs[index as usize]
+                    .field_initializers
+                    .iter(),
+            )
+            .map(|(field, initializer)| (field.name.clone(), field.ty, *initializer))
+            .collect();
+        for (name, ty, initializer) in declared {
+            let path = format!("{prefix}{name}");
+            match self.types_of(ty) {
+                Type::Pointer { .. } => {}
+                Type::Integer { .. } | Type::Boolean => {
+                    let value = initializer
+                        .and_then(|expression| self.eval_const_int(expression))
+                        .unwrap_or(0);
+                    fields.insert(path, value);
+                }
+                Type::Named(field_index) => {
+                    let kind = self.result.type_defs[field_index as usize].kind;
+                    if kind == TypeDefKind::Enumeration {
+                        let value = initializer
+                            .and_then(|expression| self.eval_const_int(expression))
+                            .unwrap_or(0);
+                        fields.insert(path, value);
+                    } else if kind == TypeDefKind::Structure
+                        && !self.result.type_defs[field_index as usize]
+                            .methods
+                            .contains_key("Destruct")
+                    {
+                        self.collect_compile_time_fields(
+                            field_index,
+                            &format!("{path}."),
+                            fields,
+                            depth + 1,
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Executes a compile-time constructor/destructor body with `this` bound to
@@ -4667,32 +4753,72 @@ impl<'a> Sema<'a> {
         let Type::Named(index) = self.types_of(object.ty) else {
             return;
         };
-        let definition = &self.result.type_defs[index as usize];
-        if definition.kind != TypeDefKind::Structure || definition.methods.contains_key("Destruct")
-        {
-            return;
-        }
         let mut fields = Vec::new();
-        for field in &definition.fields {
-            let allowed = match self.types_of(field.ty) {
-                Type::Integer { .. } => true,
-                Type::Named(field_index) => matches!(
-                    self.result.type_defs[field_index as usize].kind,
-                    TypeDefKind::Enumeration
-                ),
-                _ => field.ty == TypeId::BOOLEAN,
-            };
-            if !allowed {
-                return;
-            }
-            let Some(value) = object.fields.get(&field.name).copied() else {
-                return;
-            };
-            fields.push((field.name.clone(), value));
+        if self.collect_compile_time_copy_fields(index, "", &object.fields, &mut fields, 0) {
+            self.result
+                .compile_time_object_copies
+                .insert(name.to_string(), (object.ty, fields));
         }
-        self.result
-            .compile_time_object_copies
-            .insert(name.to_string(), (object.ty, fields));
+    }
+
+    /// Collects copyable scalar leaf paths recursively; returns false when the
+    /// structure contains pointers, classes, arrays or destructors.
+    fn collect_compile_time_copy_fields(
+        &self,
+        index: u32,
+        prefix: &str,
+        values: &HashMap<String, i128>,
+        fields: &mut Vec<(String, i128)>,
+        depth: u32,
+    ) -> bool {
+        if depth > 16 || self.result.type_defs[index as usize].kind != TypeDefKind::Structure {
+            return false;
+        }
+        if self.result.type_defs[index as usize]
+            .methods
+            .contains_key("Destruct")
+        {
+            return false;
+        }
+        let declared: Vec<(String, TypeId)> = self.result.type_defs[index as usize]
+            .fields
+            .iter()
+            .map(|field| (field.name.clone(), field.ty))
+            .collect();
+        for (name, ty) in declared {
+            let path = format!("{prefix}{name}");
+            match self.types_of(ty) {
+                Type::Integer { .. } | Type::Boolean => {
+                    let Some(value) = values.get(&path).copied() else {
+                        return false;
+                    };
+                    fields.push((path, value));
+                }
+                Type::Named(field_index) => {
+                    let kind = self.result.type_defs[field_index as usize].kind;
+                    if kind == TypeDefKind::Enumeration {
+                        let Some(value) = values.get(&path).copied() else {
+                            return false;
+                        };
+                        fields.push((path, value));
+                    } else if kind == TypeDefKind::Structure {
+                        if !self.collect_compile_time_copy_fields(
+                            field_index,
+                            &format!("{path}."),
+                            values,
+                            fields,
+                            depth + 1,
+                        ) {
+                            return false;
+                        }
+                    } else {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+        true
     }
 
     /// Destroys every live compile-time object in reverse construction order.

@@ -6730,14 +6730,24 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         let Type::Named(index) = self.sema.types.get(ty).clone() else {
             return Err("compile-time object copy requires a named type".to_string());
         };
-        let definition = &self.sema.type_defs[index as usize];
-        let fields = definition.fields.clone();
-        let info = self
-            .struct_types
-            .get(&index)
-            .ok_or_else(|| "missing struct type".to_string())?;
-        let llvm_type = info.llvm_type;
-        let semantic_to_llvm = info.semantic_to_llvm.clone();
+        self.gen_compile_time_copy_struct(index, "", &values)
+    }
+
+    /// Builds a nested structure constant from dotted scalar paths.
+    fn gen_compile_time_copy_struct(
+        &mut self,
+        index: u32,
+        prefix: &str,
+        values: &[(String, i128)],
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let definition = self.sema.type_defs[index as usize].clone();
+        let (llvm_type, semantic_to_llvm) = {
+            let info = self
+                .struct_types
+                .get(&index)
+                .ok_or_else(|| "missing struct type".to_string())?;
+            (info.llvm_type, info.semantic_to_llvm.clone())
+        };
         let mut constants: Vec<BasicValueEnum<'ctx>> = Vec::new();
         for field_index in 0..llvm_type.count_fields() {
             let field_type = llvm_type
@@ -6745,15 +6755,33 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 .ok_or_else(|| "missing struct field type".to_string())?;
             constants.push(field_type.const_zero());
         }
-        for (semantic, field) in fields.iter().enumerate() {
+        for (semantic, field) in definition.fields.iter().enumerate() {
             let Some(llvm_index) = semantic_to_llvm.get(semantic).copied() else {
                 continue;
             };
-            let Some((_, value)) = values.iter().find(|(name, _)| name == &field.name) else {
-                continue;
+            let path = format!("{prefix}{}", field.name);
+            let value = match self.sema.types.get(field.ty).clone() {
+                Type::Integer { .. } | Type::Boolean => {
+                    let Some((_, value)) = values.iter().find(|(name, _)| name == &path) else {
+                        continue;
+                    };
+                    let llvm_type = self.llvm_type(field.ty)?.into_int_type();
+                    llvm_type.const_int(*value as u64, false).into()
+                }
+                Type::Named(field_index) => {
+                    if self.sema.type_defs[field_index as usize].kind == TypeDefKind::Enumeration {
+                        let Some((_, value)) = values.iter().find(|(name, _)| name == &path) else {
+                            continue;
+                        };
+                        let llvm_type = self.llvm_type(field.ty)?.into_int_type();
+                        llvm_type.const_int(*value as u64, false).into()
+                    } else {
+                        self.gen_compile_time_copy_struct(field_index, &format!("{path}."), values)?
+                    }
+                }
+                _ => continue,
             };
-            let llvm_type = self.llvm_type(field.ty)?.into_int_type();
-            constants[llvm_index as usize] = llvm_type.const_int(*value as u64, false).into();
+            constants[llvm_index as usize] = value;
         }
         Ok(llvm_type.const_named_struct(&constants).into())
     }

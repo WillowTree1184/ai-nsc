@@ -6129,3 +6129,54 @@ class Node
 fixed Main(): integer(4) { return seen; }";
     assert_eq!(run_program(source), 1);
 }
+
+#[test]
+fn compile_time_nested_value_fields_copy_and_are_accessible() {
+    let source = "\
+structure Inner
+{
+    public X: integer(4);
+}
+
+structure Outer
+{
+    public Inner: Inner;
+}
+
+#{
+    heap outer: Outer = Outer();
+    outer.Inner.X = 7;
+}
+
+fixed Main(): integer(4)
+{
+    local copy: Outer = outer;
+    return copy.Inner.X;
+}";
+    assert_eq!(run_program(source), 7);
+}
+
+#[test]
+fn compile_time_objects_support_class_reference_fields() {
+    let source = "\
+class Child
+{
+    public Value: integer(4);
+}
+
+class Parent
+{
+    public Child: Child;
+}
+
+#{
+    heap child: Child = Child();
+    child.Value = 5;
+    heap parent: Parent = Parent();
+    parent.Child = child;
+    local seen: integer(4) = parent.Child.Value;
+}
+
+fixed Main(): integer(4) { return seen; }";
+    assert_eq!(run_program(source), 5);
+}

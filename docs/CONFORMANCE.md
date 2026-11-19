@@ -49,6 +49,17 @@ Current result: **429 tests green**, formatting clean, clippy with zero warnings
 | §8.5/§13.2 `#`/`&` | contracts participate in type equality and mangling; only-contract overloads rejected |
 | §9.5/§10.2/§11.7 | duplicate `scoped` rejected; identifier-only monomorphization base; default expressions are caller-side runtime values |
 
+## Non-`Main` example diagnostics
+
+A full `ai-nsc check` scan over all 102 fences reports 32 diagnostics. Most are
+expected demonstration/fragment material: elided function bodies, bare type or
+closure syntax, undefined illustrative names, the launcher's multiple `Main`
+example, and the complete Built-In Library source that necessarily redeclares
+the compiler's built-ins. Real implementation gaps still visible in that scan
+are tracked in `COVERAGE.md` (currently the two deviations below) plus
+function-valued extension constants and some accessor-backing/`this`-scope
+examples; these are not hidden by the `Main`-program conformance test.
+
 ## Remaining deviations
 
 See `docs/COVERAGE.md` for the current two real gaps: compile-time
@@ -56,4 +67,4 @@ constructor/destructor bodies and non-scalar fields; non-function interface
 constant contracts. NOLAA conservatism is required by §12.2 and is not a
 deviation.
 
-Audit history: `docs/AUDIT.md` (188 reproduced defects/fixes).
+Audit history: `docs/AUDIT.md` (197 reproduced defects/fixes).

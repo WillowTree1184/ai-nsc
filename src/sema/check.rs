@@ -5241,6 +5241,9 @@ impl<'a> Sema<'a> {
             }
             return None;
         }
+        if let Some(result) = self.compile_time_this_method_call(node) {
+            return result;
+        }
         if let Some((_, value)) = self.compile_time_this_field(node) {
             return Some(value);
         }

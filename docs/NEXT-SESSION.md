@@ -6,8 +6,8 @@
 - **Active goal: 100% Draft 1.162 conformance.** Authoritative specification:
   `docs/grammar/Draft 1.162.md` (1.153 and earlier are historical only).
 - Gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-  `cargo test` — **437 tests green** (41 lib unit, 144 CLI, 2 codegen/LLVM,
-  1 MCJIT probe, 2 JIT compile-time evaluation, 234 end-to-end execution,
+  `cargo test` — **438 tests green** (41 lib unit, 144 CLI, 2 codegen/LLVM,
+  1 MCJIT probe, 2 JIT compile-time evaluation, 235 end-to-end execution,
   10 parser, 3 spec-example conformance).
 - Spec tests read Draft 1.162 directly: 102 `novasharp` fences; all parse except
   five documented syntax fragments; every complete `Main` example compiles; the
@@ -38,10 +38,10 @@
 
 ## Remaining deviations (also listed in COVERAGE.md)
 
-1. **Compile-time non-scalar execution (§11.4)**: basic constructor/destructor
-   execution and scalar-structure copies are implemented; full method-call/
-   exception/side-effect semantics, non-scalar/pointer fields and broader copy
-   rules remain.
+1. **Compile-time non-scalar execution (§11.4)**: constructor `this.Method()`
+   calls and scalar-structure copies are implemented; constructor/destructor
+   exceptions/side effects, non-scalar/pointer fields and broader copy rules
+   remain.
 2. **Interface constant contracts (§3.8.3)**: function/accessor/operator contracts
    work; non-function constants without initializers are not modelled as
    class-side constant contracts.

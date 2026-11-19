@@ -1408,6 +1408,7 @@ enum CompileTimeFlow {
     Break,
     Continue,
     Throw(Option<CompileTimeThrow>),
+    Return(Option<i128>),
 }
 
 /// A thrown compile-time exception value (§5.11.3, §11.4).
@@ -3740,7 +3741,12 @@ impl<'a> Sema<'a> {
         let statements = self.block_statements(block);
         let flow = self.execute_compile_time_statements(&statements, false);
         self.destroy_compile_time_objects();
-        if matches!(flow, CompileTimeFlow::Throw(_)) {
+        if matches!(flow, CompileTimeFlow::Return(_)) {
+            self.error(
+                self.span_of(node),
+                "'return' in a top-level compile-time block must bind an enclosing function",
+            );
+        } else if matches!(flow, CompileTimeFlow::Throw(_)) {
             self.error(
                 self.span_of(node),
                 "uncaught compile-time exception in a top-level '#{}' block",
@@ -4040,6 +4046,9 @@ impl<'a> Sema<'a> {
                     }
                     CompileTimeFlow::Continue
                 }
+                NodeKind::Return(statement) => CompileTimeFlow::Return(
+                    statement.value.and_then(|value| self.eval_const_int(value)),
+                ),
                 NodeKind::Throw(throw) => {
                     let mut name = String::new();
                     let mut object = None;
@@ -4314,7 +4323,9 @@ impl<'a> Sema<'a> {
             let errors_before = self.engine.error_count();
             match self.execute_compile_time_statements(&statements, true) {
                 CompileTimeFlow::Break => break,
-                flow @ CompileTimeFlow::Throw(_) => return flow,
+                flow @ CompileTimeFlow::Throw(_) | flow @ CompileTimeFlow::Return(_) => {
+                    return flow
+                }
                 CompileTimeFlow::Normal | CompileTimeFlow::Continue => {}
             }
             if (!self.compile_time_phase_b && self.compile_time_deferred)
@@ -4336,7 +4347,9 @@ impl<'a> Sema<'a> {
             let errors_before = self.engine.error_count();
             match self.execute_compile_time_statements(&statements, true) {
                 CompileTimeFlow::Break => break,
-                flow @ CompileTimeFlow::Throw(_) => return flow,
+                flow @ CompileTimeFlow::Throw(_) | flow @ CompileTimeFlow::Return(_) => {
+                    return flow
+                }
                 CompileTimeFlow::Normal | CompileTimeFlow::Continue => {}
             }
             if (!self.compile_time_phase_b && self.compile_time_deferred)
@@ -4425,22 +4438,20 @@ impl<'a> Sema<'a> {
         object_name: &str,
         method_name: &str,
         arguments: &[i128],
-    ) {
+    ) -> Option<i128> {
+        if !self.compile_time_phase_b {
+            return None;
+        }
         let Type::Named(type_index) = self.types_of(ty) else {
-            return;
+            return None;
         };
-        let Some(methods) = self.result.type_defs[type_index as usize]
+        let methods = self.result.type_defs[type_index as usize]
             .methods
-            .get(method_name)
-            .cloned()
-        else {
-            return;
-        };
-        let Some(method) = methods.first().copied() else {
-            return;
-        };
+            .get(method_name)?
+            .clone();
+        let method = methods.first().copied()?;
         let Some(FunctionBody::Block(body)) = self.result.functions[method as usize].body else {
-            return;
+            return None;
         };
         let parameters = self.result.functions[method as usize].parameters.clone();
         let snapshot = self.top_level_constants.clone();
@@ -4453,7 +4464,13 @@ impl<'a> Sema<'a> {
         let statements = self.block_statements(body);
         self.compile_time_body_names.push(declared);
         self.compile_time_this_stack.push(object_name.to_string());
+        let previous_function = self.current_function;
+        let previous_owner = self.current_owner;
+        self.current_function = Some(method);
+        self.current_owner = self.result.functions[method as usize].method_of;
         let flow = self.execute_compile_time_statements(&statements, false);
+        self.current_function = previous_function;
+        self.current_owner = previous_owner;
         self.compile_time_this_stack.pop();
         let declared = self.compile_time_body_names.pop().unwrap_or_default();
         for name in declared {
@@ -4463,9 +4480,12 @@ impl<'a> Sema<'a> {
                 self.top_level_constants.remove(&name);
             }
         }
-        if matches!(flow, CompileTimeFlow::Throw(_)) {
-            self.compile_time_aborted = true;
+        match flow {
+            CompileTimeFlow::Return(value) => return value,
+            CompileTimeFlow::Throw(_) => self.compile_time_aborted = true,
+            _ => {}
         }
+        None
     }
 
     /// Copies a compile-time object into the runtime-constant snapshot map if
@@ -4513,6 +4533,31 @@ impl<'a> Sema<'a> {
             }
             self.compile_time_objects.remove(&name);
         }
+    }
+
+    /// Executes `this.Method(args)` inside a compile-time constructor/
+    /// destructor body; returns `Some(value)` when a return value is produced.
+    fn compile_time_this_method_call(&mut self, node: NodeId) -> Option<Option<i128>> {
+        let NodeKind::Call(call) = self.node_kind(node).clone() else {
+            return None;
+        };
+        let NodeKind::MemberAccess(access) = self.node_kind(call.callee).clone() else {
+            return None;
+        };
+        if !matches!(self.node_kind(access.base), NodeKind::This) {
+            return None;
+        }
+        let object_name = self.compile_time_this_stack.last()?.clone();
+        let object = self.compile_time_objects.get(&object_name)?;
+        let ty = object.ty;
+        let mut arguments = Vec::new();
+        for argument in &call.arguments {
+            arguments.push(self.eval_const_int(argument.value)?);
+        }
+        Some(Some(
+            self.execute_compile_time_object_method(ty, &object_name, &access.name, &arguments)
+                .unwrap_or(0),
+        ))
     }
 
     /// Reads/writes a field on the compile-time object currently executing a
@@ -4869,7 +4914,9 @@ impl<'a> Sema<'a> {
             let statements = self.block_statements(statement.body);
             match self.execute_compile_time_statements(&statements, true) {
                 CompileTimeFlow::Break => break,
-                flow @ CompileTimeFlow::Throw(_) => return flow,
+                flow @ CompileTimeFlow::Throw(_) | flow @ CompileTimeFlow::Return(_) => {
+                    return flow
+                }
                 CompileTimeFlow::Normal | CompileTimeFlow::Continue => {}
             }
             value = value.wrapping_add(step);

@@ -5994,3 +5994,33 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 5);
 }
+
+#[test]
+fn compile_time_constructors_can_call_this_methods() {
+    let source = "\
+class Token
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Init(this: Token)
+        {
+            this.Value = 9;
+        }
+
+        public fixed Construct(this: Token)
+        {
+            this.Init();
+        }
+    }
+}
+
+#{
+    heap token: Token = Token();
+    local seen: integer(4) = token.Value;
+}
+
+fixed Main(): integer(4) { return seen; }";
+    assert_eq!(run_program(source), 9);
+}

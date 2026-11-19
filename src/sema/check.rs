@@ -6400,11 +6400,13 @@ impl<'a> Sema<'a> {
                     return;
                 }
                 self.ensure_assignable(statement.target);
-                if let NodeKind::MemberAccess(member) = self.node_kind(statement.target) {
+                if let NodeKind::MemberAccess(member) | NodeKind::PointerMemberAccess(member) =
+                    self.node_kind(statement.target)
+                {
                     if let NodeKind::Name(base_name) = self.node_kind(member.base) {
                         if let Some(Symbol::Local(base)) = self.lookup(&base_name.name).cloned() {
                             let key = (base, member.name.clone());
-                            match self.heap_unit_for_name_expression(statement.value) {
+                            match self.heap_source_unit(statement.value) {
                                 Some(unit) => {
                                     self.field_heap_aliases.insert(key, unit);
                                 }
@@ -6498,8 +6500,29 @@ impl<'a> Sema<'a> {
                         };
                     let alias_source =
                         local_target.and_then(|_| self.heap_source_unit(statement.value));
-                    if !internal_edge && alias_source.is_none() {
+                    let element_target = match self.node_kind(statement.target) {
+                        NodeKind::Index(access) => match self.node_kind(access.base) {
+                            NodeKind::Name(base_name) => {
+                                match self.lookup(&base_name.name).cloned() {
+                                    Some(Symbol::Local(base)) => Some(base),
+                                    _ => None,
+                                }
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if !internal_edge && alias_source.is_none() && element_target.is_none() {
                         self.note_heap_escape(statement.value);
+                    }
+                    if let Some(base) = element_target {
+                        if let Some(unit) = self.heap_source_unit(statement.value) {
+                            self.element_heap_aliases
+                                .entry(base)
+                                .or_default()
+                                .push(unit);
+                            self.note_alias_scope(base, unit);
+                        }
                     }
                     let carrier = match self.result.resolutions[statement.target as usize].clone() {
                         Some(Resolution::Field { type_id, index }) => {
@@ -7477,6 +7500,11 @@ impl<'a> Sema<'a> {
                 .get(&local)
                 .copied()
                 .or_else(|| self.pointer_aliases.get(&local).copied());
+            if let Some(units) = self.element_heap_aliases.get(&local).cloned() {
+                for unit in units {
+                    self.heap_units[unit as usize].escaped = true;
+                }
+            }
             if let Some(index) = direct {
                 for peer in self.heap_group_peers(local) {
                     if let Some(index) = self.heap_unit_locals.get(&peer).copied() {
@@ -7508,6 +7536,12 @@ impl<'a> Sema<'a> {
             {
                 self.heap_units[index as usize].escaped = true;
                 self.heap_units[index as usize].returned = true;
+            }
+            if let Some(units) = self.element_heap_aliases.get(&local).cloned() {
+                for unit in units {
+                    self.heap_units[unit as usize].escaped = true;
+                    self.heap_units[unit as usize].returned = true;
+                }
             }
             return;
         }
@@ -9707,6 +9741,23 @@ impl<'a> Sema<'a> {
 
     fn check_index_expr(&mut self, node: NodeId, index: &IndexExpr) -> Option<TypeId> {
         let base_type = self.check_expr(index.base, None)?;
+        if let NodeKind::Name(name) = self.node_kind(index.base) {
+            if let Some(Symbol::Local(base)) = self.lookup(&name.name).cloned() {
+                let disposed = self.element_heap_aliases.get(&base).is_some_and(|units| {
+                    units.iter().any(|unit| {
+                        self.heap_units
+                            .get(*unit as usize)
+                            .is_some_and(|unit| unit.disposed || unit.maybe_disposed)
+                    })
+                });
+                if disposed {
+                    self.warn(
+                        self.span_of(node),
+                        format!("'{}' is used after 'dispose' (early dispose)", name.name),
+                    );
+                }
+            }
+        }
         let index_type = self.check_expr(index.index, None);
         if let Some(index_type) = index_type {
             if !self.is_integer(index_type) {

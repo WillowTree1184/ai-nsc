@@ -10,8 +10,12 @@ intraprocedural heuristics in `src/sema/check.rs` to a full analysis.
 - Direct aliases (`local a = heapUnit`) and pointer aliases
   (`local p = &heapUnit`) with use-after-dispose propagation; aliases that could
   outlive the unit's lexical block are marked escaped (so no unsafe auto-dispose).
-- Field alias: `holder.Field = &heapUnit` enables `dispose holder->Field`; the
-  same pattern feeds SCC/demand edges for mutually needed units.
+- Field alias: `holder.Field = &heapUnit` and pointer-member writes
+  (`p->Field = &heapUnit`) enable `dispose holder->Field` / `dispose p->Field`;
+  the same pattern feeds SCC/demand edges for mutually needed units.
+- Local container element aliases (`bucket[i] = heapUnit`) keep the unit alive for
+  the container's scope, allow block-end disposal, propagate escape through the
+  container, and report use-after-dispose when the element is accessed later.
 - Automatic disposal at block natural exits/fall-through and jump disposal at
   `return`/`break`/`continue`; SCC grouping for units needed through fields.
 - Path-sensitive dispose state: `if`/`else-if`/`else`, `match` cases (including

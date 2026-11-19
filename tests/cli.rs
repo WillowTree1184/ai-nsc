@@ -3639,3 +3639,86 @@ fixed Main(flag: boolean): integer(4)
     );
     assert!(match_cases.is_empty(), "{match_cases}");
 }
+
+#[test]
+fn nolaa_disposes_pointer_member_field_aliases() {
+    let source = "\
+class Token { public Value: integer(4); }
+class Holder { public Target: pointer Token; }
+
+fixed Main(): integer(4)
+{
+    heap token: Token = Token();
+    token.Value = 9;
+    local holder: Holder = Holder();
+    local p: pointer Holder = &holder;
+    p->Target = &token;
+    local value: integer(4) = p->Target->Value;
+    dispose p->Target;
+    return value;
+}";
+    let stderr = check_source_ok(source);
+    assert!(stderr.is_empty(), "{stderr}");
+}
+
+#[test]
+fn nolaa_tracks_container_element_aliases() {
+    let safe = check_source_ok(
+        "\
+class Token { public Value: integer(4); }
+
+fixed Main(): integer(4)
+{
+    heap token: Token = Token();
+    local bucket: array(2) Token = { Token(), Token() };
+    bucket[0] = token;
+    return bucket[0].Value;
+}",
+    );
+    assert!(safe.is_empty(), "{safe}");
+    let use_after = check_source_ok(
+        "\
+class Token { public Value: integer(4); }
+
+fixed Main(): integer(4)
+{
+    heap token: Token = Token();
+    local bucket: array(2) Token = { Token(), Token() };
+    bucket[0] = token;
+    dispose token;
+    return bucket[0].Value;
+}",
+    );
+    assert!(use_after.contains("used after 'dispose'"), "{use_after}");
+}
+
+#[test]
+fn nolaa_tracks_direct_aliases() {
+    let safe = check_source_ok(
+        "\
+class Token { public Value: integer(4); }
+
+fixed Main(): integer(4)
+{
+    heap token: Token = Token();
+    local alias: Token = token;
+    alias.Value = 4;
+    return alias.Value;
+}",
+    );
+    assert!(safe.is_empty(), "{safe}");
+    let use_after = check_source_ok(
+        "\
+class Token { public Value: integer(4); }
+
+fixed Main(): integer(4)
+{
+    heap token: Token = Token();
+    local alias: Token = token;
+    dispose token;
+    alias.Value = 4;
+    return 0;
+}",
+    );
+    assert!(use_after.contains("used after 'dispose'"), "{use_after}");
+}

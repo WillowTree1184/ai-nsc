@@ -5408,3 +5408,20 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 23);
 }
+
+#[test]
+fn inline_assembly_multiple_outputs_execute() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local first: integer(4) = 0;
+    local second: integer(4) = 0;
+    assembly
+    {
+        mov @[first:out], 7
+        mov @[second:out], 9
+    }
+    return first * 10 + second;
+}";
+    assert_eq!(run_program(source), 79);
+}

@@ -78,7 +78,7 @@ semantics is pinned (`3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`).
 | §11.8 compile-time boundary | ✅ | runtime reading of compile-time values, side-effect warnings, compile-time allocator lifetime |
 | §11.9 compiler API: Type/Compiler/Environment/NOLAA | ✅ | `Type.SizeOf`, diagnostics API, Environment facts/queries (compile-time folding + runtime comparison for untracked facts; unprovable origins rejected), NOLAA markers |
 | §12.1 memory allocation | ✅ | stack/heap/default/custom allocators, `manual`, value-type heap storage |
-| §12.2 NOLAA | 🟡 | conservative by requirement: direct/pointer/field/element aliases, path-sensitive definitely/maybe disposal, parameter-disposal and read-only summaries, last-demand safe points, Bind/SCC/AssumeNoDemandNext, warnings; arbitrary points-to/unknown aliases stay conservative (allowed by §12.2) |
+| §12.2 NOLAA | ✅ | conservative by requirement (§12.2 permits conservative aliasing): direct/pointer/field/element aliases, path-sensitive definitely/maybe disposal, parameter-disposal and read-only summaries, last-demand safe points, Bind/SCC/AssumeNoDemandNext, warnings; arbitrary points-to/unknown aliases stay conservative (allowed by §12.2) |
 | §13 ABI | ✅ | layouts, calling conventions, mangling incl. `#`/`&` contract markers, RTTI/vtables |
 | §14.1–14.2 main function/startup | ✅ | launcher/exit-code tests |
 | §14.3.1 no-optimize markers | ✅ | `@(expr)`/`@{block}`/`local @`/`fixed @`, adjacency rules, optnone, literal materialisation |

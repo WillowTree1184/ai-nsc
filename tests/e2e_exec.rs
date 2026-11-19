@@ -5111,3 +5111,59 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 7);
 }
+
+#[test]
+fn self_referential_class_fields_have_reference_layout() {
+    let source = "\
+class Node
+{
+    public Next: Node;
+    public Value: integer(4);
+}
+
+fixed Main(): integer(4)
+{
+    heap first: Node = Node();
+    heap second: Node = Node();
+    first.Value = 1;
+    second.Value = 2;
+    first.Next = second;
+    return first.Value + second.Value;
+}";
+    assert_eq!(run_program(source), 3);
+}
+
+#[test]
+fn nolaa_disposes_mutually_needing_heap_units_together() {
+    let source = "\
+local destroyed: integer(4) = 0;
+
+class Node
+{
+    public Next: Node;
+
+    extension
+    {
+        public fixed Destruct(this: &Node)
+        {
+            destroyed = destroyed + 1;
+        }
+    }
+}
+
+fixed Run(): integer(4)
+{
+    heap first: Node = Node();
+    heap second: Node = Node();
+    first.Next = second;
+    second.Next = first;
+    return 0;
+}
+
+fixed Main(): integer(4)
+{
+    local result: integer(4) = Run();
+    return result + destroyed;
+}";
+    assert_eq!(run_program(source), 2);
+}

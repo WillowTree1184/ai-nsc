@@ -21,7 +21,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **360 tests**: 41 lib unit tests (lexer, literal,
+`cargo test` currently runs **362 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
 that read `docs/grammar/Draft 1.152.md` directly:
@@ -50,7 +50,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §3.6.1 arrays: fixed layout, indexing bounds, literals/repeat/range, array↔pointer casts, array parameter expansion, **VLA** | ✅ | e2e arrays/bounds/VLA tests; multi-dimensional VLAs with a leading runtime dimension supported; non-leading runtime dimensions diagnosed |
 | §3.6.2 pointers: member access, `p ± i`, `p - q`, casts, `&`/`*` expressions | ✅ | e2e pointer tests |
 | §3.6.3 function types, `wildcard`, calling conventions | ✅ | function value/closures tests; C/SystemV/Win64 LLVM conventions, others diagnosed |
-| §3.7.1 classes: layout, inheritance, vtable/RTTI, construction, destructors, statics, abstract/sealed/static class | ✅ | class e2e tests, constructor-chain checks |
+| §3.7.1 classes: layout, inheritance, vtable/RTTI, construction, destructors, statics, abstract/sealed/static class | ✅ | class e2e tests, constructor-chain checks; a class/interface-typed field always occupies a reference (pointer) even when the field refers to the class being laid out (self-referential `Next: Node`), so instance size and codegen field offsets agree |
 | §3.7.2 structures: exact layout, `aligned(N)` packing | ✅ | layout e2e tests |
 | §3.7.3 interfaces: contracts, dispatch, RTTI, accessors, generics, interface inheritance | ✅ | interface dispatch/RTTI and inheritance tests (flattened methods, transitive `is` checks) |
 | §3.7.4 enumerations: members, underlying type, casts | ✅ | enumeration e2e tests |
@@ -92,7 +92,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §10 generics / monomorphization | ✅ | types/functions/constraints/extension-for-generic/caching/mangling; methods that declare their own type parameters; array extension targets (methods/accessors/operators); class/structure index accessors are tested, and array-target index accessors are rejected per §4.9.2 (index accessors may only be declared in class/structure extension blocks). §14.3.2 optimisation directives are permissions, not requirements. |
 | §11.1–11.7 compile-time: `#(...)`, `#if`/`#else`, `#{}` blocks (incl. top-level and cross-file order), `#` constant parameters, compile-time boundary | ✅ | compile-time e2e tests; blocks are lowered as runtime equivalents of compile-time results (semantics-preserving approximation) |
 | §11.8 compiler API: `Type.SizeOf<T>`, `Compiler.LogNote/LogWarning/LogError/Assert`, `Platform.Is`, `NOLAA.Abandon/Bind/AssumeNoDemandNext` | ✅ | compiler API tests |
-| §12 memory model: locals/heap/dispose/destructors, `manual`, custom `IAllocator` + `DefaultAllocator`, NOLAA (double-dispose/early-dispose/never-disposed warnings, alias/store demand tracking, auto-insertion at block-end/return/break/continue safe points, Bind groups) | ✅ | heap/dispose/allocation/NOLAA tests; heap storage can hold value types (including integer/array/union targets) and assignment writes through to the heap storage; NOLAA analysis is deliberately conservative (escapes are exempt) |
+| §12 memory model: locals/heap/dispose/destructors, `manual`, custom `IAllocator` + `DefaultAllocator`, NOLAA (double-dispose/early-dispose/never-disposed warnings, alias/store demand tracking, auto-insertion at block-end/return/break/continue safe points, Bind groups, SCC grouping) | ✅ | heap/dispose/allocation/NOLAA tests; heap storage can hold value types (including integer/array/union targets) and assignment writes through to the heap storage; mutually-needed units linked through class fields are merged into one analysis group (automatic SCC) and disposed together; NOLAA analysis is deliberately conservative for indirect aliases/pointers |
 | §13 ABI: name mangling (§13.2), layouts, calling conventions, type info/vtables/interface tables | ✅ | mangling unit test + IR smoke tests; cross-target conventions beyond host diagnosed |
 | §14 startup: launcher, static/runtime initializers, exit code = Main return | ✅ | launcher IR/e2e exit-code tests |
 | §15 Built-In Library: `Object`, `CallingConvention`, `PlatformKind`, exception hierarchy with `InnerException`/constructors, `Optional<T>`, `Result<TValue; TAlternative>`, `IIterator<T>`, `IIterable<T>`, `IAllocator`, `DefaultAllocator`, compile-time library | ✅ | builtin library e2e tests; containers are not part of the spec's §15.2 |
@@ -132,11 +132,12 @@ implementing them is conforming and they are therefore not listed as deviations.
    `#{ while true { ... } }` is genuinely nonterminating, as specified.
 6. **NOLAA** is a conservative approximation: warnings (including Early-Dispose),
    block-end/return/break/continue auto-dispose, alias/store demand tracking,
-   `NOLAA.Bind` groups and `NOLAA.AssumeNoDemandNext`. Direct aliases of heap
-   units are tracked, so Double-Dispose and Use-After-Dispose are now detected
+   `NOLAA.Bind` groups, `NOLAA.AssumeNoDemandNext`, and automatic SCC grouping of
+   mutually-needed heap units linked through class fields. Direct aliases of heap
+   units are tracked, so Double-Dispose and Use-After-Dispose are detected
    through `local alias = heapUnit;` / later assignment. General CFG safe-point
-   insertion, automatic SCC grouping (only `NOLAA.Bind` groups are explicit) and
-   complete alias analysis through fields/pointers are still conservative.
+   insertion and alias analysis through pointers/arbitrary containers remain
+   conservative.
 8. **Target selection**: `--target` configures code generation, object emission
    and the semantic data layout for x86_64, aarch64, riscv64, i686 (runs natively
    on x86_64 hosts) and armv7 (cross-link with `--sysroot` + LLVM lld, run under

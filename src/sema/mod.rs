@@ -1218,6 +1218,7 @@ pub fn analyze_with_options(
         constant_instantiations: HashMap::new(),
         heap_units: Vec::new(),
         heap_alias_units: HashMap::new(),
+        heap_demand_edges: HashMap::new(),
         heap_unit_locals: HashMap::new(),
         early_dispose_warned: std::collections::HashSet::new(),
         current_owner: None,
@@ -1321,6 +1322,8 @@ pub(crate) struct Sema<'a> {
     pub(crate) heap_units: Vec<HeapUnit>,
     /// Alias locals mapped to their heap allocation unit (§12.2).
     pub(crate) heap_alias_units: HashMap<LocalId, u32>,
+    /// Demand edges between heap units discovered from field stores (§12.2).
+    pub(crate) heap_demand_edges: HashMap<u32, Vec<u32>>,
     /// Index into `heap_units` for each heap local.
     pub(crate) heap_unit_locals: HashMap<u32, usize>,
     /// Locals already reported for use-after-dispose (§12.2).

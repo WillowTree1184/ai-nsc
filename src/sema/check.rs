@@ -565,7 +565,21 @@ impl<'a> Sema<'a> {
                             "'aligned' is only allowed on structure fields",
                         );
                     }
-                    let (size, natural_align) = self.size_align(ty);
+                    // A class/interface value is a reference (§3.4); during its
+                    // own layout the type stub's size is not finalised yet, so use
+                    // the pointer size for reference-typed fields (self-referential
+                    // class fields such as `Next: Node`).
+                    let (size, natural_align) = match self.types_of(ty) {
+                        Type::Named(index)
+                            if matches!(
+                                self.result.type_defs[index as usize].kind,
+                                TypeDefKind::Class | TypeDefKind::Interface
+                            ) =>
+                        {
+                            (pointer_size, pointer_size)
+                        }
+                        _ => self.size_align(ty),
+                    };
                     let field_alignment = if is_class {
                         None
                     } else {
@@ -4984,6 +4998,8 @@ impl<'a> Sema<'a> {
             self.loop_labels.clear();
             self.heap_units.clear();
             self.heap_unit_locals.clear();
+            self.heap_alias_units.clear();
+            self.heap_demand_edges.clear();
             self.early_dispose_warned.clear();
             self.push_scope();
             if environment {
@@ -5591,6 +5607,72 @@ impl<'a> Sema<'a> {
         vec![local]
     }
 
+    /// The heap unit index for a local or alias (§12.2).
+    fn heap_unit_index(&self, local: LocalId) -> Option<usize> {
+        self.heap_unit_locals.get(&local).copied().or_else(|| {
+            self.heap_alias_units
+                .get(&local)
+                .map(|index| *index as usize)
+        })
+    }
+
+    /// Whether `to` is reachable from `from` in the heap demand graph (§12.2).
+    fn heap_demand_reachable(&self, from: u32, to: u32) -> bool {
+        let mut stack = vec![from];
+        let mut visited = std::collections::HashSet::new();
+        while let Some(unit) = stack.pop() {
+            if unit == to {
+                return true;
+            }
+            if !visited.insert(unit) {
+                continue;
+            }
+            if let Some(next) = self.heap_demand_edges.get(&unit) {
+                stack.extend(next.iter().copied());
+            }
+        }
+        false
+    }
+
+    /// Records that unit `from` stores a reference to unit `to` in a field
+    /// (§12.2). Mutually-needed units are merged into one analysis group so they
+    /// are disposed at the same safe point.
+    fn add_heap_demand_edge(&mut self, from: u32, to: u32) {
+        if from == to {
+            return;
+        }
+        let edges = self.heap_demand_edges.entry(from).or_default();
+        if edges.contains(&to) {
+            return;
+        }
+        edges.push(to);
+        if self.heap_demand_reachable(to, from) {
+            let from_local = self.heap_units[from as usize].local;
+            let to_local = self.heap_units[to as usize].local;
+            self.merge_heap_groups(from_local, to_local);
+        }
+    }
+
+    /// Merges all analysis groups containing either local (§12.2).
+    fn merge_heap_groups(&mut self, first: LocalId, second: LocalId) {
+        if first == second {
+            return;
+        }
+        let mut members = vec![first, second];
+        let mut kept = Vec::new();
+        for group in std::mem::take(&mut self.heap_groups) {
+            if group.contains(&first) || group.contains(&second) {
+                members.extend(group);
+            } else {
+                kept.push(group);
+            }
+        }
+        members.sort_unstable();
+        members.dedup();
+        kept.push(members);
+        self.heap_groups = kept;
+    }
+
     /// Whether every member of `local`'s analysis group may be auto-disposed
     /// now (non-manual, not abandoned, not escaped, not yet disposed).
     fn heap_group_disposable(&self, local: LocalId) -> bool {
@@ -5945,9 +6027,32 @@ impl<'a> Sema<'a> {
                             target_type,
                         );
                     }
+                    // A heap reference stored into a *tracked* heap unit's field
+                    // creates a demand edge inside the NOLAA graph; mutually
+                    // needed units form one SCC/analysis group (§12.2).
+                    let internal_edge = match self.node_kind(statement.target) {
+                        NodeKind::MemberAccess(access) => {
+                            let base_unit =
+                                match self.result.resolutions[access.base as usize].clone() {
+                                    Some(Resolution::Local(local)) => self.heap_unit_index(local),
+                                    _ => None,
+                                };
+                            let value_unit = self.heap_unit_for_name_expression(statement.value);
+                            match (base_unit, value_unit) {
+                                (Some(from), Some(to)) => {
+                                    self.add_heap_demand_edge(from as u32, to);
+                                    true
+                                }
+                                _ => false,
+                            }
+                        }
+                        _ => false,
+                    };
                     // Storing a heap pointer into an alias (local, field, global
                     // or through a pointer) creates another demand on it (§12.2).
-                    self.note_heap_escape(statement.value);
+                    if !internal_edge {
+                        self.note_heap_escape(statement.value);
+                    }
                     let carrier = match self.result.resolutions[statement.target as usize].clone() {
                         Some(Resolution::Field { type_id, index }) => {
                             if let Type::Named(owner) = self.types_of(type_id) {

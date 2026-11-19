@@ -5841,3 +5841,21 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 7);
 }
+
+#[test]
+fn global_fixed_constants_can_drive_top_level_conditionals() {
+    let source = "\
+fixed UseValue: boolean = true;
+
+#if UseValue
+{
+    fixed Value: integer(4) = 5;
+}
+else
+{
+    fixed Value: integer(4) = 9;
+}
+
+fixed Main(): integer(4) { return Value; }";
+    assert_eq!(run_program(source), 5);
+}

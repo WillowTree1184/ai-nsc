@@ -4253,6 +4253,14 @@ impl<'a> Sema<'a> {
         }
         let scope = self.scope_path.clone();
         let mangled = mangle_function(&scope, &declaration.name, &[self.spelling(ty)]);
+        if let Some(index) = self.predeclared_global_fixed.get(&node).copied() {
+            let info = &mut self.result.globals[index as usize];
+            info.ty = ty;
+            info.init = init;
+            info.mangled = mangled;
+            info.verbatim = declaration.modifiers.verbatim;
+            return;
+        }
         let index = self.result.globals.len() as u32;
         self.result.globals.push(GlobalInfo {
             accessibility: crate::ast::Accessibility::Public,

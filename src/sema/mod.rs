@@ -1321,6 +1321,7 @@ pub fn analyze_with_options(
         two_phase_future_fixed: std::collections::HashSet::new(),
         two_phase_future_locals: std::collections::HashSet::new(),
         two_phase_pending: Vec::new(),
+        predeclared_global_fixed: HashMap::new(),
         compile_time_block_stack: Vec::new(),
         compile_time_block_local_owners: HashMap::new(),
         compile_time_block_records: Vec::new(),
@@ -1504,6 +1505,9 @@ pub(crate) struct Sema<'a> {
     two_phase_future_locals: std::collections::HashSet<String>,
     /// Deferred top-level/module `#if` conditions awaiting settlement.
     two_phase_pending: Vec<PendingCompileTimeIf>,
+    /// Top-level `fixed` globals predeclared in pass 1 so later `#if`
+    /// conditions can read their initializers (§11.7).
+    predeclared_global_fixed: HashMap<NodeId, u32>,
     /// Stack of `#{}` blocks currently being checked in a function body.
     compile_time_block_stack: Vec<NodeId>,
     /// Locals declared by function-body `#{}` blocks, mapped to their block.
@@ -2980,6 +2984,50 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Predeclares a top-level `fixed` global in pass 1 when it is not a
+    /// function, so a following `#if` can evaluate its initializer (§11.7).
+    fn predeclare_global_fixed(&mut self, node: NodeId, declaration: &crate::ast::FixedDecl) {
+        let Some(ty_node) = declaration.ty else {
+            return;
+        };
+        if matches!(self.node_kind(ty_node), NodeKind::FunctionType(_)) {
+            return;
+        }
+        self.suppress_errors += 1;
+        let ty = self.resolve_type(ty_node);
+        self.suppress_errors -= 1;
+        let Some(ty) = ty else {
+            return;
+        };
+        let scope = self.scope_path.clone();
+        let mangled = mangle_function(&scope, &declaration.name, &[self.spelling(ty)]);
+        let index = self.result.globals.len() as u32;
+        let init = declaration.init.and_then(|init| match init {
+            crate::ast::Initializer::Expression(expression) => Some(expression),
+            crate::ast::Initializer::Block(_) => None,
+        });
+        self.result.globals.push(GlobalInfo {
+            accessibility: declaration.modifiers.accessibility,
+            scoped: Vec::new(),
+            verbatim: declaration.modifiers.verbatim,
+            name: declaration.name.clone(),
+            scope,
+            ty,
+            init,
+            fixed: true,
+            linkable: false,
+            mangled,
+            node,
+            span: self.span_of(node),
+        });
+        self.declare(
+            declaration.name.clone(),
+            Symbol::Global(index),
+            self.span_of(node),
+        );
+        self.predeclared_global_fixed.insert(node, index);
+    }
+
     /// Pass 1: walk the declaration structure creating module scopes and named
     /// type stubs.
     fn declare_types(&mut self, nodes: &[NodeId], top_level: bool) {
@@ -3025,6 +3073,9 @@ impl<'a> Sema<'a> {
                 }
                 NodeKind::Union(declaration) => {
                     self.declare_named_type(node, declaration.name.clone(), TypeDefKind::Union)
+                }
+                NodeKind::Fixed(declaration) if top_level => {
+                    self.predeclare_global_fixed(node, &declaration);
                 }
                 NodeKind::CompileTimeIf(statement) => {
                     if top_level {

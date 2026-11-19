@@ -15,8 +15,8 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **424 tests**: 41 lib unit, 140 CLI/driver,
-2 LLVM codegen, 1 MCJIT probe, 2 JIT compile-time evaluation, 225 end-to-end
+`cargo test` currently runs **428 tests**: 41 lib unit, 141 CLI/driver,
+2 LLVM codegen, 1 MCJIT probe, 2 JIT compile-time evaluation, 228 end-to-end
 execution, 10 parser and 3 spec-example conformance tests. The spec tests read
 `Draft 1.16.md` directly: 102 `novasharp` fences, all parse except five documented
 syntax fragments, every `Main` example that is a complete program compiles end
@@ -47,7 +47,7 @@ semantics is pinned (`3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`).
 | §3.8.6 variants | ✅ | state/payload layout, construction, is/match, equality tests |
 | §3.8.7 unions | ✅ | overlap layout, member construction/read tests |
 | §3.8.8 base lists | ✅ | class/interface base and generic-base tests |
-| §3.9.1 fields and initializers | 🟡 | expression initializers, access/readonly/layout work; function-field `Block` initializers are diagnosed (deviation 2) |
+| §3.9.1 fields and initializers | ✅ | expression initializers, access/readonly/layout, and function-typed field `Block` bodies (synthesized function literal) |
 | §3.9.2 accessors | ✅ | extension/interface/free accessors, backing get/set, expression/block bodies, static alias |
 | §3.9.3 extensions | ✅ | extension methods/functions, generic/array targets, class-body interface implementation |
 | §4.1–4.4 expressions, access, index access | ✅ | parser/e2e; array bounds raise `OutOfRangeException` |
@@ -58,7 +58,7 @@ semantics is pinned (`3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`).
 | §4.9.3–4.9.29 unary/arithmetic/bitwise/shift/rotate/comparison/logical/conditional | ✅ | e2e arithmetic/shift/rotate/logical/conditional |
 | §5.1 blocks/statement terminators | ✅ | parser/e2e |
 | §5.2 inline assembly | ✅ | lexer/parser/placeholders/escapes/clobbers; operand-free blocks clobber all registers; operand blocks pin operands and clobber every other register on x86_64/i686/aarch64/armv7/riscv64; x86_64 runtime mov/add; `check` assembles asm-containing programs |
-| §5.3–5.6 local/fixed/heap/linkable | 🟡 | locals/fixed/heap and linkable functions implemented; `linkable` variable/global symbol declarations are diagnosed (deviation 3) |
+| §5.3–5.6 local/fixed/heap/linkable | ✅ | locals/fixed/heap, linkable functions and linkable variables/global external symbols (definitions or external declarations) |
 | §5.7 use | ✅ | per-scope, later imports, multi-file tests |
 | §5.8 assignment/compound assignment | ✅ | assignment/alias/write-through tests |
 | §5.9 dispose | ✅ | heap units and field-pointer dispose tests; arbitrary pointer/container paths diagnosed per NOLAA conservatism |
@@ -74,7 +74,7 @@ semantics is pinned (`3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`).
 | §9 modifiers (`scoped`, `readonly`, `implicitable`, `manual`, `abstract`, `sealed`, `virtual`, `override`, `aligned`, `static`, access) | ✅ | all enforced; duplicates diagnosed |
 | §10 generics/monomorphization | ✅ | types/functions/constraints/extensions/caching/mangling; monomorphization base restricted to identifiers |
 | §11.1–11.6 compile-time execution, `#` parameters, `#if` | ✅ | top-level/function-body blocks, expressions, order, constant parameters, conditionals |
-| §11.7 conditional evaluation | ✅ | lazy two-phase settlement for immutable forward bindings; local/mutable forward deps rejected; no-progress errors; top-level global `fixed` conditions are diagnosed (deviation 4) |
+| §11.7 conditional evaluation | ✅ | lazy two-phase settlement for immutable forward bindings; local/mutable forward deps rejected; no-progress errors; top-level global `fixed` constants are predeclared so `#if` can evaluate them |
 | §11.8 compile-time boundary | ✅ | runtime reading of compile-time values, side-effect warnings, compile-time allocator lifetime |
 | §11.9 compiler API: Type/Compiler/Environment/NOLAA | ✅ | `Type.SizeOf`, diagnostics API, Environment facts/queries (compile-time folding + runtime comparison for untracked facts; unprovable origins rejected), NOLAA markers |
 | §12.1 memory allocation | ✅ | stack/heap/default/custom allocators, `manual`, value-type heap storage |
@@ -93,15 +93,7 @@ semantics is pinned (`3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`).
    catches). Remaining: constructor/destructor bodies of compile-time objects,
    non-scalar fields, thrown object values/catch bindings and class-hierarchy
    catch matching.
-2. **Function-field `Block` initializers (§3.9.1)**: function-typed fields may
-   only use expression initializers internally; the 1.16 `Name: function(...) { }`
-   form is diagnosed instead of silently ignored.
-3. **`linkable` variables (§5.6)**: linkable functions are implemented; a
-   `linkable` non-function global (external symbol/data) is diagnosed.
-4. **`#if` on global `fixed` constants (§11.7)**: immutable forward bindings from
-   `#{}` and `#` parameters work; a top-level `fixed` constant used directly in
-   `#if` is diagnosed.
-5. **Interface constant contracts (§3.8.3)**: direct function/accessor/operator
+3. **Interface constant contracts (§3.8.3)**: direct function/accessor/operator
    contracts and class-body extension implementations work; non-function
    interface constants without initializers are not modelled as class-side
    constant contracts.

@@ -21,7 +21,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **380 tests**: 41 lib unit tests (lexer, literal,
+`cargo test` currently runs **381 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
 that read `docs/grammar/Draft 1.152.md` directly (a closed-set test also asserts that the only spec programs failing semantic analysis are the documented demonstration/inconsistency snippets):
@@ -69,7 +69,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §4.9.6/4.9.7 `&`/`*` reference expressions | ✅ | pointer/reference tests |
 | §4.9.26 `??` with `Optional`/`Result` and all continuations | ✅ | coalescing + user `operator ??` tests |
 | §4.9.27 `?:` conditional expression | ✅ | conditional e2e |
-| §5 statements: blocks, locals/fixed, set/compound, if, while/do, for, match, break/continue, return, trap/finally, throw, dispose, export/use | ✅ | statement e2e tests; `finally` executes on fall-through and normal `return` paths (rejected `return` inside `finally`); `do-while` conditions are checked in the body block's scope; `dispose` targets must be heap allocation units (scope-lifetime instances are rejected per §5.8); the `local @` no-optimize marker is only accepted immediately after `local` (applying to all items), not per item; runtime statements/expressions are rejected at file/module top level (only declarations, `#{}`, `#if` and `#()` are allowed there) |
+| §5 statements: blocks, locals/fixed, set/compound, if, while/do, for, match, break/continue, return, trap/finally, throw, dispose, export/use | ✅ | statement e2e tests; `finally` executes on fall-through and normal `return` paths (rejected `return` inside `finally`); `do-while` conditions are checked in the body block's scope; `dispose` targets must be heap allocation units (scope-lifetime instances are rejected per §5.8); pointer-member dispose targets are diagnosed because field points-to analysis is not implemented (deviation 12); the `local @` no-optimize marker is only accepted immediately after `local` (applying to all items), not per item; runtime statements/expressions are rejected at file/module top level (only declarations, `#{}`, `#if` and `#()` are allowed there) |
 | §5.6 `use` imports (per scope, later imports first, multi-file) | ✅ | use tests |
 | §5.9 `match`: patterns, guards, logical control flow (break/continue/labels) | ✅ | match e2e tests |
 | §5.9.5 `for`: arrays, VLA, ranges, `&` element alias, `IIterator`/`IIterable` targets | ✅ | for e2e tests |
@@ -161,3 +161,10 @@ implementing them is conforming and they are therefore not listed as deviations.
    an `IAllocator` and uses explicit `heap` allocator expressions (allocators are
    the developer's responsibility); bare `heap` is diagnosed. `run` is rejected
    (boot with qemu + OVMF or real firmware); aarch64 UEFI is not supported yet.
+
+12. **Pointer-member dispose targets**: §5.8's grammar allows
+    `dispose ( Identifier | PointerMemberAccessExpression )`, but ai-nsc performs
+    no field points-to/alias analysis, so `dispose holder->Target` is diagnosed
+    even when the member clearly points at a heap unit. Identifier targets,
+    direct aliases and returned references are supported; this is the remaining
+    NOLAA/alias gap.

@@ -2,10 +2,12 @@
 
 ## State
 
-- Branch `main`; last feature commit `2db7d9a` (Draft 1.152 lazy two-phase, top-level '#()' and cross-module gaps).
+- Branch `main`; last feature commit `54348f2` (removed non-spec `Cast<T>(x)`).
+- **Active goal: 100% draft-1.152 conformance, no more no less** (no
+  compatibility syntax beyond the draft; no unimplemented normative rules).
   `git status` is clean.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  — **338 tests green** (41 lib unit including the lexer longest-match test, 98 CLI,
+  — **339 tests green** (41 lib unit including the lexer longest-match test, 99 CLI,
   2 codegen/LLVM, 1 MCJIT probe, 2 JIT compile-time evaluation, 182 end-to-end
   execution, 10 parser, 2 spec-example conformance). The spec-conformance tests
   read `Draft 1.152.md`: all 91 `novasharp` examples parse, and every whole-program
@@ -30,7 +32,7 @@
   (`Type.SizeOf`, `Compiler.Log*`/`Assert`, `Platform.Is`, `NOLAA.*`). Containers
   are intentionally not provided (§15.2 does not define them).
 - Docs: `docs/COVERAGE.md` maps every spec section to ✅/🟡/⛔ with evidence and
-  deliberate deviations; `docs/AUDIT.md` tracks the 131 reproduced defects (all
+  deliberate deviations; `docs/AUDIT.md` tracks the 132 reproduced defects (all
   fixed or marked partial with the fixing commit). Draft 1.152 changes are covered:
   `as` conversions, circular shifts, directional ranges, inferred `for` binding
   types, `@` markers, `for` without a binding, contextual keyword names.

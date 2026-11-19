@@ -5778,3 +5778,33 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 1);
 }
+
+#[test]
+fn union_and_variant_type_name_elision_works() {
+    let source = "\
+variant Option
+{
+    None;
+    Some: integer(4);
+}
+
+union Number
+{
+    Int: integer(4);
+    Float: float(4);
+}
+
+fixed Main(): integer(4)
+{
+    local none: Option = None;
+    local some: Option = Some(3);
+    local number: Number = Int(4);
+    local full: Option = Option.Some(5);
+    if (none == Option.None && some == Option.Some(3) && number.Int == 4 && full == Option.Some(5))
+    {
+        return 4;
+    }
+    return 0;
+}";
+    assert_eq!(run_program(source), 4);
+}

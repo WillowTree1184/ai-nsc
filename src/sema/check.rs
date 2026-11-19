@@ -12140,6 +12140,30 @@ impl<'a> Sema<'a> {
         let Type::Named(index) = self.types_of(expected) else {
             return None;
         };
+        if self.result.type_defs[index as usize].kind == TypeDefKind::Union {
+            let member = self.result.type_defs[index as usize]
+                .union_members
+                .iter()
+                .position(|member| member.name == name.name)?;
+            let member_type = self.result.type_defs[index as usize].union_members[member].ty;
+            if call.arguments.len() != 1 {
+                self.error(
+                    self.span_of(node),
+                    format!("union member '{}' expects exactly one argument", name.name),
+                );
+                return Some(None);
+            }
+            let argument = &call.arguments[0];
+            let value_type = self.check_expr(argument.value, Some(member_type));
+            if let Some(value_type) = value_type {
+                self.expect_assignable(argument.span, value_type, member_type);
+            }
+            self.result.resolutions[node as usize] = Some(Resolution::ConstructUnion {
+                type_id: expected,
+                member: member as u32,
+            });
+            return Some(Some(expected));
+        }
         if self.result.type_defs[index as usize].kind != TypeDefKind::Variant {
             return None;
         }

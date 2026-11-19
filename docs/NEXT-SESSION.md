@@ -6,8 +6,8 @@
 - **Active goal: 100% Draft 1.162 conformance.** Authoritative specification:
   `docs/grammar/Draft 1.162.md` (1.153 and earlier are historical only).
 - Gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-  `cargo test` — **429 tests green** (41 lib unit, 141 CLI, 2 codegen/LLVM,
-  1 MCJIT probe, 2 JIT compile-time evaluation, 229 end-to-end execution,
+  `cargo test` — **435 tests green** (41 lib unit, 144 CLI, 2 codegen/LLVM,
+  1 MCJIT probe, 2 JIT compile-time evaluation, 232 end-to-end execution,
   10 parser, 3 spec-example conformance).
 - Spec tests read Draft 1.162 directly: 102 `novasharp` fences; all parse except
   five documented syntax fragments; every complete `Main` example compiles; the
@@ -50,15 +50,12 @@
 
 ## Next steps
 
-1. Compile-time object constructor/destructor body interpretation and nested
-   non-scalar fields.
-2. Interface non-function constant contract representation and class-side
-   implementation checking.
-3. Function-valued extension constants and remaining accessor/`this`-scope
-   example gaps from the full `check` scan.
-4. Re-run all 102 spec examples with `ai-nsc check`, separate demo fragments from
-   real gaps, and update the closed documented sets.
-5. Final audit: COVERAGE/AUDIT/README/spec-notes consistency and full gates.
+1. Compile-time object constructor/destructor body interpretation, lifecycle
+   ordering, copy-to-runtime restrictions and nested non-scalar fields.
+2. NOLAA/automatic-dispose compile-time exclusion checks.
+3. Remaining 1.162/1.16 example gaps from the full `check` scan (accessor/`this`
+   scope, function-valued extension constants are now restricted per spec).
+4. Final audit: COVERAGE/AUDIT/README/spec-notes consistency and full gates.
 
 ## Where things live
 

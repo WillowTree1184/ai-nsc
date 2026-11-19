@@ -15,7 +15,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **429 tests**: 41 lib unit, 141 CLI/driver,
+`cargo test` currently runs **435 tests**: 41 lib unit, 144 CLI/driver,
 2 LLVM codegen, 1 MCJIT probe, 2 JIT compile-time evaluation, 228 end-to-end
 execution, 10 parser and 3 spec-example conformance tests. The spec tests read
 `Draft 1.162.md` directly: 102 `novasharp` fences, all parse except five documented
@@ -41,7 +41,7 @@ semantics is pinned (`3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`).
 | §3.7.3 function types, wildcard, calling conventions | ✅ | function-value/closure tests; supported conventions lowered, others diagnosed |
 | §3.8.1 classes: layout, inheritance, vtable/RTTI, construction, destructors, statics, abstract/sealed | ✅ | class e2e; header vtable/typeinfo/allocator; explicit-allocator returned instances disposable |
 | §3.8.2 structures: layout, `aligned(N)` | ✅ | layout e2e |
-| §3.8.3 interfaces: direct contract members, dispatch, RTTI, accessors, generics, inheritance | 🟡 | interface bodies now declare contracts directly (no extension blocks) and class-body extensions implement them; implicit instance-field names inside methods resolve through `this`; non-function interface constant contracts remain limited (deviation 5) |
+| §3.8.3 interfaces: direct contract members, dispatch, RTTI, accessors, generics, inheritance | ✅ | interface bodies declare contracts directly; class-body extensions implement them; interface value constants are instance contracts dispatched through interface dispatch constant slots (missing/static/type-mismatch implementations diagnosed); implicit instance fields resolve through `this` |
 | §3.8.4 enumerations | ✅ | value/layout/cast/member tests |
 | §3.8.5 type-name elision (enum/union/variant) | ✅ | enum bare members in typed contexts; union `Member(expr)` and variant `State`/`State(expr)` elision; e2e |
 | §3.8.6 variants | ✅ | state/payload layout, construction, is/match, equality tests |
@@ -93,10 +93,6 @@ semantics is pinned (`3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`).
    thrown objects, catch bindings and class-hierarchy matching (when types are
    resolved). Remaining: constructor/destructor bodies of compile-time objects
    and non-scalar fields.
-2. **Interface constant contracts (§3.8.3)**: direct function/accessor/operator
-   contracts and class-body extension implementations work; non-function
-   interface constants without initializers are not modelled as class-side
-   constant contracts.
 
 ## Specification inconsistencies (not deliberate extensions)
 

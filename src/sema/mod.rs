@@ -805,6 +805,13 @@ pub enum Resolution {
         /// Index into the type's field list.
         index: u32,
     },
+    /// An instance field accessed through the implicit `this` of a method.
+    ThisField {
+        /// The declaring type.
+        type_id: TypeId,
+        /// Index into the type's field list.
+        index: u32,
+    },
 }
 
 /// One checked `catch` clause of a `trap` statement (§5.10.4).

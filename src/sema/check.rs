@@ -1772,9 +1772,28 @@ impl<'a> Sema<'a> {
         }
         let members = declaration.members.clone();
         for member in members {
-            match self.node_kind(member) {
-                NodeKind::Extension(_) => {
-                    self.resolve_extension_declaration(member, Some(type_id));
+            match self.node_kind(member).clone() {
+                NodeKind::Fixed(declaration) => {
+                    if declaration.modifiers.static_ {
+                        self.error(
+                            self.span_of(member),
+                            "an interface member must not be static",
+                        );
+                        continue;
+                    }
+                    if declaration.modifiers.accessibility != crate::ast::Accessibility::Public {
+                        self.error(
+                            self.span_of(member),
+                            "an interface member must be declared public",
+                        );
+                    }
+                    if declaration.init.is_some() {
+                        self.error(
+                            self.span_of(member),
+                            "an interface constant must not be initialized",
+                        );
+                    }
+                    self.create_method(member, &declaration, type_id);
                 }
                 NodeKind::Accessor(_) => {
                     self.resolve_accessor_declaration(member, Some(type_id));
@@ -1783,10 +1802,16 @@ impl<'a> Sema<'a> {
                     self.resolve_operator_declaration(member, Some(type_id));
                 }
                 NodeKind::Module(_) => {}
+                NodeKind::Extension(_) => {
+                    self.error(
+                        self.span_of(member),
+                        "an interface body must not contain extension blocks",
+                    );
+                }
                 _ => {
                     self.error(
                         self.span_of(member),
-                        "an interface body may only contain extension blocks and accessors",
+                        "an interface body may only contain constants, accessors, operators and modules",
                     );
                 }
             }
@@ -9450,6 +9475,24 @@ impl<'a> Sema<'a> {
                                 });
                             return Some(expected);
                         }
+                    }
+                }
+            }
+            if let Some(owner) = self.current_owner {
+                let is_method = self.current_function.is_some_and(|function| {
+                    self.result.functions[function as usize].method_of.is_some()
+                });
+                if is_method {
+                    if let Some((type_id, index)) = self.find_field(owner, &name.name) {
+                        let Type::Named(type_index) = self.types_of(type_id) else {
+                            return None;
+                        };
+                        let field =
+                            &self.result.type_defs[type_index as usize].fields[index as usize];
+                        let ty = field.ty;
+                        self.result.resolutions[node as usize] =
+                            Some(Resolution::ThisField { type_id, index });
+                        return Some(ty);
                     }
                 }
             }

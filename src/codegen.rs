@@ -5894,6 +5894,13 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .into())
             }
             Some(Resolution::Field { .. }) => self.gen_field_load(node),
+            Some(Resolution::ThisField { type_id, index }) => {
+                let pointer = self.gen_this_field_pointer(type_id, index)?;
+                let llvm_type = self.llvm_type(self.type_of(node))?;
+                self.builder
+                    .build_load(llvm_type, pointer, "field")
+                    .map_err(|error| format!("cannot load field: {error}"))
+            }
             Some(Resolution::Operator { .. })
             | Some(Resolution::DerivedNotEqual { .. })
             | Some(Resolution::DerivedComparison { .. })
@@ -6278,6 +6285,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .map_err(|error| format!("cannot load this: {error}"))?;
                 Ok(Some(pointer.into_pointer_value()))
             }
+            Some(Resolution::ThisField { type_id, index }) => {
+                self.gen_this_field_pointer(type_id, index).map(Some)
+            }
             _ => Ok(None),
         }
     }
@@ -6605,6 +6615,25 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .build_store(slot, value)
             .map_err(|error| format!("cannot store value: {error}"))?;
         Ok(slot)
+    }
+
+    /// Addresses a field through the current method's `this`.
+    fn gen_this_field_pointer(
+        &mut self,
+        type_id: TypeId,
+        field_index: u32,
+    ) -> Result<PointerValue<'ctx>, String> {
+        let slot = self
+            .current_this_slot
+            .ok_or_else(|| "no this slot".to_string())?;
+        let pointer_type = self.context.ptr_type(AddressSpace::default());
+        let instance = self
+            .builder
+            .build_load(pointer_type, slot, "this")
+            .map_err(|error| format!("cannot load this: {error}"))?
+            .into_pointer_value();
+        self.struct_field_pointer(instance, type_id, field_index)?
+            .ok_or_else(|| "missing this field".to_string())
     }
 
     fn struct_field_pointer(

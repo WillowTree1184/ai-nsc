@@ -549,12 +549,9 @@ fn interfaces_dispatch_to_the_implementing_class() {
     let source = "\
 interface IShape
 {
-    extension
-    {
         public fixed Area(this: &IShape): integer(4);
         public fixed Corners(this: &IShape): integer(4);
     }
-}
 
 class Square: IShape
 {
@@ -593,11 +590,8 @@ fn interface_type_checks_use_rtti() {
     let source = "\
 interface INamed
 {
-    extension
-    {
         public fixed Id(this: &INamed): integer(4);
     }
-}
 
 class Thing: INamed
 {
@@ -627,11 +621,8 @@ fn missing_interface_member_is_reported() {
     let source = "\
 interface IShape
 {
-    extension
-    {
         public fixed Area(this: &IShape): integer(4);
     }
-}
 
 class Broken: IShape
 {
@@ -698,11 +689,8 @@ fn interface_accessor_dispatches_virtually() {
     let source = "\
 interface IThing
 {
-    extension
-    {
         public accessor Value: integer(4) { get; set; }
     }
-}
 
 class Thing: IThing
 {
@@ -1245,11 +1233,8 @@ fn generic_interface_dispatches_to_the_implementation() {
     let source = "\
 interface IComparable<T>
 {
-    extension
-    {
         public fixed Compare(this: &IComparable<T>, other: T): integer(4);
     }
-}
 
 class IntBox : IComparable<integer(4)>
 {
@@ -1399,11 +1384,8 @@ fn generic_constraint_named_type_accepts_implementations() {
     let source = "\
 interface IValue
 {
-    extension
-    {
         public fixed Get(this: &IValue): integer(4);
     }
-}
 
 class Thing : IValue
 {
@@ -2430,11 +2412,8 @@ fn statically_impossible_is_checks_and_interface_patterns() {
     let source = "\
 interface INamed
 {
-    extension
-    {
         public fixed Name(this: &INamed): integer(4);
     }
-}
 
 class Thing : INamed
 {
@@ -3878,19 +3857,13 @@ fn interfaces_inherit_members_from_base_interfaces() {
     let source = "\
 interface IBase
 {
-    extension
-    {
         public fixed Id(this: &IBase): integer(4);
     }
-}
 
 interface IDerived: IBase
 {
-    extension
-    {
         public fixed Name(this: &IDerived): integer(4);
     }
-}
 
 class Thing: IDerived
 {
@@ -4506,11 +4479,8 @@ fn heap_class_instances_support_interface_dispatch() {
     let source = "\
 interface IShape
 {
-    extension
-    {
         public fixed Area(this: &IShape): integer(4);
     }
-}
 
 class Square: IShape
 {
@@ -5738,4 +5708,35 @@ fixed Main(): integer(4)
     return result;
 }";
     assert_eq!(run_program(source), 5);
+}
+
+#[test]
+fn direct_interface_contracts_and_implicit_this_fields_work() {
+    let source = "\
+interface IValue
+{
+    public fixed Get(this: IValue): integer(4);
+}
+
+class Box: IValue
+{
+    public Data: integer(4);
+
+    extension
+    {
+        public fixed Get(this: Box): integer(4)
+        {
+            return Data;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local box: Box = Box();
+    box.Data = 7;
+    local value: IValue = box;
+    return value.Get();
+}";
+    assert_eq!(run_program(source), 7);
 }

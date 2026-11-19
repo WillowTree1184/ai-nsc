@@ -1799,7 +1799,7 @@ impl<'a> Parser<'a> {
         let mut items = Vec::new();
         loop {
             let item_start = self.position;
-            let verbatim = leading_verbatim || self.eat_at_marker("the local name");
+            let verbatim = leading_verbatim;
             let head = self.parse_definition_head(false)?;
             self.declare_shadow_name(&head.name);
             self.push_shadow_scope();

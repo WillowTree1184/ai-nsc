@@ -2417,8 +2417,8 @@ fixed Main(): integer(4)
 {
     local named: function(integer(4)) integer(4) = Double;
     local block: function(integer(4)) integer(4) = (value: integer(4)) integer(4) => { return value * 2; };
-    local inline: function(integer(4)) integer(4) = (value: integer(4)) integer(4) => value + 1;
-    local inferred: function(integer(4)) integer(4) = (value) integer(4) => value * 3;
+    local inline: function(integer(4)) integer(4) = (value: integer(4)) integer(4) => { return value + 1; };
+    local inferred: function(integer(4)) integer(4) = (value) integer(4) => { return value * 3; };
     return Apply(named, 3) + Apply(block, 4) + Apply(inline, 5) + Apply(inferred, 2);
 }";
     // 6 + 8 + 6 + 6
@@ -2593,8 +2593,8 @@ fixed MakeCounter(start: integer(4)): function() integer(4)
 fixed Main(): integer(4)
 {
     local limit: integer(4) = 3;
-    local adder: function(integer(4)) integer(4) = (value: integer(4)) integer(4) => value + limit;
-    local doubled: function(integer(4)) integer(4) = (value: integer(4)) integer(4) => adder(value) * 2;
+    local adder: function(integer(4)) integer(4) = (value: integer(4)) integer(4) => { return value + limit; };
+    local doubled: function(integer(4)) integer(4) = (value: integer(4)) integer(4) => { return adder(value) * 2; };
 
     local counter: function() integer(4) = MakeCounter(10);
     local a: integer(4) = counter();
@@ -3152,7 +3152,7 @@ fixed Add(left: integer(4), right: integer(4); CallingConvention.CDeclaration): 
 fixed Main(): integer(4)
 {
     local callback: function(integer(4), integer(4); CallingConvention.CDeclaration) integer(4) = Add;
-    local literal: function(integer(4); CallingConvention.CDeclaration) integer(4) = (value: integer(4); CallingConvention.CDeclaration) integer(4) => value * 2;
+    local literal: function(integer(4); CallingConvention.CDeclaration) integer(4) = (value: integer(4); CallingConvention.CDeclaration) integer(4) => { return value * 2; };
     return callback(2, 3) + literal(4);
 }";
     assert_eq!(run_program(source), 13);
@@ -3936,7 +3936,7 @@ class Registry
 {
     extension
     {
-        public static fixed Doubler: function(value: integer(4)) integer(4) = (value: integer(4)) integer(4) => value * 2;
+        public static fixed Doubler: function(value: integer(4)) integer(4) = (value: integer(4)) integer(4) => { return value * 2; };
 
         public static fixed Triple(value: integer(4)): integer(4)
         {
@@ -3982,7 +3982,7 @@ local counter: integer(4) = 0;
 
 accessor Count: integer(4)
 {
-    get = () integer(4) => counter + 1;
+    get = () integer(4) => { return counter + 1; };
     set(value) { counter = value * 2; }
 }
 
@@ -4053,7 +4053,7 @@ fixed Run(): integer(4)
     local storage: integer(4) = 3;
     accessor Value: integer(4) => storage
     {
-        get = () integer(4) => storage + 1;
+        get = () integer(4) => { return storage + 1; };
         set(value) { storage = value * 2; }
     }
 

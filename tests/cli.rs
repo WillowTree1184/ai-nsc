@@ -2944,3 +2944,16 @@ fixed Main(): integer(4)
         "{stderr}"
     );
 }
+
+#[test]
+fn local_no_optimize_marker_applies_to_all_items_only_after_local() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    local first: integer(4) = 1, @second: integer(4) = 2;
+    return first + second;
+}",
+    );
+    assert!(!stderr.is_empty(), "{stderr}");
+}

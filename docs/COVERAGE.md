@@ -21,7 +21,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **368 tests**: 41 lib unit tests (lexer, literal,
+`cargo test` currently runs **369 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
 that read `docs/grammar/Draft 1.152.md` directly:
@@ -69,7 +69,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §4.9.6/4.9.7 `&`/`*` reference expressions | ✅ | pointer/reference tests |
 | §4.9.26 `??` with `Optional`/`Result` and all continuations | ✅ | coalescing + user `operator ??` tests |
 | §4.9.27 `?:` conditional expression | ✅ | conditional e2e |
-| §5 statements: blocks, locals/fixed, set/compound, if, while/do, for, match, break/continue, return, trap/finally, throw, dispose, export/use | ✅ | statement e2e tests; `finally` executes on fall-through and normal `return` paths (rejected `return` inside `finally`); `do-while` conditions are checked in the body block's scope; `dispose` targets must be heap allocation units (scope-lifetime instances are rejected per §5.8) |
+| §5 statements: blocks, locals/fixed, set/compound, if, while/do, for, match, break/continue, return, trap/finally, throw, dispose, export/use | ✅ | statement e2e tests; `finally` executes on fall-through and normal `return` paths (rejected `return` inside `finally`); `do-while` conditions are checked in the body block's scope; `dispose` targets must be heap allocation units (scope-lifetime instances are rejected per §5.8); the `local @` no-optimize marker is only accepted immediately after `local` (applying to all items), not per item |
 | §5.6 `use` imports (per scope, later imports first, multi-file) | ✅ | use tests |
 | §5.9 `match`: patterns, guards, logical control flow (break/continue/labels) | ✅ | match e2e tests |
 | §5.9.5 `for`: arrays, VLA, ranges, `&` element alias, `IIterator`/`IIterable` targets | ✅ | for e2e tests |
@@ -132,6 +132,11 @@ implementing them is conforming and they are therefore not listed as deviations.
    compilation has no host compile-time library and reports an explicit
    diagnostic. Compile-time infinite loops are not capped: an intentional
    `#{ while true { ... } }` is genuinely nonterminating, as specified.
+6. **Single-expression function-literal bodies**: §2.7.9's EBNF allows only
+   `Block | VerbatimBlock`, but Draft 1.152's own function-type-constructor
+   example uses `(value: integer(4)) => value`. ai-nsc accepts the single
+   expression and treats it as an implicit return; tests otherwise use block
+   bodies. This is a spec-example accommodation, not a preferred extension.
 6. **NOLAA** is a conservative approximation: warnings (including Early-Dispose),
    block-end/return/break/continue auto-dispose, alias/store demand tracking,
    `NOLAA.Bind` groups, `NOLAA.AssumeNoDemandNext`, and automatic SCC grouping of

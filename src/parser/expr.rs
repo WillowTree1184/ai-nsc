@@ -405,9 +405,10 @@ impl<'a> Parser<'a> {
         let start_token = self.position;
         let header = self.try_parse(Self::parse_function_literal_header);
         if let Some((parameters, calling_convention, return_type)) = header {
-            // The grammar says Block or VerbatimBlock, but single-expression
-            // bodies appear in the spec's own examples; sema treats those as
-            // implicit returns.
+            // §2.7.9 says the body is a Block or VerbatimBlock, but the draft's
+            // own examples (e.g. the function-type-constructor example) use a
+            // single expression after `=>`; accept it and treat it as an
+            // implicit return (recorded in docs/spec-notes/_inconsistencies.md).
             self.push_shadow_scope();
             for parameter in &parameters {
                 self.declare_shadow_name(&parameter.name);

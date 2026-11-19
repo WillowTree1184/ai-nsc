@@ -69,3 +69,12 @@ properties of the snippets, not compiler gaps:
 The conformance test `sema_clean_spec_programs_compile` excludes examples that
 fail semantic analysis by design; the audit above distinguishes snippet
 incompleteness from genuine gaps.
+
+## Single-expression function-literal bodies
+
+§2.7.9's grammar restricts a function-literal body to `Block | VerbatimBlock`,
+but the specification's own function-type-constructor example (the block around
+line 7808 of Draft 1.152) writes bodies such as `(value: integer(4)) => value`.
+ai-nsc accepts a single expression after `=>` and treats it as an implicit
+return; this is a deliberate accommodation for the draft's examples, recorded as
+a deviation in `docs/COVERAGE.md`.

@@ -5731,3 +5731,20 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 7);
 }
+
+#[test]
+fn compile_time_heap_objects_and_is_patterns_execute() {
+    let source = "\
+class Token
+{
+    public Value: integer(4);
+}
+
+#{ heap token: Token = Token(); token.Value = 5; local result: integer(4) = 0; match token { case is Token { result = token.Value; } } }
+
+fixed Main(): integer(4)
+{
+    return result;
+}";
+    assert_eq!(run_program(source), 5);
+}

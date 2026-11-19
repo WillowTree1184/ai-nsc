@@ -21,7 +21,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **419 tests**: 41 lib unit tests (lexer, literal,
+`cargo test` currently runs **420 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
 that read `docs/grammar/Draft 1.153.md` directly (a closed-set test also asserts that the only spec programs failing semantic analysis are the documented demonstration/inconsistency snippets):
@@ -105,13 +105,13 @@ miscompiles.
 
 1. **Compile-time non-scalar execution (§11.4)**: top-level blocks and
    compile-time functions interpret constants, assignments, if/while/do-while/
-   for-range, `match` with value/comparison/wildcard patterns and guards, API
-   calls, compile-time calls, scalar compile-time `heap` allocation/assignment/
-   `dispose`, and top-level `trap`/`throw`/`finally` control flow (wildcard and
-   syntactic typed catches; thrown values/catch bindings are not materialised and
-   class-hierarchy matching is absent). Non-scalar compile-time heap objects and
-   `is` match patterns are not interpreted; those forms are diagnosed rather
-   than miscompiled.
+   for-range, `match` with value/comparison/wildcard/`is` patterns and guards,
+   API calls, compile-time calls, scalar and scalar-field non-scalar `heap`
+   allocations (field reads/writes, `dispose`, named `is` bindings), and top-level
+   `trap`/`throw`/`finally` control flow (wildcard and syntactic typed catches).
+   Remaining: constructor/destructor bodies of compile-time objects, non-scalar
+   fields, thrown object values/catch bindings and class-hierarchy catch
+   matching.
 
 ## Specification inconsistencies (not deliberate extensions)
 

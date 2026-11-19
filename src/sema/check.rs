@@ -4236,6 +4236,11 @@ impl<'a> Sema<'a> {
             },
             NodeKind::Call(_) => None,
             NodeKind::MemberAccess(access) => {
+                if let NodeKind::Name(base) = self.node_kind(access.base) {
+                    if let Some(object) = self.compile_time_objects.get(&base.name) {
+                        return object.fields.get(&access.name).map(|value| *value != 0);
+                    }
+                }
                 let Some(Symbol::Type(type_id)) = self.try_resolve_name(access.base) else {
                     return None;
                 };
@@ -5125,6 +5130,11 @@ impl<'a> Sema<'a> {
                 })
             }
             NodeKind::MemberAccess(access) => {
+                if let NodeKind::Name(base) = self.node_kind(access.base) {
+                    if let Some(object) = self.compile_time_objects.get(&base.name) {
+                        return object.fields.get(&access.name).copied();
+                    }
+                }
                 let Some(Symbol::Type(type_id)) = self.try_resolve_name(access.base) else {
                     return None;
                 };
@@ -11992,7 +12002,7 @@ impl<'a> Sema<'a> {
     }
 
     /// Looks up a built-in type id by name.
-    fn lookup_type_id(&self, name: &str) -> Option<TypeId> {
+    pub(crate) fn lookup_type_id(&self, name: &str) -> Option<TypeId> {
         match self.lookup(name) {
             Some(Symbol::Type(ty)) => Some(*ty),
             _ => None,

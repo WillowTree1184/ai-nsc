@@ -1309,6 +1309,7 @@ pub fn analyze_with_options(
         expected_array_element: None,
         top_level_constants: HashMap::new(),
         compile_time_heap: HashMap::new(),
+        compile_time_objects: HashMap::new(),
         two_phase_future_fixed: std::collections::HashSet::new(),
         two_phase_future_locals: std::collections::HashSet::new(),
         two_phase_pending: Vec::new(),
@@ -1360,6 +1361,15 @@ enum CompileTimeFlow {
     Break,
     Continue,
     Throw(Option<String>),
+}
+
+/// A compile-time non-scalar heap object with scalar field values.
+#[derive(Clone, Debug)]
+pub(crate) struct CompileTimeObject {
+    /// Object type.
+    pub ty: TypeId,
+    /// Scalar field values by field name.
+    pub fields: HashMap<String, i128>,
 }
 
 pub(crate) struct Sema<'a> {
@@ -1476,6 +1486,8 @@ pub(crate) struct Sema<'a> {
     /// they are freed when the compile-time execution ends and never enter the
     /// runtime artifact.
     pub(crate) compile_time_heap: HashMap<String, (i128, TypeId)>,
+    /// Compile-time non-scalar heap objects.
+    pub(crate) compile_time_objects: HashMap<String, CompileTimeObject>,
     /// Immutable bindings produced by `#{}` blocks anywhere in the program,
     /// used to detect forward dependencies for lazy two-phase evaluation (§11.7).
     two_phase_future_fixed: std::collections::HashSet<String>,
@@ -3336,6 +3348,30 @@ impl<'a> Sema<'a> {
         value: &NodeId,
         compound: Option<crate::ast::BinaryOp>,
     ) {
+        if let NodeKind::MemberAccess(member) = self.node_kind(*target).clone() {
+            if let NodeKind::Name(base) = self.node_kind(member.base) {
+                if self.compile_time_objects.contains_key(&base.name) {
+                    self.suppress_errors += 1;
+                    let evaluated = self.eval_const_int(*value);
+                    self.suppress_errors -= 1;
+                    let Some(evaluated) = evaluated else {
+                        if self.compile_time_phase_b {
+                            self.unsupported(
+                                self.span_of(*value),
+                                "non-constant field values in compile-time objects",
+                            );
+                        }
+                        return;
+                    };
+                    let object = self
+                        .compile_time_objects
+                        .get_mut(&base.name)
+                        .expect("object checked above");
+                    object.fields.insert(member.name.clone(), evaluated);
+                    return;
+                }
+            }
+        }
         let NodeKind::Name(name) = self.node_kind(*target).clone() else {
             if self.compile_time_phase_b {
                 self.unsupported(
@@ -3428,6 +3464,7 @@ impl<'a> Sema<'a> {
         }
         self.top_level_constants.clear();
         self.compile_time_heap.clear();
+        self.compile_time_objects.clear();
         self.compile_time_phase_b = true;
         self.compile_time_deferred = false;
         let units = self.top_level_units.clone();
@@ -3804,7 +3841,9 @@ impl<'a> Sema<'a> {
                 }
                 NodeKind::Dispose(dispose) => {
                     if let NodeKind::Name(name) = self.node_kind(dispose.target) {
-                        if self.compile_time_heap.remove(&name.name).is_some() {
+                        if self.compile_time_heap.remove(&name.name).is_some()
+                            || self.compile_time_objects.remove(&name.name).is_some()
+                        {
                             continue;
                         }
                     }
@@ -4125,6 +4164,40 @@ impl<'a> Sema<'a> {
     /// §11.4). Compile-time allocation units never enter the runtime artifact;
     /// non-scalar compile-time heap objects are not representable by the
     /// constant interpreter and are diagnosed.
+    /// Scalar field values for a compile-time object of `ty`, including base
+    /// class fields and scalar field initializers.
+    fn compile_time_object_fields(&mut self, ty: TypeId) -> HashMap<String, i128> {
+        let mut fields = HashMap::new();
+        let Type::Named(index) = self.types_of(ty) else {
+            return fields;
+        };
+        let mut chain = vec![index];
+        let mut current = index;
+        while let Some(base) = self.result.type_defs[current as usize].base {
+            let Type::Named(base_index) = self.types_of(base) else {
+                break;
+            };
+            chain.push(base_index);
+            current = base_index;
+        }
+        for index in chain.into_iter().rev() {
+            let definition = &self.result.type_defs[index as usize];
+            let names: Vec<(String, Option<NodeId>)> = definition
+                .fields
+                .iter()
+                .zip(definition.field_initializers.iter())
+                .map(|(field, initializer)| (field.name.clone(), *initializer))
+                .collect();
+            for (name, initializer) in names {
+                let value = initializer
+                    .and_then(|expression| self.eval_const_int(expression))
+                    .unwrap_or(0);
+                fields.insert(name, value);
+            }
+        }
+        fields
+    }
+
     fn execute_compile_time_heap(&mut self, node: NodeId, declaration: &crate::ast::HeapDecl) {
         let declared = declaration.ty.and_then(|ty| self.resolve_type(ty));
         let Some(expression) = declaration.init else {
@@ -4138,10 +4211,37 @@ impl<'a> Sema<'a> {
         let value = self.eval_compile_time_value(expression, declared);
         self.suppress_errors -= 1;
         let Some((value, ty)) = value else {
-            self.unsupported(
-                self.span_of(expression),
-                "non-scalar compile-time heap initializers",
-            );
+            // Non-scalar compile-time heap object: allocate a compile-time
+            // object with scalar field storage (§11.4).
+            let object_ty = declared.or_else(|| match self.node_kind(expression) {
+                NodeKind::Call(call) => match self.node_kind(call.callee) {
+                    NodeKind::Name(name) => match self.lookup(&name.name).cloned() {
+                        Some(Symbol::Type(ty)) => Some(ty),
+                        _ => None,
+                    },
+                    NodeKind::MemberAccess(access) => match self.lookup(&access.name).cloned() {
+                        Some(Symbol::Type(ty)) => Some(ty),
+                        _ => None,
+                    },
+                    _ => None,
+                },
+                NodeKind::Name(name) => self
+                    .compile_time_objects
+                    .get(&name.name)
+                    .map(|object| object.ty),
+                _ => None,
+            });
+            let Some(ty) = object_ty else {
+                self.unsupported(
+                    self.span_of(expression),
+                    "non-scalar compile-time heap initializers",
+                );
+                return;
+            };
+            let fields = self.compile_time_object_fields(ty);
+            self.compile_time_objects
+                .insert(declaration.name.clone(), CompileTimeObject { ty, fields });
+            self.unknown_compile_time_names.remove(&declaration.name);
             return;
         };
         let allowed = ty == TypeId::BOOLEAN
@@ -4169,7 +4269,21 @@ impl<'a> Sema<'a> {
         statement: &crate::ast::MatchStmt,
         in_loop: bool,
     ) -> CompileTimeFlow {
-        let Some((value, boolean)) = self.compile_time_match_value(statement.value) else {
+        let object_source = match self.node_kind(statement.value) {
+            NodeKind::Name(name) if self.compile_time_objects.contains_key(&name.name) => {
+                Some(name.name.clone())
+            }
+            _ => None,
+        };
+        let object_type = object_source
+            .as_ref()
+            .and_then(|name| self.compile_time_objects.get(name))
+            .map(|object| object.ty);
+        let Some((value, boolean)) = (if object_type.is_some() {
+            Some((0, false))
+        } else {
+            self.compile_time_match_value(statement.value)
+        }) else {
             self.error(
                 self.span_of(statement.value),
                 "compile-time 'match' requires a constant matched value",
@@ -4224,9 +4338,21 @@ impl<'a> Sema<'a> {
                         }
                     }
                 }
-                Some(crate::ast::Pattern::Is { .. }) => {
-                    self.unsupported(self.span_of(case.body), "compile-time match 'is' patterns");
-                    return CompileTimeFlow::Normal;
+                Some(crate::ast::Pattern::Is { target, .. }) => {
+                    let Some(object_type) = object_type else {
+                        self.unsupported(
+                            self.span_of(case.body),
+                            "compile-time match 'is' patterns on scalar values",
+                        );
+                        return CompileTimeFlow::Normal;
+                    };
+                    let crate::ast::IsTarget::Identifier { text, .. } = target else {
+                        return CompileTimeFlow::Normal;
+                    };
+                    let Some(target_type) = self.lookup_type_id(text) else {
+                        return CompileTimeFlow::Normal;
+                    };
+                    self.is_assignable(object_type, target_type)
                 }
             };
             if !matched {
@@ -4245,9 +4371,31 @@ impl<'a> Sema<'a> {
                     }
                 }
             }
+            let binding = match &case.pattern {
+                Some(crate::ast::Pattern::Is {
+                    name: Some(name), ..
+                }) => object_source
+                    .as_ref()
+                    .and_then(|source| self.compile_time_objects.get(source).cloned())
+                    .map(|object| (name.clone(), object)),
+                _ => None,
+            };
+            let previous_binding = binding.as_ref().and_then(|(name, object)| {
+                self.compile_time_objects
+                    .insert(name.clone(), object.clone())
+                    .map(|previous| (name.clone(), previous))
+            });
             let statements = self.block_statements(case.body);
             let errors_before = self.engine.error_count();
             let flow = self.execute_compile_time_statements(&statements, in_loop);
+            let restore = previous_binding.is_some();
+            if let Some((name, previous)) = previous_binding {
+                if restore {
+                    self.compile_time_objects.insert(name, previous);
+                }
+            } else if let Some((name, _)) = binding {
+                self.compile_time_objects.remove(&name);
+            }
             if matches!(
                 flow,
                 CompileTimeFlow::Break | CompileTimeFlow::Continue | CompileTimeFlow::Throw(_)

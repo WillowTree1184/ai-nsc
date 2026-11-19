@@ -2988,23 +2988,19 @@ fn nolaa_reports_escaped_units_as_never_disposed() {
 }
 
 #[test]
-fn compile_time_heap_of_non_scalar_types_is_diagnosed() {
-    let stderr = check_source(
+fn compile_time_heap_of_non_scalar_types_is_supported() {
+    let stderr = check_source_ok(
         "\
 class Token { public Value: integer(4); }
 
-#{ heap token: Token = Token(); }
+#{ heap token: Token = Token(); token.Value = 1; }
 
 fixed Main(): integer(4)
 {
     return 0;
 }",
     );
-    assert!(
-        stderr.contains("non-scalar compile-time heap initializers")
-            || stderr.contains("compile-time heap allocation of non-scalar types"),
-        "{stderr}"
-    );
+    assert!(stderr.is_empty(), "{stderr}");
 }
 
 #[test]

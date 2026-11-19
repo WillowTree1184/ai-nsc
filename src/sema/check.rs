@@ -633,12 +633,64 @@ impl<'a> Sema<'a> {
                     });
                     field_initializers.push(match field.init {
                         Some(Initializer::Expression(expression)) => Some(expression),
-                        Some(Initializer::Block(_)) => {
-                            self.error(
-                                self.span_of(*member),
-                                "field initializer must be an expression",
-                            );
-                            None
+                        Some(Initializer::Block(block)) => {
+                            let mut valid = matches!(self.types_of(ty), Type::Function { .. });
+                            if !valid {
+                                self.error(
+                                    self.span_of(*member),
+                                    "a function field block requires a function type",
+                                );
+                            }
+                            let function = field.ty.and_then(|field_type| {
+                                match self.node_kind(field_type).clone() {
+                                    NodeKind::FunctionType(function) => Some(function),
+                                    _ => None,
+                                }
+                            });
+                            let mut parameters = Vec::new();
+                            if let Some(function) = &function {
+                                for parameter in &function.parameters {
+                                    let Some(name) = parameter.name.clone() else {
+                                        self.error(
+                                            parameter.span,
+                                            "a function field block requires named parameters",
+                                        );
+                                        valid = false;
+                                        break;
+                                    };
+                                    parameters.push(crate::ast::LiteralParameter {
+                                        compile_time: parameter.compile_time,
+                                        name,
+                                        by_ref: parameter.by_ref,
+                                        ty: parameter.ty,
+                                        span: parameter.span,
+                                    });
+                                }
+                            } else {
+                                valid = false;
+                            }
+                            if valid {
+                                let function = function.expect("function checked above");
+                                let literal = self.ast.push(
+                                    self.span_of(*member),
+                                    NodeKind::FunctionLiteral(crate::ast::FunctionLiteral {
+                                        parameters,
+                                        calling_convention: function.calling_convention,
+                                        return_type: function.return_type,
+                                        body: block,
+                                    }),
+                                );
+                                self.grow_result_tables();
+                                Some(literal)
+                            } else {
+                                if function.is_none() {
+                                    self.error(
+                                        self.span_of(*member),
+                                        "a function field block requires a function type",
+                                    );
+                                }
+                                None
+                            }
                         }
                         None => None,
                     });
@@ -3907,6 +3959,17 @@ impl<'a> Sema<'a> {
         });
         self.declare_functions(name, index);
         index
+    }
+
+    /// Grows per-node result tables after a synthetic AST node is appended.
+    fn grow_result_tables(&mut self) {
+        let count = self.ast.nodes.len();
+        if self.result.node_types.len() < count {
+            self.result.node_types.resize(count, None);
+        }
+        if self.result.resolutions.len() < count {
+            self.result.resolutions.resize(count, None);
+        }
     }
 
     pub(crate) fn resolve_linkable_signature(&mut self, node: NodeId, declaration: &LinkableDecl) {

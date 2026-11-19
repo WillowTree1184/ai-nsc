@@ -5808,3 +5808,24 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 4);
 }
+
+#[test]
+fn function_field_block_initializers_work() {
+    let source = "\
+class MyClass
+{
+    public Delegate: function();
+    public Count: integer(4) = 0;
+    public Inc: function(value: integer(4)) integer(4)
+    {
+        return value + 1;
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local object: MyClass = MyClass();
+    return object.Inc(4);
+}";
+    assert_eq!(run_program(source), 5);
+}

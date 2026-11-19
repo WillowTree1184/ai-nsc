@@ -1203,6 +1203,29 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             let Some(body) = body else {
                 continue;
             };
+            if self
+                .sema
+                .compile_time_side_effect_functions
+                .contains(&index)
+            {
+                // A method that writes outer compile-time variables has no
+                // runtime storage for that side effect; runtime construction and
+                // disposal of its owner are rejected below (§11.4/§11.8).
+                let entry = self.context.append_basic_block(function, "entry");
+                self.builder.position_at_end(entry);
+                if let Some(ty) = return_type {
+                    let value = self.zero_value(ty)?;
+                    self.builder
+                        .build_return(Some(&value))
+                        .map_err(|error| format!("cannot emit return: {error}"))?;
+                } else {
+                    self.builder
+                        .build_return(None)
+                        .map_err(|error| format!("cannot emit return: {error}"))?;
+                }
+                continue;
+            }
+            let _ = body;
             self.current_function = index;
             self.current_return = return_type;
             self.current_function_verbatim = false;
@@ -2513,6 +2536,12 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         let info = self
             .local_info(local)
             .ok_or_else(|| "missing heap information".to_string())?;
+        if self.type_has_compile_time_side_effects(info.ty, "Destruct") {
+            return Err(
+                "cannot dispose this type at runtime: its destructor writes outer compile-time variables (§11.4/§11.8)"
+                    .to_string(),
+            );
+        }
         let slot = *self
             .local_slots
             .get(&local)
@@ -7554,6 +7583,22 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         }
     }
 
+    /// Whether `ty` has a `Construct`/`Destruct` method with compile-time-only
+    /// side effects (§11.4/§11.8).
+    fn type_has_compile_time_side_effects(&self, ty: TypeId, method: &str) -> bool {
+        let Type::Named(index) = self.sema.types.get(ty) else {
+            return false;
+        };
+        let Some(methods) = self.sema.type_defs[*index as usize].methods.get(method) else {
+            return false;
+        };
+        methods.iter().any(|function| {
+            self.sema
+                .compile_time_side_effect_functions
+                .contains(function)
+        })
+    }
+
     /// Constructs a value of the node's type into `storage` (§4.6).
     fn gen_construct_into(
         &mut self,
@@ -7565,6 +7610,12 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         else {
             return Err("expected a construction expression".to_string());
         };
+        if self.type_has_compile_time_side_effects(type_id, "Construct") {
+            return Err(
+                "cannot construct this type at runtime: its constructor writes outer compile-time variables (§11.4/§11.8)"
+                    .to_string(),
+            );
+        }
         let Type::Named(index) = self.sema.types.get(type_id).clone() else {
             return Err("construction requires a named type".to_string());
         };

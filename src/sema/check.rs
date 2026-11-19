@@ -7708,7 +7708,29 @@ impl<'a> Sema<'a> {
                         self.error(self.span_of(node), "cannot assign to a constant");
                     }
                 }
-                _ => self.error(self.span_of(node), "expression is not assignable"),
+                _ => {
+                    let side_effect_owner = self.current_function.filter(|function| {
+                        matches!(
+                            self.result.functions[*function as usize].name.as_str(),
+                            "Construct" | "Destruct"
+                        )
+                    });
+                    if let Some(function) = side_effect_owner {
+                        if self.top_level_constants.contains_key(&name.name) {
+                            self.result
+                                .compile_time_side_effect_functions
+                                .insert(function);
+                            self.result.resolutions[node as usize] =
+                                Some(Resolution::TopLevelConstant {
+                                    name: name.name.clone(),
+                                });
+                        } else {
+                            self.error(self.span_of(node), "expression is not assignable");
+                        }
+                    } else {
+                        self.error(self.span_of(node), "expression is not assignable");
+                    }
+                }
             },
             NodeKind::MemberAccess(_) | NodeKind::PointerMemberAccess(_) => {
                 self.check_readonly_assignment(node);

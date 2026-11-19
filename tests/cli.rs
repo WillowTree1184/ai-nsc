@@ -4194,3 +4194,94 @@ fixed Main(): integer(4) { return 0; }",
         "{stderr}"
     );
 }
+
+#[test]
+fn runtime_construction_of_compile_time_side_effect_types_is_rejected() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-ct-side-effect-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(
+        &path,
+        "\
+class Token
+{
+    public Value: integer(4);
+    extension
+    {
+        public fixed Construct(this: Token) { destroyed = destroyed + 1; }
+    }
+}
+
+#{ local destroyed: integer(4) = 0; heap token: Token = Token(); }
+
+fixed Main(): integer(4)
+{
+    local runtime_token: Token = Token();
+    return runtime_token.Value;
+}",
+    )
+    .expect("write program");
+    let output = ai_nsc()
+        .args(["emit-ir", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        stderr.contains("constructor writes outer compile-time variables"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn runtime_dispose_of_compile_time_side_effect_destructors_is_rejected() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-ct-dispose-side-effect-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(
+        &path,
+        "\
+class Token
+{
+    public Value: integer(4);
+    extension
+    {
+        public fixed Destruct(this: Token) { destroyed = destroyed + 1; }
+    }
+}
+
+#{ local destroyed: integer(4) = 0; heap token: Token = Token(); }
+
+fixed Main(): integer(4)
+{
+    heap runtime_token: Token = Token();
+    dispose runtime_token;
+    return runtime_token.Value;
+}",
+    )
+    .expect("write program");
+    let output = ai_nsc()
+        .args(["emit-ir", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(
+        stderr.contains("destructor writes outer compile-time variables"),
+        "{stderr}"
+    );
+}

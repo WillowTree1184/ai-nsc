@@ -1029,6 +1029,10 @@ pub struct SemaResult {
     pub compile_time_scalar_copies: HashMap<String, (TypeId, i128)>,
     /// Copyable compile-time union/variant byte snapshots for runtime constants.
     pub compile_time_bytes_copies: HashMap<String, (TypeId, Vec<u8>)>,
+    /// Functions whose `Construct`/`Destruct` bodies have compile-time-only
+    /// side effects (writes to outer compile-time variables); they must not be
+    /// called or materialised at runtime (§11.4/§11.8).
+    pub compile_time_side_effect_functions: std::collections::HashSet<u32>,
     /// Explicit heap allocator used for each heap local, for deallocation.
     pub heap_allocator_locals: HashMap<LocalId, NodeId>,
     /// Iteration over `IIterator`/`IIterable` targets, keyed by the `for` node

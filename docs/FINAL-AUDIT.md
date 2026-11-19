@@ -13,14 +13,14 @@ contains only the version title and callout formatting, not semantic changes.
 | --- | --- |
 | `cargo fmt --check` | pass |
 | `cargo clippy --all-targets -- -D warnings` | zero warnings |
-| `cargo test` | **450 tests green** |
+| `cargo test` | **453 tests green** |
 | Spec example parse test | **102/102** examples parse |
 | Spec clean-program compile test | pass |
 | Documented semantic-failure set | exact match (10 sources) |
 | Stale `docs/grammar`/Draft path references | none |
 
-Test breakdown: 41 lib unit, 148 CLI, 2 LLVM codegen, 1 MCJIT probe,
-2 JIT compile-time evaluation, 243 end-to-end execution, 10 parser, 3 spec.
+Test breakdown: 41 lib unit, 150 CLI, 2 LLVM codegen, 1 MCJIT probe,
+2 JIT compile-time evaluation, 244 end-to-end execution, 10 parser, 3 spec.
 
 ## 1.162-specific semantics
 
@@ -48,17 +48,10 @@ Test breakdown: 41 lib unit, 148 CLI, 2 LLVM codegen, 1 MCJIT probe,
 
 ## Remaining deviation
 
-One documented gap remains in `docs/COVERAGE.md`:
-
-> A compile-time `Construct`/`Destruct` body that assigns an **outer
-> compile-time variable** is rejected (`expression is not assignable`). Object
-> state side effects, method calls, branches and exceptions are supported.
-
-Reason: such methods are also emitted as runtime functions, and compile-time
-variables intentionally have no mutable runtime storage (§11.8). A conforming
-fix needs whole-program analysis marking methods as compile-time-only and
-rejecting runtime construction of their owner type; this is not silently
-miscompiled today — it is diagnosed.
+None. Compile-time constructor/destructor side effects on outer compile-time
+variables are executed by the interpreter; methods carrying such side effects
+are never emitted with those writes (their runtime construction/disposal is
+diagnosed as compile-time-only, §11.4/§11.8).
 
 ## Remote
 

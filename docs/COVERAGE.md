@@ -15,7 +15,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **450 tests**: 41 lib unit, 148 CLI/driver,
+`cargo test` currently runs **453 tests**: 41 lib unit, 150 CLI/driver,
 2 LLVM codegen, 1 MCJIT probe, 2 JIT compile-time evaluation, 228 end-to-end
 execution, 10 parser and 3 spec-example conformance tests. The spec tests read
 `zh-cn.md` directly: 102 `novasharp` fences, all parse except five documented
@@ -87,19 +87,7 @@ semantics is pinned (`3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`).
 
 ## Known deviations / remaining backlog
 
-1. **Compile-time non-scalar execution (§11.4)**: top-level blocks interpret
-   scalar and scalar-field non-scalar heap objects, field reads/writes, dispose,
-   `is` patterns/bindings, `trap`/`throw`/`finally` with materialised thrown
-   objects/catch bindings/hierarchy matching, and basic constructor/destructor
-   execution (constructor arguments/`this.Field` writes, `this.Method()` calls;
-   explicit dispose and end-of-block reverse destruction), and copyable
-   scalar-field structures, one-dimensional scalar arrays, strings (as byte
-   arrays), enumerations, unions and variants with scalar payloads are
-   materialised as runtime constants. Constructor/destructor exceptions now
-   terminate compile-time execution with a diagnostic; pointer fields, pointer
-   traversal/cycles, nested value-structure fields and class-reference fields
-   are supported. Remaining: arbitrary constructor/destructor side effects that
-   write outer compile-time variables.
+None. All previously tracked 🟡/⛔/deliberate deviations have been closed.
 
 ## Specification inconsistencies (not deliberate extensions)
 

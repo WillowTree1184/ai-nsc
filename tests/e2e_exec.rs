@@ -6202,3 +6202,27 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 4);
 }
+
+#[test]
+fn compile_time_constructors_and_destructors_have_side_effects() {
+    let source = "\
+class Token
+{
+    public Value: integer(4);
+    extension
+    {
+        public fixed Construct(this: Token) { destroyed = destroyed + 1; }
+        public fixed Destruct(this: Token) { destroyed = destroyed + 10; }
+    }
+}
+
+#{
+    local destroyed: integer(4) = 0;
+    heap token: Token = Token();
+    dispose token;
+    heap other: Token = Token();
+}
+
+fixed Main(): integer(4) { return destroyed; }";
+    assert_eq!(run_program(source), 22);
+}

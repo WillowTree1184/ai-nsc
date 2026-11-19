@@ -76,13 +76,13 @@
 - Built-in library: `Object`, `CallingConvention`, `PlatformKind`, exceptions,
   `Optional`, `Result`, `IIterator`, `IIterable`, `IAllocator`,
   `DefaultAllocator`, `Type.SizeOf`, `Compiler.Log*/Assert`, `NOLAA.*`; the
-  `Environment` module and `ArchitectureKind`/`EnvironmentKind`/`EnvironmentFacts`
-  are the next additions.
+  `Environment` module, `ArchitectureKind`/`EnvironmentKind`/`EnvironmentFacts`
+  are materialised (remaining limitation: queries on untracked facts values).
 - Docs: `docs/COVERAGE.md` maps every spec section to status; `docs/AUDIT.md`
-  tracks 160 reproduced defects. `docs/spec-notes/_inconsistencies.md` was
+  tracks 177 reproduced defects. `docs/spec-notes/_inconsistencies.md` was
   rewritten for 1.153.
 
-## Remaining backlog (status as of round 128)
+## Remaining backlog (updated through round 40)
 
 Recent rounds (108-119) fixed specification-conformance defects found by
 auditing the specification instead of working the large backlog items; the

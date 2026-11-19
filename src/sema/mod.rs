@@ -3332,6 +3332,9 @@ impl<'a> Sema<'a> {
                     self.execute_compile_time_while(&while_statement)
                 }
                 NodeKind::DoWhile(do_while) => self.execute_compile_time_do_while(&do_while),
+                NodeKind::Match(match_statement) => {
+                    self.execute_compile_time_match(&match_statement, in_loop)
+                }
                 NodeKind::For(for_statement) => self.execute_compile_time_for(&for_statement),
                 NodeKind::Break(_) => {
                     if !in_loop {
@@ -3554,6 +3557,121 @@ impl<'a> Sema<'a> {
             if !condition {
                 break;
             }
+        }
+        CompileTimeFlow::Normal
+    }
+
+    /// Evaluates a compile-time match operand/pattern to an integer payload and
+    /// records whether the value is boolean (for type agreement).
+    fn compile_time_match_value(&mut self, node: NodeId) -> Option<(i128, bool)> {
+        self.suppress_errors += 1;
+        let integer = self.eval_const_int(node);
+        let boolean = if integer.is_none() {
+            self.eval_compile_time_bool(node, 0)
+        } else {
+            None
+        };
+        self.suppress_errors -= 1;
+        match (integer, boolean) {
+            (Some(value), _) => Some((value, false)),
+            (None, Some(value)) => Some((i128::from(value), true)),
+            (None, None) => None,
+        }
+    }
+
+    /// Executes a `match` statement at compile time over constant values
+    /// (§5.9.6, §11.4). Only value equality/comparison/wildcard patterns are
+    /// supported in compile-time code; `is` patterns require run-time type data.
+    fn execute_compile_time_match(
+        &mut self,
+        statement: &crate::ast::MatchStmt,
+        in_loop: bool,
+    ) -> CompileTimeFlow {
+        let Some((value, boolean)) = self.compile_time_match_value(statement.value) else {
+            self.error(
+                self.span_of(statement.value),
+                "compile-time 'match' requires a constant matched value",
+            );
+            return CompileTimeFlow::Normal;
+        };
+        for case in &statement.cases {
+            let matched = match &case.pattern {
+                None | Some(crate::ast::Pattern::Wildcard) => true,
+                Some(crate::ast::Pattern::Equal(pattern)) => {
+                    let Some((pattern_value, pattern_boolean)) =
+                        self.compile_time_match_value(*pattern)
+                    else {
+                        self.error(
+                            self.span_of(*pattern),
+                            "compile-time match pattern must be constant",
+                        );
+                        return CompileTimeFlow::Normal;
+                    };
+                    if pattern_boolean != boolean {
+                        self.error(
+                            self.span_of(*pattern),
+                            "compile-time match pattern has a different type",
+                        );
+                        return CompileTimeFlow::Normal;
+                    }
+                    pattern_value == value
+                }
+                Some(crate::ast::Pattern::Comparison {
+                    operator,
+                    value: rhs,
+                    span,
+                }) => {
+                    if boolean {
+                        self.error(*span, "compile-time match comparison requires integers");
+                        return CompileTimeFlow::Normal;
+                    }
+                    let Some(rhs) = self.eval_const_int(*rhs) else {
+                        self.error(*span, "compile-time match pattern must be constant");
+                        return CompileTimeFlow::Normal;
+                    };
+                    match operator {
+                        crate::lexer::TokenKind::Less => value < rhs,
+                        crate::lexer::TokenKind::Greater => value > rhs,
+                        crate::lexer::TokenKind::LessEquals => value <= rhs,
+                        crate::lexer::TokenKind::GreaterEquals => value >= rhs,
+                        crate::lexer::TokenKind::EqualsEquals => value == rhs,
+                        crate::lexer::TokenKind::NotEquals => value != rhs,
+                        _ => {
+                            self.error(*span, "unsupported compile-time match comparison");
+                            return CompileTimeFlow::Normal;
+                        }
+                    }
+                }
+                Some(crate::ast::Pattern::Is { .. }) => {
+                    self.unsupported(self.span_of(case.body), "compile-time match 'is' patterns");
+                    return CompileTimeFlow::Normal;
+                }
+            };
+            if !matched {
+                continue;
+            }
+            if let Some(guard) = case.guard {
+                match self.eval_compile_time_bool(guard, 0) {
+                    Some(true) => {}
+                    Some(false) => continue,
+                    None => {
+                        self.error(
+                            self.span_of(guard),
+                            "compile-time match guard must be constant",
+                        );
+                        return CompileTimeFlow::Normal;
+                    }
+                }
+            }
+            let statements = self.block_statements(case.body);
+            let errors_before = self.engine.error_count();
+            let flow = self.execute_compile_time_statements(&statements, in_loop);
+            if matches!(flow, CompileTimeFlow::Break | CompileTimeFlow::Continue)
+                || self.engine.error_count() > errors_before
+            {
+                return flow;
+            }
+            break;
         }
         CompileTimeFlow::Normal
     }

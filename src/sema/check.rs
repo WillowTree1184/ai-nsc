@@ -4340,6 +4340,30 @@ impl<'a> Sema<'a> {
                     }
                     continue;
                 }
+                NodeKind::DoWhile(do_while) => {
+                    let flow = self.execute_compile_time_function_do_while(&do_while);
+                    if matches!(
+                        flow,
+                        CompileFunctionFlow::Break
+                            | CompileFunctionFlow::Continue
+                            | CompileFunctionFlow::Return(_)
+                    ) {
+                        return flow;
+                    }
+                    continue;
+                }
+                NodeKind::Match(match_statement) => {
+                    let flow = self.execute_compile_time_function_match(&match_statement);
+                    if matches!(
+                        flow,
+                        CompileFunctionFlow::Break
+                            | CompileFunctionFlow::Continue
+                            | CompileFunctionFlow::Return(_)
+                    ) {
+                        return flow;
+                    }
+                    continue;
+                }
                 NodeKind::Block(inner) => {
                     let flow = self.execute_compile_time_function_statements(&inner);
                     if matches!(
@@ -4378,6 +4402,102 @@ impl<'a> Sema<'a> {
                 }
                 _ => return CompileFunctionFlow::Normal,
             }
+        }
+        CompileFunctionFlow::Normal
+    }
+
+    /// Evaluates a compile-time function match operand/pattern payload and the
+    /// boolean/int family (§5.9.6).
+    fn function_match_value(&mut self, node: NodeId) -> Option<(i128, bool)> {
+        if let Some(value) = self.eval_const_int(node) {
+            return Some((value, false));
+        }
+        self.eval_compile_time_bool(node, 0)
+            .map(|value| (i128::from(value), true))
+    }
+
+    fn execute_compile_time_function_do_while(
+        &mut self,
+        statement: &crate::ast::DoWhileStmt,
+    ) -> CompileFunctionFlow {
+        loop {
+            let statements = match self.node_kind(statement.body) {
+                NodeKind::Block(statements) => statements.clone(),
+                _ => return CompileFunctionFlow::Normal,
+            };
+            match self.execute_compile_time_function_statements(&statements) {
+                CompileFunctionFlow::Break => return CompileFunctionFlow::Normal,
+                CompileFunctionFlow::Return(value) => return CompileFunctionFlow::Return(value),
+                CompileFunctionFlow::Normal | CompileFunctionFlow::Continue => {}
+            }
+            let Some(condition) = self.eval_compile_time_bool(statement.condition, 0) else {
+                return CompileFunctionFlow::Normal;
+            };
+            if !condition {
+                return CompileFunctionFlow::Normal;
+            }
+        }
+    }
+
+    fn execute_compile_time_function_match(
+        &mut self,
+        statement: &crate::ast::MatchStmt,
+    ) -> CompileFunctionFlow {
+        let Some((value, boolean)) = self.function_match_value(statement.value) else {
+            return CompileFunctionFlow::Normal;
+        };
+        for case in &statement.cases {
+            let matched = match &case.pattern {
+                None | Some(crate::ast::Pattern::Wildcard) => true,
+                Some(crate::ast::Pattern::Equal(pattern)) => {
+                    let Some((pattern_value, pattern_boolean)) =
+                        self.function_match_value(*pattern)
+                    else {
+                        return CompileFunctionFlow::Normal;
+                    };
+                    if pattern_boolean != boolean {
+                        return CompileFunctionFlow::Normal;
+                    }
+                    pattern_value == value
+                }
+                Some(crate::ast::Pattern::Comparison {
+                    operator,
+                    value: rhs,
+                    ..
+                }) => {
+                    if boolean {
+                        return CompileFunctionFlow::Normal;
+                    }
+                    let Some(rhs) = self.eval_const_int(*rhs) else {
+                        return CompileFunctionFlow::Normal;
+                    };
+                    match operator {
+                        crate::lexer::TokenKind::Less => value < rhs,
+                        crate::lexer::TokenKind::Greater => value > rhs,
+                        crate::lexer::TokenKind::LessEquals => value <= rhs,
+                        crate::lexer::TokenKind::GreaterEquals => value >= rhs,
+                        crate::lexer::TokenKind::EqualsEquals => value == rhs,
+                        crate::lexer::TokenKind::NotEquals => value != rhs,
+                        _ => return CompileFunctionFlow::Normal,
+                    }
+                }
+                Some(crate::ast::Pattern::Is { .. }) => return CompileFunctionFlow::Normal,
+            };
+            if !matched {
+                continue;
+            }
+            if let Some(guard) = case.guard {
+                match self.eval_compile_time_bool(guard, 0) {
+                    Some(true) => {}
+                    Some(false) => continue,
+                    None => return CompileFunctionFlow::Normal,
+                }
+            }
+            let statements = match self.node_kind(case.body) {
+                NodeKind::Block(statements) => statements.clone(),
+                _ => return CompileFunctionFlow::Normal,
+            };
+            return self.execute_compile_time_function_statements(&statements);
         }
         CompileFunctionFlow::Normal
     }

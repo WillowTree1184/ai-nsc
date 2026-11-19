@@ -5167,3 +5167,52 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 2);
 }
+
+#[test]
+fn compile_time_match_and_do_while_execute_in_top_level_blocks() {
+    let source = "\
+{
+}
+
+#{ 
+    local x: integer(4) = 2;
+    match x
+    {
+        case > 1 { x = 3; }
+        case wildcard { x = 4; }
+    }
+}
+
+local value: integer(4) = x;
+
+fixed Main(): integer(4)
+{
+    return value;
+}";
+    assert_eq!(run_program(source), 3);
+}
+
+#[test]
+fn compile_time_function_interpreter_runs_match_and_do_while() {
+    let source = "\
+fixed Compute(): integer(4)
+{
+    local x: integer(4) = 0;
+    do { x = x + 1; } while (x < 3);
+    match x
+    {
+        case > 2 { return x; }
+        case wildcard { return 0; }
+    }
+}
+
+#{ local result: integer(4) = Compute(); }
+
+local value: integer(4) = result;
+
+fixed Main(): integer(4)
+{
+    return value;
+}";
+    assert_eq!(run_program(source), 3);
+}

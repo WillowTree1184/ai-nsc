@@ -21,7 +21,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **366 tests**: 41 lib unit tests (lexer, literal,
+`cargo test` currently runs **368 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
 that read `docs/grammar/Draft 1.152.md` directly:
@@ -121,7 +121,9 @@ implementing them is conforming and they are therefore not listed as deviations.
    rejected in compile-time contexts, and marked expressions materialise literal
    operands through memory so the IR builder cannot constant-fold the marked
    expression (`@(1 + 2)` keeps its `add`). The `@` adjacency rules (no
-   whitespace before a keyword, `(`, `{` or declared name) are diagnosed.
+   whitespace before a keyword, `(`, `{` or declared name) are diagnosed, a
+   `fixed @Name` must not use a `@` expression as its initial value, and a
+   `local @Name` initializer may not perform compile-time evaluation (§14.3.1).
 6. **Compile-time libraries for external `linkable` functions** (§5.5: "编译期
    所需的库必须由编译器命令参数提供"): on the host target the compiler process's
    own C library acts as the compile-time library, so calls such as `printf` in

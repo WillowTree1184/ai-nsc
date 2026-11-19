@@ -3977,7 +3977,17 @@ impl<'a> Sema<'a> {
             return;
         };
         let init = declaration.init.and_then(|init| match init {
-            Initializer::Expression(expression) => Some(expression),
+            Initializer::Expression(expression) => {
+                if declaration.modifiers.verbatim
+                    && matches!(self.node_kind(expression), NodeKind::VerbatimExpression(_))
+                {
+                    self.error(
+                        self.span_of(expression),
+                        "a no-optimize constant must not use a '@' expression as its compile-time initial value (§14.3.1)",
+                    );
+                }
+                Some(expression)
+            }
             Initializer::Block(_) => None,
         });
         if init.is_none() {
@@ -6554,9 +6564,14 @@ impl<'a> Sema<'a> {
             let declared_type = item.ty.and_then(|ty| self.resolve_type(ty));
             let ty = match (declared_type, item.init) {
                 (Some(ty), Some(initializer)) => {
+                    let previous_verbatim = self.in_verbatim;
+                    if item.verbatim {
+                        self.in_verbatim = true;
+                    }
                     self.initializer_depth += 1;
                     let inferred = self.check_expr(initializer, Some(ty));
                     self.initializer_depth -= 1;
+                    self.in_verbatim = previous_verbatim;
                     if let Some(inferred) = inferred {
                         self.expect_assignable(item.span, inferred, ty);
                     }
@@ -6564,9 +6579,14 @@ impl<'a> Sema<'a> {
                 }
                 (Some(ty), None) => ty,
                 (None, Some(initializer)) => {
+                    let previous_verbatim = self.in_verbatim;
+                    if item.verbatim {
+                        self.in_verbatim = true;
+                    }
                     self.initializer_depth += 1;
                     let inferred = self.check_expr(initializer, None);
                     self.initializer_depth -= 1;
+                    self.in_verbatim = previous_verbatim;
                     inferred.unwrap_or(TypeId::ERROR)
                 }
                 (None, None) => {
@@ -6683,9 +6703,22 @@ impl<'a> Sema<'a> {
             if let Some(initializer) = declaration.init {
                 match initializer {
                     Initializer::Expression(expression) => {
+                        if declaration.modifiers.verbatim
+                            && matches!(self.node_kind(expression), NodeKind::VerbatimExpression(_))
+                        {
+                            self.error(
+                                self.span_of(expression),
+                                "a no-optimize constant must not use a '@' expression as its compile-time initial value (§14.3.1)",
+                            );
+                        }
                         let previous_constant = self.in_constant_initializer;
+                        let previous_verbatim = self.in_verbatim;
                         self.in_constant_initializer = true;
+                        if declaration.modifiers.verbatim {
+                            self.in_verbatim = true;
+                        }
                         let inferred = self.check_expr(expression, Some(ty));
+                        self.in_verbatim = previous_verbatim;
                         self.in_constant_initializer = previous_constant;
                         if let Some(inferred) = inferred {
                             self.expect_assignable(self.span_of(node), inferred, ty);

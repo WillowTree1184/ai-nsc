@@ -7,7 +7,7 @@
   compatibility syntax beyond the draft; no unimplemented normative rules).
   `git status` is clean.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  — **366 tests green** (41 lib unit including the lexer longest-match test, 108 CLI,
+  — **368 tests green** (41 lib unit including the lexer longest-match test, 110 CLI,
   2 codegen/LLVM, 1 MCJIT probe, 2 JIT compile-time evaluation, 200 end-to-end
   execution, 10 parser, 2 spec-example conformance). The spec-conformance tests
   read `Draft 1.152.md`: all 91 `novasharp` examples parse, and every whole-program
@@ -32,7 +32,7 @@
   (`Type.SizeOf`, `Compiler.Log*`/`Assert`, `Platform.Is`, `NOLAA.*`). Containers
   are intentionally not provided (§15.2 does not define them).
 - Docs: `docs/COVERAGE.md` maps every spec section to ✅/🟡/⛔ with evidence and
-  deliberate deviations; `docs/AUDIT.md` tracks the 144 reproduced defects (all
+  deliberate deviations; `docs/AUDIT.md` tracks the 145 reproduced defects (all
   fixed or marked partial with the fixing commit). Draft 1.152 changes are covered:
   `as` conversions, circular shifts, directional ranges, inferred `for` binding
   types, `@` markers, `for` without a binding, contextual keyword names.

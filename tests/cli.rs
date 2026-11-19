@@ -2911,3 +2911,36 @@ fixed Main(): integer(4)
         "{stderr}"
     );
 }
+
+#[test]
+fn no_optimize_constants_reject_marked_initializers() {
+    let stderr = check_source(
+        "\
+fixed @constant: integer(4) = @(1 + 2);
+
+fixed Main(): integer(4)
+{
+    return constant;
+}",
+    );
+    assert!(
+        stderr.contains("no-optimize constant must not use a '@' expression"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn no_optimize_locals_forbid_compile_time_evaluation() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    local @value: integer(4) = #(1 + 2);
+    return value;
+}",
+    );
+    assert!(
+        stderr.contains("no-optimize marker forbids compile-time evaluation"),
+        "{stderr}"
+    );
+}

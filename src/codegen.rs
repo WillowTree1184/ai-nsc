@@ -5005,36 +5005,19 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                         let condition = self.emit_type_check(instance, type_id)?;
                         (condition, pattern_info)
                     }
-                    Some(MatchPatternInfo::IsIllegal) => {
+                    Some(MatchPatternInfo::IsFloatSpecial { .. }) => {
                         let value = self
                             .builder
                             .build_load(llvm_type, value_slot, "match_float")
                             .map_err(|error| format!("cannot load match value: {error}"))?
                             .into_float_value();
-                        let condition = self
-                            .builder
-                            .build_float_compare(FloatPredicate::UNO, value, value, "is_illegal")
-                            .map_err(|error| format!("cannot compare: {error}"))?;
-                        (condition, pattern_info)
-                    }
-                    Some(MatchPatternInfo::IsInfinite { negative }) => {
-                        let value = self
-                            .builder
-                            .build_load(llvm_type, value_slot, "match_float")
-                            .map_err(|error| format!("cannot load match value: {error}"))?
-                            .into_float_value();
-                        let infinity = value.get_type().const_float(if negative {
-                            f64::NEG_INFINITY
-                        } else {
-                            f64::INFINITY
-                        });
                         let condition = self
                             .builder
                             .build_float_compare(
-                                FloatPredicate::OEQ,
+                                FloatPredicate::UNO,
                                 value,
-                                infinity,
-                                "is_infinite",
+                                value,
+                                "is_not_a_number",
                             )
                             .map_err(|error| format!("cannot compare: {error}"))?;
                         (condition, pattern_info)
@@ -5200,7 +5183,7 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .map_err(|error| format!("cannot bind payload: {error}"))?;
                 Ok(())
             }
-            MatchPatternInfo::IsIllegal | MatchPatternInfo::IsInfinite { .. } => Ok(()),
+            MatchPatternInfo::IsFloatSpecial { .. } => Ok(()),
             MatchPatternInfo::IsClass { binding, .. } => {
                 let Some(binding) = binding else {
                     return Ok(());
@@ -5718,16 +5701,14 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .into();
                 self.verbatim_materialize(literal)
             }
-            NodeKind::InfiniteLiteral => {
-                let llvm_type = self.llvm_type(self.type_of(node))?;
-                Ok(llvm_type
-                    .into_float_type()
-                    .const_float(f64::INFINITY)
-                    .into())
-            }
-            NodeKind::IllegalLiteral => {
-                let llvm_type = self.llvm_type(self.type_of(node))?;
-                Ok(llvm_type.into_float_type().const_float(f64::NAN).into())
+            NodeKind::FloatSpecialLiteral(literal) => {
+                let llvm_type = self.llvm_type(self.type_of(node))?.into_float_type();
+                let value = if literal.infinite {
+                    f64::INFINITY
+                } else {
+                    f64::NAN
+                };
+                Ok(llvm_type.const_float(value).into())
             }
             NodeKind::UninitializedLiteral => {
                 let ty = self.type_of(node);
@@ -8641,30 +8622,13 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 }
                 _ => Err("missing is target type".to_string()),
             },
-            IsTarget::Illegal => {
+            IsTarget::FloatSpecial { .. } => {
                 let value = self.gen_expr(is_expression.value)?.into_float_value();
                 let is_nan = self
                     .builder
-                    .build_float_compare(FloatPredicate::UNO, value, value, "is_illegal")
+                    .build_float_compare(FloatPredicate::UNO, value, value, "is_not_a_number")
                     .map_err(|error| format!("cannot compare: {error}"))?;
                 self.boolean_from_i1(is_nan)
-            }
-            IsTarget::Infinite { negative } => {
-                let value = self.gen_expr(is_expression.value)?.into_float_value();
-                let infinity = value.get_type().const_float(f64::INFINITY);
-                let infinity = if *negative {
-                    let zero = value.get_type().const_zero();
-                    self.builder
-                        .build_float_sub(zero, infinity, "negative_infinity")
-                        .map_err(|error| format!("cannot build negative infinity: {error}"))?
-                } else {
-                    infinity
-                };
-                let is_infinite = self
-                    .builder
-                    .build_float_compare(FloatPredicate::OEQ, value, infinity, "is_infinite")
-                    .map_err(|error| format!("cannot compare: {error}"))?;
-                self.boolean_from_i1(is_infinite)
             }
         }
     }

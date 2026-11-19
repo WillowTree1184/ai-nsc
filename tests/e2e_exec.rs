@@ -3358,31 +3358,22 @@ fn special_float_match_patterns() {
     let source = "\
 fixed Main(): integer(4)
 {
-    local bad: float(8) = illegal;
-    local big: float(8) = infinite;
-    local small: float(8) = -infinite;
+    local bad: float(8) = float(8).NotANumber;
+    local big: float(8) = float(8).Infinite;
+    local small: float(8) = -float(8).Infinite;
     local normal: float(8) = 1.5;
     local score: integer(4) = 0;
 
     match bad
     {
-        case is illegal { score += 1; }
+        case is float(8).NotANumber { score += 1; }
         case wildcard { }
     }
-    match big
-    {
-        case is infinite { score += 2; }
-        case wildcard { }
-    }
-    match small
-    {
-        case is -infinite { score += 4; }
-        case wildcard { }
-    }
+    if (big == float(8).Infinite) { score += 2; }
+    if (small == -float(8).Infinite) { score += 4; }
     match normal
     {
-        case is illegal { }
-        case is infinite { }
+        case is float(8).NotANumber { }
         case wildcard { score += 8; }
     }
     return score;
@@ -4127,7 +4118,7 @@ fn float_to_integer_casts_wrap_and_handle_nan() {
     let source = "\
 fixed Main(): integer(4)
 {
-    local not_a_number: float(8) = illegal;
+    local not_a_number: float(8) = float(8).NotANumber;
     local huge: float(8) = 2147483648.0;
     local negative: float(8) = -2147483904.0;
     local score: integer(4) = 0;
@@ -5028,7 +5019,7 @@ fixed Main(): integer(4)
 }
 
 #[test]
-fn infinite_is_and_literal_overload_resolution_work() {
+fn float_special_values_and_overload_resolution_work() {
     let source = "\
 fixed Pick(a: integer(4), b: integer(4)): integer(4)
 {
@@ -5044,7 +5035,7 @@ fixed Main(): integer(4)
 {
     local i: integer(4) = Pick(1, 2);
     local f: float(4) = Pick(1.0, 2.0);
-    if (-infinite is -infinite)
+    if (!(float(4).Infinite is float(4).NotANumber))
     {
         return i + (f as integer(4));
     }

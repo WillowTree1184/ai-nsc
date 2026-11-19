@@ -8883,31 +8883,27 @@ impl<'a> Sema<'a> {
                     }
                 }
             }
-            IsTarget::Illegal => {
-                if !matches!(self.types_of(value_type), Type::Float { .. }) {
+            IsTarget::FloatSpecial { bytes } => {
+                let Type::Float {
+                    bytes: value_bytes, ..
+                } = self.types_of(value_type)
+                else {
                     self.error(
                         self.span_of(match_node),
-                        "'is illegal' requires a floating-point value",
+                        "a float special 'is' pattern requires a floating-point value",
                     );
                     return;
-                }
-                self.result
-                    .match_patterns
-                    .insert((match_node, case_index as u32), MatchPatternInfo::IsIllegal);
-            }
-            IsTarget::Infinite { negative } => {
-                if !matches!(self.types_of(value_type), Type::Float { .. }) {
+                };
+                if value_bytes != *bytes {
                     self.error(
                         self.span_of(match_node),
-                        "'is infinity' requires a floating-point value",
+                        "the float special 'is' pattern width must match the value",
                     );
                     return;
                 }
                 self.result.match_patterns.insert(
                     (match_node, case_index as u32),
-                    MatchPatternInfo::IsInfinite {
-                        negative: *negative,
-                    },
+                    MatchPatternInfo::IsFloatSpecial { bytes: *bytes },
                 );
             }
         }
@@ -8943,17 +8939,6 @@ impl<'a> Sema<'a> {
         ty
     }
 
-    /// Whether `node` is an infinite-value literal, possibly negated (§2.7.10).
-    fn is_infinite_literal_expression(&self, node: NodeId) -> bool {
-        match self.node_kind(node) {
-            NodeKind::InfiniteLiteral => true,
-            NodeKind::Unary(unary) if unary.op == UnaryOp::Negate => {
-                matches!(self.node_kind(unary.operand), NodeKind::InfiniteLiteral)
-            }
-            _ => false,
-        }
-    }
-
     fn check_expr_inner(&mut self, node: NodeId, expected: Option<TypeId>) -> Option<TypeId> {
         match self.node_kind(node).clone() {
             NodeKind::IntegerLiteral(literal) => {
@@ -8969,16 +8954,22 @@ impl<'a> Sema<'a> {
                 self.type_string_literal(node, &literal.raw)
             }
             NodeKind::BooleanLiteral(_) => Some(TypeId::BOOLEAN),
-            NodeKind::InfiniteLiteral | NodeKind::IllegalLiteral => match expected {
-                Some(ty) if matches!(self.type_of(ty), Type::Float { .. }) => Some(ty),
-                _ => {
-                    self.error(
-                        self.span_of(node),
-                        "this literal requires a floating-point type from context",
-                    );
-                    None
+            NodeKind::FloatSpecialLiteral(literal) => {
+                let ty = self.result.types.float(literal.bytes);
+                if let Some(expected) = expected {
+                    if !matches!(
+                        self.types_of(expected),
+                        Type::Float { bytes, .. } if bytes == literal.bytes
+                    ) {
+                        self.error(
+                            self.span_of(node),
+                            "a float special value requires the same floating width as its context",
+                        );
+                        return None;
+                    }
                 }
-            },
+                Some(ty)
+            }
             NodeKind::UninitializedLiteral => match expected {
                 Some(_) if self.in_constant_initializer => {
                     self.error(
@@ -10101,8 +10092,7 @@ impl<'a> Sema<'a> {
             | NodeKind::StringLiteral(_)
             | NodeKind::VerbatimStringLiteral(_)
             | NodeKind::BooleanLiteral(_)
-            | NodeKind::InfiniteLiteral
-            | NodeKind::IllegalLiteral => true,
+            | NodeKind::FloatSpecialLiteral(_) => true,
             NodeKind::Unary(unary) => self.is_compile_time_constant(unary.operand),
             NodeKind::Binary(binary) => {
                 self.is_compile_time_constant(binary.left)
@@ -10790,7 +10780,7 @@ impl<'a> Sema<'a> {
             NodeKind::IntegerLiteral(_) | NodeKind::CharacterLiteral(_) => {
                 Some(LiteralFamily::Integer)
             }
-            NodeKind::FloatLiteral(_) | NodeKind::InfiniteLiteral | NodeKind::IllegalLiteral => {
+            NodeKind::FloatLiteral(_) | NodeKind::FloatSpecialLiteral(_) => {
                 Some(LiteralFamily::Float)
             }
             NodeKind::BooleanLiteral(_) => Some(LiteralFamily::Boolean),
@@ -10910,22 +10900,6 @@ impl<'a> Sema<'a> {
         let (Some(left_type), Some(right_type)) = (left_type, right_type) else {
             return None;
         };
-        if matches!(
-            binary.op,
-            BinaryOp::Equal
-                | BinaryOp::NotEqual
-                | BinaryOp::Less
-                | BinaryOp::Greater
-                | BinaryOp::LessEqual
-                | BinaryOp::GreaterEqual
-        ) && (matches!(self.node_kind(binary.left), NodeKind::IllegalLiteral)
-            || matches!(self.node_kind(binary.right), NodeKind::IllegalLiteral))
-        {
-            self.error(
-                self.span_of(node),
-                "the illegal value literal must not be used as a comparison operand",
-            );
-        }
         // Array extension operators are instantiated for the operand types
         // before overload resolution (§3.8.3).
         for operand in [left_type, right_type] {
@@ -11396,12 +11370,7 @@ impl<'a> Sema<'a> {
     }
 
     fn check_is_expression(&mut self, node: NodeId, is_expression: &IsExpr) -> Option<TypeId> {
-        // An infinite-value literal has no type of its own; when it is compared
-        // against `infinite`/`-infinite` there is no numeric statement context,
-        // so the default floating type provides the required context (§2.7.10).
-        let infinite_value = self.is_infinite_literal_expression(is_expression.value);
-        let expected = infinite_value.then(|| self.result.types.float(8));
-        let value_type = self.check_expr(is_expression.value, expected)?;
+        let value_type = self.check_expr(is_expression.value, None)?;
         match &is_expression.target {
             IsTarget::Identifier {
                 text,
@@ -11449,20 +11418,21 @@ impl<'a> Sema<'a> {
                     None => None,
                 }
             }
-            IsTarget::Illegal => {
-                if !matches!(self.types_of(value_type), Type::Float { .. }) {
+            IsTarget::FloatSpecial { bytes } => {
+                let Type::Float {
+                    bytes: value_bytes, ..
+                } = self.types_of(value_type)
+                else {
                     self.error(
                         self.span_of(node),
-                        "checking for 'illegal' requires a floating-point value",
+                        "a float special 'is' target requires a floating-point value",
                     );
-                }
-                Some(TypeId::BOOLEAN)
-            }
-            IsTarget::Infinite { .. } => {
-                if !matches!(self.types_of(value_type), Type::Float { .. }) {
+                    return Some(TypeId::BOOLEAN);
+                };
+                if value_bytes != *bytes {
                     self.error(
                         self.span_of(node),
-                        "checking for 'infinite' requires a floating-point value",
+                        "the float special 'is' target width must match the value",
                     );
                 }
                 Some(TypeId::BOOLEAN)

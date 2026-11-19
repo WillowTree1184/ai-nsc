@@ -375,20 +375,16 @@ fixed Main(): integer(4) { return 0; }",
 }
 
 #[test]
-fn illegal_value_literal_cannot_be_compared() {
+fn legacy_illegal_literal_is_not_a_keyword_in_1_16() {
     let stderr = check_source(
         "\
 fixed Main(): integer(4)
 {
-    local ratio: float(8) = 1.5;
-    if (ratio == illegal) { return 1; }
+    local ratio: float(8) = illegal;
     return 0;
 }",
     );
-    assert!(
-        stderr.contains("must not be used as a comparison operand"),
-        "{stderr}"
-    );
+    assert!(stderr.contains("unknown name 'illegal'"), "{stderr}");
 }
 
 #[test]

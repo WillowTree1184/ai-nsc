@@ -2265,61 +2265,65 @@ impl<'a> Parser<'a> {
 
     /// Parses an `is` target (§4.8).
     pub(crate) fn parse_is_target(&mut self) -> Option<IsTarget> {
-        match self.peek_kind() {
-            TokenKind::Illegal => {
-                self.bump();
-                Some(IsTarget::Illegal)
+        if self.peek_kind() == TokenKind::Float && self.peek_at(1) == TokenKind::LeftParen {
+            self.bump();
+            self.expect(TokenKind::LeftParen, "'(' after 'float'");
+            let bytes_token = self.peek();
+            self.bump();
+            let bytes = bytes_token.text(self.source).parse::<u8>().ok();
+            let Some(bytes) = bytes.filter(|bytes| *bytes == 4 || *bytes == 8) else {
+                self.error_at(bytes_token.span, "float width must be 4 or 8");
+                return None;
+            };
+            self.expect(TokenKind::RightParen, "')' after float width");
+            self.expect(TokenKind::Dot, "'.' before float special member");
+            let member = self.peek();
+            if member.text(self.source) != "NotANumber" {
+                self.error_at(
+                    member.span,
+                    "the only float special 'is' target is float(N).NotANumber",
+                );
+                return None;
             }
-            TokenKind::Infinite => {
-                self.bump();
-                Some(IsTarget::Infinite { negative: false })
-            }
-            TokenKind::Minus => {
-                self.bump();
-                self.expect(TokenKind::Infinite, "'infinite' after '-'");
-                Some(IsTarget::Infinite { negative: true })
-            }
-            _ => {
-                let start = self.position;
-                let mut node = self.parse_qualified_name()?;
-                loop {
-                    if self.at(TokenKind::Less) {
-                        let Some(arguments) =
-                            self.try_parse(Self::parse_monomorphization_arguments)
-                        else {
-                            break;
-                        };
-                        let span = self.span_between(start, self.position);
-                        node = self.ast.push(
-                            span,
-                            NodeKind::Monomorphization(MonomorphizationExpr {
-                                base: node,
-                                arguments,
-                            }),
-                        );
-                        continue;
-                    }
-                    if self.eat(TokenKind::Dot) {
-                        let (member, member_span) = self.parse_member_name()?;
-                        let span = Span::new(self.file, self.ast.span(node).start, member_span.end);
-                        node = self.ast.push(
-                            span,
-                            NodeKind::MemberAccess(MemberAccess {
-                                base: node,
-                                name: member,
-                            }),
-                        );
-                        continue;
-                    }
-                    break;
-                }
-                let span = self.ast.span(node);
-                let text = self.source[span.start as usize..span.end as usize]
-                    .split_whitespace()
-                    .collect::<String>();
-                Some(IsTarget::Identifier { text, node })
-            }
+            self.bump();
+            return Some(IsTarget::FloatSpecial { bytes });
         }
+        let start = self.position;
+        let mut node = self.parse_qualified_name()?;
+        loop {
+            if self.at(TokenKind::Less) {
+                let Some(arguments) = self.try_parse(Self::parse_monomorphization_arguments) else {
+                    break;
+                };
+                let span = self.span_between(start, self.position);
+                node = self.ast.push(
+                    span,
+                    NodeKind::Monomorphization(MonomorphizationExpr {
+                        base: node,
+                        arguments,
+                    }),
+                );
+                continue;
+            }
+            if self.eat(TokenKind::Dot) {
+                let (member, member_span) = self.parse_member_name()?;
+                let span = Span::new(self.file, self.ast.span(node).start, member_span.end);
+                node = self.ast.push(
+                    span,
+                    NodeKind::MemberAccess(MemberAccess {
+                        base: node,
+                        name: member,
+                    }),
+                );
+                continue;
+            }
+            break;
+        }
+        let span = self.ast.span(node);
+        let text = self.source[span.start as usize..span.end as usize]
+            .split_whitespace()
+            .collect::<String>();
+        Some(IsTarget::Identifier { text, node })
     }
 
     fn parse_break(&mut self) -> Option<NodeId> {
@@ -2685,8 +2689,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::VerbatimStringLiteral
                 | TokenKind::True
                 | TokenKind::False
-                | TokenKind::Illegal
-                | TokenKind::Infinite
+                | TokenKind::Float
                 | TokenKind::Uninitialized
                 | TokenKind::This
                 | TokenKind::Owner

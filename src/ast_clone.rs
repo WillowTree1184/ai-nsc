@@ -131,8 +131,9 @@ impl Ast {
                 NodeKind::VerbatimStringLiteral(literal.clone())
             }
             NodeKind::BooleanLiteral(value) => NodeKind::BooleanLiteral(*value),
-            NodeKind::InfiniteLiteral => NodeKind::InfiniteLiteral,
-            NodeKind::IllegalLiteral => NodeKind::IllegalLiteral,
+            NodeKind::FloatSpecialLiteral(literal) => {
+                NodeKind::FloatSpecialLiteral(literal.clone())
+            }
             NodeKind::UninitializedLiteral => NodeKind::UninitializedLiteral,
 
             // -- Special names ---------------------------------------------
@@ -739,10 +740,7 @@ impl Ast {
                 text: text.clone(),
                 node: self.clone_subtree(*node),
             },
-            IsTarget::Illegal => IsTarget::Illegal,
-            IsTarget::Infinite { negative } => IsTarget::Infinite {
-                negative: *negative,
-            },
+            IsTarget::FloatSpecial { bytes } => IsTarget::FloatSpecial { bytes: *bytes },
         }
     }
 

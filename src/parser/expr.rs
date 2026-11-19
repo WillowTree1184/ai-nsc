@@ -282,6 +282,38 @@ impl<'a> Parser<'a> {
         let token = self.peek();
         let span = token.span;
 
+        if token.kind == TokenKind::Float && self.peek_at(1) == TokenKind::LeftParen {
+            self.bump();
+            self.expect(TokenKind::LeftParen, "'(' after 'float'");
+            let bytes_token = self.peek();
+            self.bump();
+            let bytes = bytes_token.text(self.source).parse::<u8>().ok();
+            let Some(bytes) = bytes.filter(|bytes| *bytes == 4 || *bytes == 8) else {
+                self.error_at(bytes_token.span, "float width must be 4 or 8");
+                return None;
+            };
+            self.expect(TokenKind::RightParen, "')' after float width");
+            self.expect(TokenKind::Dot, "'.' before float special member");
+            let member = self.peek();
+            let infinite = match member.text(self.source) {
+                "NotANumber" => false,
+                "Infinite" => true,
+                _ => {
+                    self.error_at(
+                        member.span,
+                        "float special member must be NotANumber or Infinite",
+                    );
+                    return None;
+                }
+            };
+            self.bump();
+            let span = self.span_between(start_token, self.position);
+            return Some(self.ast.push(
+                span,
+                NodeKind::FloatSpecialLiteral(FloatSpecialLiteral { bytes, infinite }),
+            ));
+        }
+
         match token.kind {
             TokenKind::IntegerLiteral => {
                 self.bump();
@@ -335,14 +367,6 @@ impl<'a> Parser<'a> {
             TokenKind::False => {
                 self.bump();
                 Some(self.ast.push(span, NodeKind::BooleanLiteral(false)))
-            }
-            TokenKind::Infinite => {
-                self.bump();
-                Some(self.ast.push(span, NodeKind::InfiniteLiteral))
-            }
-            TokenKind::Illegal => {
-                self.bump();
-                Some(self.ast.push(span, NodeKind::IllegalLiteral))
             }
             TokenKind::Uninitialized => {
                 self.bump();

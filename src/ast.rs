@@ -223,10 +223,8 @@ pub enum NodeKind {
     VerbatimStringLiteral(StringLiteral),
     /// `true` / `false`.
     BooleanLiteral(bool),
-    /// `infinite`.
-    InfiniteLiteral,
-    /// `illegal`.
-    IllegalLiteral,
+    /// `float(N).NotANumber` / `float(N).Infinite` (§3.3).
+    FloatSpecialLiteral(FloatSpecialLiteral),
     /// `uninitialized`.
     UninitializedLiteral,
 
@@ -885,12 +883,10 @@ pub enum IsTarget {
         /// as `Box<integer(4)>.Some` resolve (§10.2).
         node: NodeId,
     },
-    /// `illegal`
-    Illegal,
-    /// `infinite` / `-infinite`
-    Infinite {
-        /// Whether the target was negated.
-        negative: bool,
+    /// `float(N).NotANumber` (§3.3, §4.8)
+    FloatSpecial {
+        /// Width in bytes (4 or 8).
+        bytes: u8,
     },
 }
 
@@ -1257,6 +1253,15 @@ pub struct IntLiteral {
 pub struct FloatLiteral {
     /// Raw literal text.
     pub raw: String,
+}
+
+/// A float special value (§3.3).
+#[derive(Clone, Debug)]
+pub struct FloatSpecialLiteral {
+    /// Width in bytes (4 or 8).
+    pub bytes: u8,
+    /// Whether this is `Infinite` (otherwise `NotANumber`).
+    pub infinite: bool,
 }
 
 /// A character literal, kept as written (encoding tag included).

@@ -884,12 +884,10 @@ pub enum MatchPatternInfo {
         /// Local receiving the narrowed reference, if bound.
         binding: Option<LocalId>,
     },
-    /// `is illegal` pattern over a floating-point value.
-    IsIllegal,
-    /// `is infinity` / `is -infinity` pattern over a floating-point value.
-    IsInfinite {
-        /// Whether the negative infinity is tested.
-        negative: bool,
+    /// `is float(N).NotANumber` pattern over a floating-point value.
+    IsFloatSpecial {
+        /// Width in bytes (4 or 8).
+        bytes: u8,
     },
 }
 

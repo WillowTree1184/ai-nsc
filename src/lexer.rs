@@ -177,10 +177,6 @@ pub enum TokenKind {
     True,
     /// `false`
     False,
-    /// `illegal`
-    Illegal,
-    /// `infinite`
-    Infinite,
     /// `uninitialized`
     Uninitialized,
     /// `use`
@@ -319,11 +315,11 @@ impl TokenKind {
         use TokenKind::{
             Abstract, Accessor, Aligned, Array, As, Ascii, Assembly, Base, Basic, Boolean, Break,
             Cardinal, Case, Catch, Class, Continue, Dispose, Do, Else, Enumeration, Extension,
-            False, Finally, Fixed, Float, For, Function, Heap, If, Illegal, Implicitable, In,
-            Infinite, Integer, Interface, Is, Linkable, Local, Manual, Match, Module, Operator,
-            Override, Owner, Pointer, Private, Protected, Public, Readonly, Return, Scoped, Sealed,
-            Static, Structure, This, Throw, Trap, True, Ucs2, Ucs4, Uninitialized, Union, Use,
-            Utf16, Utf32, Utf8, Variant, Virtual, When, While, Wildcard,
+            False, Finally, Fixed, Float, For, Function, Heap, If, Implicitable, In, Integer,
+            Interface, Is, Linkable, Local, Manual, Match, Module, Operator, Override, Owner,
+            Pointer, Private, Protected, Public, Readonly, Return, Scoped, Sealed, Static,
+            Structure, This, Throw, Trap, True, Ucs2, Ucs4, Uninitialized, Union, Use, Utf16,
+            Utf32, Utf8, Variant, Virtual, When, While, Wildcard,
         };
         Some(match text {
             "class" => Class,
@@ -390,8 +386,6 @@ impl TokenKind {
             "wildcard" => Wildcard,
             "true" => True,
             "false" => False,
-            "illegal" => Illegal,
-            "infinite" => Infinite,
             "uninitialized" => Uninitialized,
             "use" => Use,
             "is" => Is,
@@ -472,8 +466,6 @@ impl TokenKind {
                 | Wildcard
                 | True
                 | False
-                | Illegal
-                | Infinite
                 | Uninitialized
                 | Use
                 | Is
@@ -624,8 +616,6 @@ impl TokenKind {
             Wildcard => "wildcard",
             True => "true",
             False => "false",
-            Illegal => "illegal",
-            Infinite => "infinite",
             Uninitialized => "uninitialized",
             Use => "use",
             Is => "is",
@@ -1316,10 +1306,10 @@ mod tests {
             ]
         );
         assert_eq!(
-            kinds("this owner base ascii utf8 utf16 utf32 ucs2 ucs4 wildcard true false illegal infinite uninitialized use is as extension basic"),
+            kinds("this owner base ascii utf8 utf16 utf32 ucs2 ucs4 wildcard true false uninitialized use is as extension basic"),
             vec![
                 This, Owner, Base, Ascii, Utf8, Utf16, Utf32, Ucs2, Ucs4, Wildcard, True, False,
-                Illegal, Infinite, Uninitialized, Use, Is, As, Extension, Basic, Eof
+                Uninitialized, Use, Is, As, Extension, Basic, Eof
             ]
         );
         assert_eq!(

@@ -4038,3 +4038,52 @@ fixed Main(): integer(4) { return 0; }",
         "{stderr}"
     );
 }
+
+#[test]
+fn missing_interface_value_constant_is_rejected() {
+    let stderr = check_source(
+        "\
+interface IValue
+{
+    public fixed Default: integer(4);
+}
+
+class Box: IValue
+{
+    extension
+    {
+    }
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(
+        stderr.contains("does not implement interface constant 'Default'"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn interface_value_constant_static_implementation_is_not_used() {
+    let stderr = check_source(
+        "\
+interface IValue
+{
+    public fixed Default: integer(4);
+}
+
+class Box: IValue
+{
+    extension
+    {
+        public static fixed Default: integer(4) = 5;
+    }
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(
+        stderr.contains("does not implement interface constant"),
+        "{stderr}"
+    );
+}

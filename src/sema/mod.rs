@@ -223,6 +223,15 @@ pub struct UnionMemberInfo {
     pub aligned: Option<u32>,
 }
 
+/// An interface value-constant contract (§3.8.3).
+#[derive(Clone, Debug)]
+pub struct InterfaceConstantInfo {
+    /// Member name.
+    pub name: String,
+    /// Constant type.
+    pub ty: TypeId,
+}
+
 /// A declared type.
 #[derive(Debug)]
 pub struct TypeDef {
@@ -275,6 +284,14 @@ pub struct TypeDef {
     /// Per-interface dispatch tables: implementation method id per interface
     /// method slot, in interface declaration order.
     pub interface_dispatch: Vec<(TypeId, Vec<u32>)>,
+    /// Interface value-constant contracts, by name (§3.8.3).
+    pub interface_constants: Vec<InterfaceConstantInfo>,
+    /// Per-interface constant slots: global id of the implementing constant per
+    /// interface constant, in interface constant order (§13.1).
+    pub interface_dispatch_constants: Vec<(TypeId, Vec<u32>)>,
+    /// Non-static fixed constants declared in the class body extension blocks,
+    /// by name: index into `globals`.
+    pub extension_constants: HashMap<String, u32>,
     /// Whether the class is sealed (§9.11).
     pub sealed: bool,
     /// Whether the class is abstract and therefore cannot be instantiated (§9.10).
@@ -807,6 +824,14 @@ pub enum Resolution {
         type_id: TypeId,
         /// Index into the type's field list.
         index: u32,
+    },
+    /// An interface value-constant slot, loaded through the instance's interface
+    /// dispatch table (§3.8.3/§13.1).
+    InterfaceConstant {
+        /// Interface type declaring the constant.
+        interface: TypeId,
+        /// Slot index in the interface constant list.
+        slot: u32,
     },
     /// An instance field accessed through the implicit `this` of a method.
     ThisField {
@@ -1943,6 +1968,9 @@ impl<'a> Sema<'a> {
             operators: Vec::new(),
             interfaces: Vec::new(),
             interface_dispatch: Vec::new(),
+            interface_constants: Vec::new(),
+            interface_dispatch_constants: Vec::new(),
+            extension_constants: HashMap::new(),
             interface_bases: Vec::new(),
             static_accessors: Vec::new(),
             modules: HashMap::new(),
@@ -2002,6 +2030,9 @@ impl<'a> Sema<'a> {
             operators: Vec::new(),
             interfaces: Vec::new(),
             interface_dispatch: Vec::new(),
+            interface_constants: Vec::new(),
+            interface_dispatch_constants: Vec::new(),
+            extension_constants: HashMap::new(),
             interface_bases: Vec::new(),
             static_accessors: Vec::new(),
             modules: HashMap::new(),
@@ -2074,6 +2105,9 @@ impl<'a> Sema<'a> {
             operators: Vec::new(),
             interfaces: Vec::new(),
             interface_dispatch: Vec::new(),
+            interface_constants: Vec::new(),
+            interface_dispatch_constants: Vec::new(),
+            extension_constants: HashMap::new(),
             interface_bases: Vec::new(),
             static_accessors: Vec::new(),
             modules: HashMap::new(),
@@ -2227,6 +2261,9 @@ impl<'a> Sema<'a> {
             operators: Vec::new(),
             interfaces: Vec::new(),
             interface_dispatch: Vec::new(),
+            interface_constants: Vec::new(),
+            interface_dispatch_constants: Vec::new(),
+            extension_constants: HashMap::new(),
             interface_bases: Vec::new(),
             static_accessors: Vec::new(),
             modules: HashMap::new(),
@@ -2290,6 +2327,9 @@ impl<'a> Sema<'a> {
             operators: Vec::new(),
             interfaces: Vec::new(),
             interface_dispatch: Vec::new(),
+            interface_constants: Vec::new(),
+            interface_dispatch_constants: Vec::new(),
+            extension_constants: HashMap::new(),
             interface_bases: Vec::new(),
             static_accessors: Vec::new(),
             modules: HashMap::new(),
@@ -2579,6 +2619,9 @@ impl<'a> Sema<'a> {
                 operators: Vec::new(),
                 interfaces: Vec::new(),
                 interface_dispatch: Vec::new(),
+                interface_constants: Vec::new(),
+                interface_dispatch_constants: Vec::new(),
+                extension_constants: HashMap::new(),
                 interface_bases: Vec::new(),
                 static_accessors: Vec::new(),
                 modules: HashMap::new(),
@@ -2938,6 +2981,9 @@ impl<'a> Sema<'a> {
                 operators: Vec::new(),
                 interfaces: Vec::new(),
                 interface_dispatch: Vec::new(),
+                interface_constants: Vec::new(),
+                interface_dispatch_constants: Vec::new(),
+                extension_constants: HashMap::new(),
                 interface_bases: Vec::new(),
                 static_accessors: Vec::new(),
                 modules: HashMap::new(),
@@ -4765,6 +4811,9 @@ impl<'a> Sema<'a> {
             operators: Vec::new(),
             interfaces: Vec::new(),
             interface_dispatch: Vec::new(),
+            interface_constants: Vec::new(),
+            interface_dispatch_constants: Vec::new(),
+            extension_constants: HashMap::new(),
             interface_bases: Vec::new(),
             static_accessors: Vec::new(),
             modules: HashMap::new(),

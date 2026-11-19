@@ -559,8 +559,8 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         self.ensure_libc()?;
         self.prepare_struct_types()?;
         self.declare_functions()?;
-        self.build_class_metadata()?;
         self.declare_globals()?;
+        self.build_class_metadata()?;
         self.generate_functions()?;
         if self.options.emit_launcher {
             self.generate_launcher()?;
@@ -886,6 +886,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 continue;
             }
             let mut table_values: Vec<PointerValue<'ctx>> = Vec::new();
+            let class_constants = self.sema.type_defs[index as usize]
+                .interface_dispatch_constants
+                .clone();
             for (iface_type, impl_methods) in entries {
                 let Type::Named(iface_index) = self.sema.types.get(iface_type) else {
                     continue;
@@ -893,7 +896,13 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 let Some(iface_typeinfo) = self.typeinfo_globals.get(iface_index).copied() else {
                     continue;
                 };
-                let vtable_type = pointer_type.array_type(impl_methods.len() as u32);
+                let impl_constants: Vec<u32> = class_constants
+                    .iter()
+                    .find(|(interface, _)| *interface == iface_type)
+                    .map(|(_, constants)| constants.clone())
+                    .unwrap_or_default();
+                let vtable_type = pointer_type
+                    .array_type(impl_methods.len() as u32 + impl_constants.len() as u32);
                 let vtable_global = self.module.add_global(
                     vtable_type,
                     None,
@@ -903,10 +912,19 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .iter()
                     .filter_map(|method| self.functions.get(method).copied())
                     .collect();
-                let values: Vec<PointerValue<'ctx>> = implementations
+                let mut values: Vec<PointerValue<'ctx>> = implementations
                     .iter()
                     .map(|function| function.as_global_value().as_pointer_value())
                     .collect();
+                for constant in impl_constants {
+                    values.push(
+                        self.globals
+                            .get(&constant)
+                            .map_or(pointer_type.const_zero(), |global| {
+                                global.as_pointer_value()
+                            }),
+                    );
+                }
                 vtable_global.set_initializer(&pointer_type.const_array(&values));
                 vtable_global.set_constant(true);
                 table_values.push(iface_typeinfo.as_pointer_value());
@@ -5920,6 +5938,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     .build_load(llvm_type, pointer, "field")
                     .map_err(|error| format!("cannot load field: {error}"))
             }
+            Some(Resolution::InterfaceConstant { interface, slot }) => {
+                self.gen_interface_constant_load(node, interface, slot)
+            }
             Some(Resolution::Operator { .. })
             | Some(Resolution::DerivedNotEqual { .. })
             | Some(Resolution::DerivedComparison { .. })
@@ -6634,6 +6655,128 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .build_store(slot, value)
             .map_err(|error| format!("cannot store value: {error}"))?;
         Ok(slot)
+    }
+
+    /// Loads an interface value-constant slot through the instance's runtime
+    /// typeinfo interface dispatch table (§3.8.3/§13.1).
+    fn gen_interface_constant_load(
+        &mut self,
+        node: NodeId,
+        interface: TypeId,
+        slot: u32,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let NodeKind::MemberAccess(access) = self.ast.node(node).kind.clone() else {
+            return Err("interface constant access requires a member access".to_string());
+        };
+        let instance = self.gen_expr(access.base)?.into_pointer_value();
+        let pointer_type = self.context.ptr_type(AddressSpace::default());
+        let pointer_size = u64::from(self.sema.types.pointer_size());
+        let typeinfo = self
+            .load_pointer_at(instance, pointer_size)?
+            .into_pointer_value();
+        let table = self
+            .load_pointer_at(typeinfo, pointer_size * 2)?
+            .into_pointer_value();
+        let Type::Named(interface_index) = self.sema.types.get(interface).clone() else {
+            return Err("interface constant requires an interface type".to_string());
+        };
+        let target = self
+            .typeinfo_globals
+            .get(&interface_index)
+            .copied()
+            .ok_or_else(|| "missing interface typeinfo".to_string())?
+            .as_pointer_value();
+        let function = *self
+            .functions
+            .get(&self.current_function)
+            .ok_or_else(|| "interface constant outside a function".to_string())?;
+        let slot_var = self
+            .builder
+            .build_alloca(pointer_type, "iface_table")
+            .map_err(|error| format!("cannot allocate interface table cursor: {error}"))?;
+        self.builder
+            .build_store(slot_var, table)
+            .map_err(|error| format!("cannot store interface table cursor: {error}"))?;
+        let loop_block = self.context.append_basic_block(function, "iface_loop");
+        let check_block = self.context.append_basic_block(function, "iface_check");
+        let next_block = self.context.append_basic_block(function, "iface_next");
+        let found_block = self.context.append_basic_block(function, "iface_found");
+        let missing_block = self.context.append_basic_block(function, "iface_missing");
+        self.builder
+            .build_unconditional_branch(loop_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(loop_block);
+        let current = self
+            .builder
+            .build_load(pointer_type, slot_var, "iface_entry")
+            .map_err(|error| format!("cannot load interface entry: {error}"))?
+            .into_pointer_value();
+        let iface_typeinfo = self
+            .builder
+            .build_load(pointer_type, current, "iface_typeinfo")
+            .map_err(|error| format!("cannot load interface typeinfo: {error}"))?
+            .into_pointer_value();
+        let is_null = self
+            .builder
+            .build_is_null(iface_typeinfo, "iface_missing")
+            .map_err(|error| format!("cannot test interface typeinfo: {error}"))?;
+        self.builder
+            .build_conditional_branch(is_null, missing_block, check_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(check_block);
+        let actual = self
+            .builder
+            .build_ptr_to_int(iface_typeinfo, self.context.i64_type(), "iface_actual")
+            .map_err(|error| format!("cannot compare interface typeinfo: {error}"))?;
+        let expected = self
+            .builder
+            .build_ptr_to_int(target, self.context.i64_type(), "iface_expected")
+            .map_err(|error| format!("cannot compare interface typeinfo: {error}"))?;
+        let equal = self
+            .builder
+            .build_int_compare(IntPredicate::EQ, actual, expected, "iface_match")
+            .map_err(|error| format!("cannot compare interface typeinfo: {error}"))?;
+        self.builder
+            .build_conditional_branch(equal, found_block, next_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(next_block);
+        let next = self.address_with_size(
+            current,
+            1,
+            self.context.i64_type().const_int(pointer_size * 2, false),
+        )?;
+        self.builder
+            .build_store(slot_var, next)
+            .map_err(|error| format!("cannot advance interface table: {error}"))?;
+        self.builder
+            .build_unconditional_branch(loop_block)
+            .map_err(|error| format!("cannot branch: {error}"))?;
+        self.builder.position_at_end(missing_block);
+        self.builder
+            .build_unreachable()
+            .map_err(|error| format!("cannot terminate missing interface: {error}"))?;
+        self.builder.position_at_end(found_block);
+        let vtable = self
+            .load_pointer_at(current, pointer_size)?
+            .into_pointer_value();
+        let method_count = self.sema.type_defs[interface_index as usize]
+            .method_list
+            .len() as u64;
+        let slot_offset = (method_count + u64::from(slot)) * pointer_size;
+        let value_pointer = self.address_with_size(
+            vtable,
+            1,
+            self.context.i64_type().const_int(slot_offset, false),
+        )?;
+        let value_pointer = self
+            .builder
+            .build_load(pointer_type, value_pointer, "iface_constant")
+            .map_err(|error| format!("cannot load interface constant: {error}"))?
+            .into_pointer_value();
+        let llvm_type = self.llvm_type(self.type_of(node))?;
+        self.builder
+            .build_load(llvm_type, value_pointer, "iface_constant_value")
+            .map_err(|error| format!("cannot load interface constant: {error}"))
     }
 
     /// Addresses a field through the current method's `this`.

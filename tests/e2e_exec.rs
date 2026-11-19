@@ -5920,3 +5920,28 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 9);
 }
+
+#[test]
+fn interface_value_constants_dispatch_through_interface_slots() {
+    let source = "\
+interface IValue
+{
+    public fixed Default: integer(4);
+}
+
+class Box: IValue
+{
+    extension
+    {
+        public fixed Default: integer(4) = 5;
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local box: Box = Box();
+    local value: IValue = box;
+    return value.Default + box.Default;
+}";
+    assert_eq!(run_program(source), 10);
+}

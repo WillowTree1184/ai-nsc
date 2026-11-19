@@ -963,7 +963,14 @@ impl<'a> Sema<'a> {
                             self.create_static_constant(member, &declaration, target);
                         }
                     } else {
-                        self.create_method(member, &declaration, target);
+                        let is_function = declaration.ty.is_some_and(|ty| {
+                            matches!(self.node_kind(ty), NodeKind::FunctionType(_))
+                        });
+                        if is_function {
+                            self.create_method(member, &declaration, target);
+                        } else {
+                            self.create_extension_constant(member, &declaration, target);
+                        }
                     }
                 }
                 NodeKind::Accessor(declaration) => {
@@ -1070,6 +1077,51 @@ impl<'a> Sema<'a> {
     }
 
     /// Registers a method declared in an extension block (§8.4).
+    /// Registers a non-static fixed constant declared in a class extension as a
+    /// type-level value used to fill interface constant slots (§3.8.3/§3.9.3).
+    fn create_extension_constant(&mut self, node: NodeId, declaration: &FixedDecl, owner: TypeId) {
+        let Some(ty_node) = declaration.ty else {
+            self.error(self.span_of(node), "an extension constant requires a type");
+            return;
+        };
+        let Some(ty) = self.resolve_type(ty_node) else {
+            return;
+        };
+        let Some(Initializer::Expression(init)) = declaration.init else {
+            self.error(
+                self.span_of(node),
+                "an extension constant requires an expression initializer",
+            );
+            return;
+        };
+        let Type::Named(owner_index) = self.types_of(owner) else {
+            return;
+        };
+        let owner_name = self.result.type_defs[owner_index as usize]
+            .qualified_name
+            .clone();
+        let scope: Vec<String> = owner_name.split('.').map(str::to_string).collect();
+        let mangled = mangle_function(&scope, &declaration.name, &[self.spelling(ty)]);
+        let index = self.result.globals.len() as u32;
+        self.result.globals.push(GlobalInfo {
+            accessibility: declaration.modifiers.accessibility,
+            scoped: Vec::new(),
+            verbatim: declaration.modifiers.verbatim,
+            name: declaration.name.clone(),
+            scope,
+            ty,
+            init: Some(init),
+            fixed: true,
+            linkable: false,
+            mangled,
+            node,
+            span: self.span_of(node),
+        });
+        self.result.type_defs[owner_index as usize]
+            .extension_constants
+            .insert(declaration.name.clone(), index);
+    }
+
     fn create_method(
         &mut self,
         node: NodeId,
@@ -1639,6 +1691,7 @@ impl<'a> Sema<'a> {
             .interfaces
             .clone();
         let mut dispatch = Vec::new();
+        let mut dispatch_constants = Vec::new();
         for interface_type in interfaces {
             let Type::Named(interface_index) = self.types_of(interface_type) else {
                 continue;
@@ -1680,11 +1733,49 @@ impl<'a> Sema<'a> {
                     }
                 }
             }
+            let constants = self.result.type_defs[interface_index as usize]
+                .interface_constants
+                .clone();
+            let mut constant_implementations = Vec::new();
+            for constant in &constants {
+                let implementation = self.result.type_defs[class_index as usize]
+                    .extension_constants
+                    .get(&constant.name)
+                    .copied();
+                match implementation {
+                    Some(global) if self.result.globals[global as usize].ty == constant.ty => {
+                        constant_implementations.push(global);
+                    }
+                    Some(_) => {
+                        self.error(
+                            self.span_of(self.result.type_defs[interface_index as usize].node),
+                            format!(
+                                "class constant '{}' does not match interface constant '{}' of '{}'",
+                                constant.name, constant.name, interface_name
+                            ),
+                        );
+                        ok = false;
+                    }
+                    None => {
+                        self.error(
+                            self.span_of(self.result.type_defs[interface_index as usize].node),
+                            format!(
+                                "class does not implement interface constant '{}' of '{}'",
+                                constant.name, interface_name
+                            ),
+                        );
+                        ok = false;
+                    }
+                }
+            }
             if ok {
                 dispatch.push((interface_type, implementations));
+                dispatch_constants.push((interface_type, constant_implementations));
             }
         }
         self.result.type_defs[class_index as usize].interface_dispatch = dispatch;
+        self.result.type_defs[class_index as usize].interface_dispatch_constants =
+            dispatch_constants;
     }
 
     /// Flattens interface inheritance, expands class interface lists and verifies
@@ -1756,6 +1847,36 @@ impl<'a> Sema<'a> {
             }
         }
         self.result.type_defs[index as usize].method_list = method_list;
+        let own_constants = self.result.type_defs[index as usize]
+            .interface_constants
+            .clone();
+        let mut constants = Vec::new();
+        for base in self.result.type_defs[index as usize]
+            .interface_bases
+            .clone()
+        {
+            if let Type::Named(base_index) = self.types_of(base) {
+                for constant in &self.result.type_defs[base_index as usize].interface_constants {
+                    if !constants
+                        .iter()
+                        .any(|existing: &crate::sema::InterfaceConstantInfo| {
+                            existing.name == constant.name
+                        })
+                    {
+                        constants.push(constant.clone());
+                    }
+                }
+            }
+        }
+        for constant in own_constants {
+            if !constants
+                .iter()
+                .any(|existing: &crate::sema::InterfaceConstantInfo| existing.name == constant.name)
+            {
+                constants.push(constant);
+            }
+        }
+        self.result.type_defs[index as usize].interface_constants = constants;
         self.result.type_defs[index as usize].vtable_ready = true;
         visiting.pop();
     }
@@ -1834,7 +1955,32 @@ impl<'a> Sema<'a> {
                             "an interface constant must not be initialized",
                         );
                     }
-                    self.create_method(member, &declaration, type_id);
+                    let is_function = declaration
+                        .ty
+                        .is_some_and(|ty| matches!(self.node_kind(ty), NodeKind::FunctionType(_)));
+                    if is_function {
+                        self.create_method(member, &declaration, type_id);
+                    } else {
+                        let Some(ty_node) = declaration.ty else {
+                            self.error(
+                                self.span_of(member),
+                                "an interface constant requires a type",
+                            );
+                            continue;
+                        };
+                        let Some(ty) = self.resolve_type(ty_node) else {
+                            continue;
+                        };
+                        let Type::Named(interface_index) = self.types_of(type_id) else {
+                            continue;
+                        };
+                        self.result.type_defs[interface_index as usize]
+                            .interface_constants
+                            .push(crate::sema::InterfaceConstantInfo {
+                                name: declaration.name.clone(),
+                                ty,
+                            });
+                    }
                 }
                 NodeKind::Accessor(_) => {
                     self.resolve_accessor_declaration(member, Some(type_id));
@@ -10085,6 +10231,32 @@ impl<'a> Sema<'a> {
                             member: member_index as u32,
                         });
                         return Some(definition.union_members[member_index].ty);
+                    }
+                }
+                // Interface value constant (§3.8.3): read through the interface
+                // dispatch table of the runtime instance.
+                if definition.kind == TypeDefKind::Interface {
+                    if let Some(slot) = definition
+                        .interface_constants
+                        .iter()
+                        .position(|constant| constant.name == access.name)
+                    {
+                        let ty = definition.interface_constants[slot].ty;
+                        self.result.resolutions[node as usize] =
+                            Some(Resolution::InterfaceConstant {
+                                interface: owner_type_id,
+                                slot: slot as u32,
+                            });
+                        return Some(ty);
+                    }
+                }
+                // A class extension constant is a type-level fixed value; reads
+                // through an instance load that value.
+                if matches!(definition.kind, TypeDefKind::Class | TypeDefKind::Structure) {
+                    if let Some(global) = definition.extension_constants.get(&access.name).copied()
+                    {
+                        self.result.resolutions[node as usize] = Some(Resolution::Global(global));
+                        return Some(self.result.globals[global as usize].ty);
                     }
                 }
                 // Accessor property (§3.8.2): reads go through the getter.

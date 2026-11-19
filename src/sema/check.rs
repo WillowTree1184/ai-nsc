@@ -6909,6 +6909,23 @@ impl<'a> Sema<'a> {
                     }
                     (None, None) => {}
                 }
+                if let Some(function) = self.current_function {
+                    let return_type = self.result.functions[function as usize].return_type;
+                    let facts_type = self.lookup_type_id("EnvironmentFacts");
+                    if return_type.is_some_and(|ty| Some(ty) == facts_type) {
+                        let host = statement
+                            .value
+                            .and_then(|value| self.environment_fact_source(value));
+                        let entry = self
+                            .result
+                            .environment_fact_returns
+                            .entry(function)
+                            .or_insert(host);
+                        if *entry != host {
+                            *entry = None;
+                        }
+                    }
+                }
             }
             NodeKind::ExpressionStmt(expression) => {
                 self.check_expr(expression, None);
@@ -11724,6 +11741,29 @@ impl<'a> Sema<'a> {
                 if let Some(host) = self.environment_fact_locals.get(&local) {
                     return Some(*host);
                 }
+            }
+            return None;
+        }
+        if let NodeKind::Call(call) = self.node_kind(node) {
+            let target = match self.result.resolutions[node as usize].clone() {
+                Some(Resolution::Function(index)) => Some(index),
+                _ => match self.node_kind(call.callee) {
+                    NodeKind::Name(name) => match self.lookup(&name.name).cloned() {
+                        Some(Symbol::Functions(candidates)) if candidates.len() == 1 => {
+                            Some(candidates[0])
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                },
+            };
+            if let Some(target) = target {
+                return self
+                    .result
+                    .environment_fact_returns
+                    .get(&target)
+                    .copied()
+                    .flatten();
             }
             return None;
         }

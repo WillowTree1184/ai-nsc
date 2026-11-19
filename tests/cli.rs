@@ -3903,19 +3903,17 @@ fixed Main(): integer(4)
 fn environment_queries_require_statically_known_facts() {
     let stderr = check_source(
         "\
+class Holder { public Facts: EnvironmentFacts; }
+
 fixed IsLinux(facts: EnvironmentFacts): boolean
 {
     return #(facts.PlatformIs(\"Linux\"));
 }
 
-fixed Facts(): EnvironmentFacts
-{
-    return Environment.Host;
-}
-
 fixed Main(): integer(4)
 {
-    if (IsLinux(Facts()))
+    local holder: Holder = Holder();
+    if (IsLinux(holder.Facts))
     {
         return 1;
     }

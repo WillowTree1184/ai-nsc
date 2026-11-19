@@ -5638,3 +5638,27 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 6);
 }
+
+#[test]
+fn environment_facts_function_results_specialize_callers() {
+    let source = "\
+fixed Facts(): EnvironmentFacts
+{
+    return Environment.Host;
+}
+
+fixed IsLinux(facts: EnvironmentFacts): boolean
+{
+    return #(facts.PlatformIs(\"Linux\"));
+}
+
+fixed Main(): integer(4)
+{
+    if (IsLinux(Facts()))
+    {
+        return 5;
+    }
+    return 0;
+}";
+    assert_eq!(run_program(source), 5);
+}

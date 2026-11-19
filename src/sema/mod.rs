@@ -959,6 +959,8 @@ pub struct SemaResult {
     /// Explicit heap allocator expressions, keyed by the heap statement node
     /// (§5.4).
     pub heap_allocators: HashMap<NodeId, NodeId>,
+    /// Known EnvironmentFacts return values (`None` = returns differ/unknown).
+    pub environment_fact_returns: HashMap<u32, Option<bool>>,
     /// Explicit heap allocator used for each heap local, for deallocation.
     pub heap_allocator_locals: HashMap<LocalId, NodeId>,
     /// Iteration over `IIterator`/`IIterable` targets, keyed by the `for` node

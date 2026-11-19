@@ -1998,10 +1998,7 @@ impl<'a> Sema<'a> {
                 compile_time: false,
             });
         }
-        let spellings: Vec<String> = all_parameters
-            .iter()
-            .map(|parameter| self.spelling(parameter.ty))
-            .collect();
+        let spellings = self.parameter_spellings(&all_parameters);
         let mangled = mangle_function(&scope, name, &spellings);
         let index = self.result.functions.len() as u32;
         self.result.functions.push(FunctionInfo {
@@ -2077,10 +2074,7 @@ impl<'a> Sema<'a> {
                 compile_time: false,
             });
         }
-        let spellings: Vec<String> = all_parameters
-            .iter()
-            .map(|parameter| self.spelling(parameter.ty))
-            .collect();
+        let spellings = self.parameter_spellings(&all_parameters);
         let mangled = mangle_function(&scope, name, &spellings);
         let index = self.result.functions.len() as u32;
         self.result.functions.push(FunctionInfo {

@@ -7,7 +7,7 @@
   authoritative specification is `docs/grammar/Draft 1.153.md`; Draft 1.152 is
   historical only.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  — **381 tests green** (41 lib unit, 117 CLI, 2 codegen/LLVM, 1 MCJIT probe,
+  — **383 tests green** (41 lib unit, 119 CLI, 2 codegen/LLVM, 1 MCJIT probe,
   2 JIT compile-time evaluation, 205 end-to-end execution, 10 parser, 3
   spec-example conformance). The spec-conformance tests read `Draft 1.153.md`:
   all 97 `novasharp` examples parse (the bare inline-assembly block and the bare
@@ -16,6 +16,9 @@
 - Draft 1.153 baseline (round 23): spec path/whitelists switched, 1.152 parser
   tolerances removed (expression-bodied function literals, `case pattern:`
   single statements), inline-assembly examples temporarily skipped as fragments.
+- Draft 1.153 semantic fixes (round 24): duplicate overload signatures rejected,
+  mangling contract markers, repeated modifiers rejected, monomorphization base
+  restricted to identifiers, `Type.SizeOf` returns 64-bit values.
 - **Draft 1.153 new work still open**:
   1. §5.2 inline assembly: lexer raw mode, AST/parser/placeholders/clobbers,
      per-architecture syntax validation, LLVM InlineAsm lowering, barriers,
@@ -50,7 +53,7 @@
   `Environment` module and `ArchitectureKind`/`EnvironmentKind`/`EnvironmentFacts`
   are the next additions.
 - Docs: `docs/COVERAGE.md` maps every spec section to status; `docs/AUDIT.md`
-  tracks 156 reproduced defects. `docs/spec-notes/_inconsistencies.md` was
+  tracks 160 reproduced defects. `docs/spec-notes/_inconsistencies.md` was
   rewritten for 1.153.
 
 ## Remaining backlog (status as of round 128)

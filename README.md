@@ -43,8 +43,8 @@ Implemented and tested today:
   `Result<TValue; TAlternative>`, `IIterator<T>`, `IIterable<T>`, `IAllocator`
   and the platform `DefaultAllocator`, plus the compile-time library.
 
-`cargo test` runs **381 tests** (41 lib unit, 117 CLI, 2 LLVM codegen, 205
-end-to-end programs, 10 parser, 2 spec-conformance tests that read the
+`cargo test` runs **383 tests** (41 lib unit, 119 CLI, 2 LLVM codegen, 205
+end-to-end programs, 10 parser, 3 spec-conformance tests that read the
 specification itself: every `novasharp` example parses, and every whole-program
 example that passes semantic analysis is compiled end to end by the CLI).
 `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` are clean.

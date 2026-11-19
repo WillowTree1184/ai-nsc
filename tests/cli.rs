@@ -2006,7 +2006,7 @@ fn compiler_api_is_restricted_to_compile_time_contexts() {
 }
 
 #[test]
-fn i686_type_sizeof_uses_pointer_width() {
+fn i686_type_sizeof_returns_a_64_bit_value() {
     if std::env::consts::ARCH != "x86_64" || !std::path::Path::new("/usr/lib32/libc.so.6").exists()
     {
         return;
@@ -2022,7 +2022,7 @@ fn i686_type_sizeof_uses_pointer_width() {
     let source_path = directory.join("program.ns");
     std::fs::write(
         &source_path,
-        "fixed Main(): integer(4)\n{\n    local size: cardinal(4) = #(Type.SizeOf<integer(4)>());\n    return (size as integer(4));\n}",
+        "fixed Main(): integer(4)\n{\n    local size: cardinal(8) = #(Type.SizeOf<integer(4)>());\n    return (size as integer(4));\n}",
     )
     .expect("write");
     let executable = directory.join("program");
@@ -3098,4 +3098,78 @@ fixed Main(): integer(4)
         argument.contains("trailing comma is not allowed in an argument list"),
         "{argument}"
     );
+}
+
+#[test]
+fn draft_1_153_overload_and_monomorphization_rules_are_enforced() {
+    let contract_only = check_source(
+        "\
+fixed F(value: integer(4)): integer(4) { return value; }
+fixed F(#value: integer(4)): integer(4) { return value; }
+
+fixed Main(): integer(4)
+{
+    return F(1);
+}",
+    );
+    assert!(
+        contract_only.contains("already has an overload with the same parameter signature"),
+        "{contract_only}"
+    );
+    let by_ref = check_source(
+        "\
+fixed F(value: integer(4)): integer(4) { return value; }
+fixed F(value: &integer(4)): integer(4) { return value; }
+
+fixed Main(): integer(4)
+{
+    return F(1);
+}",
+    );
+    assert!(
+        by_ref.contains("already has an overload with the same parameter signature"),
+        "{by_ref}"
+    );
+    let base = check_source(
+        "\
+fixed F(value: integer(4)): integer(4) { return value; }
+
+fixed Main(): integer(4)
+{
+    return (1 + 2)<integer(4)>(1);
+}",
+    );
+    assert!(
+        base.contains("base of a monomorphization expression must be an identifier"),
+        "{base}"
+    );
+}
+
+#[test]
+fn repeated_modifiers_are_rejected() {
+    let stderr = check_source(
+        "\
+class Animal { public fixed Speak() { } }
+class Dog : Animal { }
+
+fixed Main(): integer(4)
+{
+    return 0;
+}",
+    );
+    assert!(!stderr.contains("must not repeat"), "{stderr}");
+    let repeated = check_source(
+        "\
+class Animal { public fixed Speak() { } }
+
+protected scoped(Animal) scoped(Animal) fixed Visible()
+{
+}
+
+fixed Main(): integer(4)
+{
+    return 0;
+}",
+    );
+    assert!(repeated.contains("modifier must not repeat"), "{repeated}");
 }

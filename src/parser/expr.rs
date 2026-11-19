@@ -230,6 +230,11 @@ impl<'a> Parser<'a> {
                     else {
                         break;
                     };
+                    if !self.is_identifier_like(expression) {
+                        self.error_here(
+                            "the base of a monomorphization expression must be an identifier (§10.2)",
+                        );
+                    }
                     let span = self.span_between(start_token, self.position);
                     expression = self.ast.push(
                         span,
@@ -249,6 +254,16 @@ impl<'a> Parser<'a> {
     /// Parses the name after `.` or `->`; any keyword may be a member name.
     pub(crate) fn parse_member_name(&mut self) -> Option<(String, Span)> {
         self.parse_name()
+    }
+
+    /// Whether an expression is a (possibly module-qualified) identifier, the
+    /// only allowed base of a monomorphization expression (§10.2).
+    fn is_identifier_like(&self, node: NodeId) -> bool {
+        match &self.ast.node(node).kind {
+            NodeKind::Name(_) => true,
+            NodeKind::MemberAccess(access) => self.is_identifier_like(access.base),
+            _ => false,
+        }
     }
 
     fn parse_primary(&mut self) -> Option<NodeId> {

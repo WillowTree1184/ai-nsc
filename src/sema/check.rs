@@ -1142,11 +1142,34 @@ impl<'a> Sema<'a> {
             _ => self.spelling(owner),
         };
         let scope: Vec<String> = owner_name.split('.').map(str::to_string).collect();
-        let spellings: Vec<String> = parameters
-            .iter()
-            .map(|parameter| self.spelling(parameter.ty))
-            .collect();
+        let spellings = self.parameter_spellings(&parameters);
         let mangled = mangle_function(&scope, &declaration.name, &spellings);
+        let existing = match self.result.types.get(owner) {
+            Type::Named(owner_index) => self.result.type_defs[*owner_index as usize]
+                .methods
+                .get(&declaration.name)
+                .cloned()
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        if self
+            .signature_conflicts(
+                &existing,
+                &scope,
+                &parameters,
+                function.wildcard,
+                Some(owner),
+            )
+            .is_some()
+        {
+            self.error(
+                self.span_of(node),
+                format!(
+                    "function '{}' already has an overload with the same parameter signature (§8.5)",
+                    declaration.name
+                ),
+            );
+        }
         let index = self.result.functions.len() as u32;
         let generic_env = self.captured_generic_env();
         let decl_scope = self.current_scope();
@@ -1433,10 +1456,7 @@ impl<'a> Sema<'a> {
         let scope: Vec<String> = owner_name.split('.').map(str::to_string).collect();
         let member = if is_getter { "get" } else { "set" };
         let name = format!("{accessor}@{member}");
-        let spellings: Vec<String> = parameters
-            .iter()
-            .map(|parameter| self.spelling(parameter.ty))
-            .collect();
+        let spellings = self.parameter_spellings(&parameters);
         let mangled = mangle_function(&scope, &name, &spellings);
         let index = self.result.functions.len() as u32;
         let decl_scope = self.current_scope();
@@ -1506,10 +1526,7 @@ impl<'a> Sema<'a> {
             .qualified_name
             .clone();
         let scope: Vec<String> = owner_name.split('.').map(str::to_string).collect();
-        let spellings: Vec<String> = parameters
-            .iter()
-            .map(|parameter| self.spelling(parameter.ty))
-            .collect();
+        let spellings = self.parameter_spellings(&parameters);
         let mangled = mangle_function(&scope, &declaration.name, &spellings);
         let generic_env = self.captured_generic_env();
         let decl_scope = self.current_scope();
@@ -2212,10 +2229,7 @@ impl<'a> Sema<'a> {
             _ => self.spelling(owner),
         };
         let scope: Vec<String> = owner_name.split('.').map(str::to_string).collect();
-        let spellings: Vec<String> = all_parameters
-            .iter()
-            .map(|parameter| self.spelling(parameter.ty))
-            .collect();
+        let spellings = self.parameter_spellings(&all_parameters);
         let mangled = mangle_function(&scope, name, &spellings);
         let index = self.result.functions.len() as u32;
         let generic_env = self.captured_generic_env();
@@ -2587,10 +2601,7 @@ impl<'a> Sema<'a> {
         let scope = self.scope_path.clone();
         let member = if is_getter { "get" } else { "set" };
         let name = format!("{accessor}@{member}");
-        let spellings: Vec<String> = parameters
-            .iter()
-            .map(|parameter| self.spelling(parameter.ty))
-            .collect();
+        let spellings = self.parameter_spellings(&parameters);
         let mangled = mangle_function(&scope, &name, &spellings);
         let index = self.result.functions.len() as u32;
         let decl_scope = self.current_scope();
@@ -2876,10 +2887,7 @@ impl<'a> Sema<'a> {
             _ => self.spelling(owner),
         };
         let scope: Vec<String> = owner_name.split('.').map(str::to_string).collect();
-        let spellings: Vec<String> = parameters
-            .iter()
-            .map(|parameter| self.spelling(parameter.ty))
-            .collect();
+        let spellings = self.parameter_spellings(&parameters);
         let mangled = mangle_function(&scope, &method_name, &spellings);
         let index = self.result.functions.len() as u32;
         let generic_env = self.captured_generic_env();
@@ -3719,6 +3727,58 @@ impl<'a> Sema<'a> {
         Some(parameters)
     }
 
+    /// §13.2: the mangling hash input is the parameter contract marker
+    /// (`#`, `&`, `#&` or empty) followed by the encoded parameter type.
+    /// §8.5: the overload signature is the parameter count/order and base
+    /// types (+ `wildcard`); `#`, `&`, parameter names, defaults, return type
+    /// and calling convention are not part of it. Two same-name functions with
+    /// the same signature conflict even when only their contracts differ.
+    fn signature_conflicts(
+        &self,
+        existing: &[u32],
+        scope: &[String],
+        parameters: &[ParameterInfo],
+        wildcard: bool,
+        method_of: Option<TypeId>,
+    ) -> Option<u32> {
+        for index in existing {
+            let function = &self.result.functions[*index as usize];
+            if function.scope != scope
+                || function.method_of != method_of
+                || function.wildcard != wildcard
+                || function.parameters.len() != parameters.len()
+            {
+                continue;
+            }
+            if function
+                .parameters
+                .iter()
+                .zip(parameters)
+                .all(|(left, right)| left.ty == right.ty)
+            {
+                return Some(*index);
+            }
+        }
+        None
+    }
+
+    pub(crate) fn parameter_spellings(&self, parameters: &[ParameterInfo]) -> Vec<String> {
+        parameters
+            .iter()
+            .map(|parameter| {
+                let mut spelling = String::new();
+                if parameter.compile_time {
+                    spelling.push('#');
+                }
+                if parameter.by_ref {
+                    spelling.push('&');
+                }
+                spelling.push_str(&self.spelling(parameter.ty));
+                spelling
+            })
+            .collect()
+    }
+
     fn register_function(&mut self, declaration: FunctionDeclaration) -> u32 {
         let FunctionDeclaration {
             node,
@@ -3732,13 +3792,23 @@ impl<'a> Sema<'a> {
             calling_convention,
         } = declaration;
         let scope = self.scope_path.clone();
-        let spellings: Vec<String> = parameters
-            .iter()
-            .map(|parameter| self.spelling(parameter.ty))
-            .collect();
+        let spellings = self.parameter_spellings(&parameters);
         let mangled = exposed_symbol
             .clone()
             .unwrap_or_else(|| mangle_function(&scope, &name, &spellings));
+        if let Some(Symbol::Functions(existing)) = self.lookup(&name).cloned() {
+            if self
+                .signature_conflicts(&existing, &scope, &parameters, wildcard, method_of)
+                .is_some()
+            {
+                self.error(
+                    self.span_of(node),
+                    format!(
+                        "function '{name}' already has an overload with the same parameter signature (§8.5)"
+                    ),
+                );
+            }
+        }
         let index = self.result.functions.len() as u32;
         let generic_env = self.captured_generic_env();
         let decl_scope = self.current_scope();
@@ -10286,10 +10356,7 @@ impl<'a> Sema<'a> {
         let index = self.result.functions.len() as u32;
         let name = format!("lambda{index}");
         let scope = self.scope_path.clone();
-        let spellings: Vec<String> = parameters
-            .iter()
-            .map(|parameter| self.spelling(parameter.ty))
-            .collect();
+        let spellings = self.parameter_spellings(&parameters);
         let mangled = mangle_function(&scope, &name, &spellings);
         let generic_env = self.captured_generic_env();
         let decl_scope = self.current_scope();
@@ -11173,12 +11240,9 @@ impl<'a> Sema<'a> {
             let ty = self.resolve_type(type_argument)?;
             self.result.resolutions[node as usize] = Some(Resolution::SizeOf { ty });
             if call.arguments.is_empty() {
-                // The value width equals the target pointer width (§11.8.1).
-                return Some(
-                    self.result
-                        .types
-                        .integer(false, self.result.types.pointer_size()),
-                );
+                // Draft 1.153 §11.9.1: the result is a 64-bit unsigned integer;
+                // 32-bit targets may use the low 32 bits of that value.
+                return Some(self.result.types.integer(false, 8));
             }
             self.error(self.span_of(node), "Type.SizeOf<T>() takes no arguments");
             return None;

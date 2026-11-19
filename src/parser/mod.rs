@@ -444,8 +444,17 @@ impl<'a> Parser<'a> {
 
     fn parse_modifiers(&mut self) -> Modifiers {
         let mut modifiers = Modifiers::default();
+        let mut seen: Vec<TokenKind> = Vec::new();
         loop {
-            match self.peek_kind() {
+            let kind = self.peek_kind();
+            if is_modifier_token(kind) {
+                if seen.contains(&kind) {
+                    self.error_here("a modifier must not repeat (§9.5)");
+                } else {
+                    seen.push(kind);
+                }
+            }
+            match kind {
                 TokenKind::Public => {
                     self.bump();
                     modifiers.accessibility = Accessibility::Public;
@@ -2555,4 +2564,24 @@ enum ClassLikeKind {
     Class,
     Structure,
     Interface,
+}
+
+/// Tokens that begin a declaration modifier (§9).
+fn is_modifier_token(kind: TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Public
+            | TokenKind::Private
+            | TokenKind::Protected
+            | TokenKind::Scoped
+            | TokenKind::Readonly
+            | TokenKind::Implicitable
+            | TokenKind::Manual
+            | TokenKind::Abstract
+            | TokenKind::Sealed
+            | TokenKind::Virtual
+            | TokenKind::Override
+            | TokenKind::Static
+            | TokenKind::Aligned
+    )
 }

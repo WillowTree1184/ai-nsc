@@ -2,7 +2,7 @@
 
 ## State
 
-- Branch `main`; last feature commit `9b8a28f`
+- Branch `main`; last feature commit `1b955f7`
 - **Active goal: 100% draft-1.152 conformance, no more no less** (no
   compatibility syntax beyond the draft; no unimplemented normative rules).
   `git status` is clean.

@@ -2188,19 +2188,8 @@ impl<'a> Parser<'a> {
             } else {
                 None
             };
-            // `MatchCase` requires a Block, but the Built-In Library's own
-            // source writes `case is payload:T:` followed by a single
-            // statement. Accept that form too (spec draft inconsistency,
-            // recorded in docs/spec-notes/_inconsistencies.md).
-            let body = if self.at(TokenKind::LeftBrace) {
-                self.parse_block()?
-            } else if self.eat(TokenKind::Colon) {
-                let statement = self.parse_statement()?;
-                self.expect_statement_terminator();
-                statement
-            } else {
-                self.parse_block()?
-            };
+            // Draft 1.153 §5.10.6 requires a Block body for every case.
+            let body = self.parse_block()?;
             cases.push(MatchCase {
                 pattern,
                 guard,

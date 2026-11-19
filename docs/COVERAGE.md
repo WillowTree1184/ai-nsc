@@ -1,6 +1,6 @@
 # Spec coverage matrix
 
-Status against `docs/grammar/Draft 1.152.md` (trial draft). The specification is the
+Status against `docs/grammar/Draft 1.153.md` (trial draft). The specification is the
 source of truth and evolves; the matrix records what the compiler implements and
 what it diagnoses instead of miscompiling.
 
@@ -24,7 +24,7 @@ cargo test
 `cargo test` currently runs **381 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
-that read `docs/grammar/Draft 1.152.md` directly (a closed-set test also asserts that the only spec programs failing semantic analysis are the documented demonstration/inconsistency snippets):
+that read `docs/grammar/Draft 1.153.md` directly (a closed-set test also asserts that the only spec programs failing semantic analysis are the documented demonstration/inconsistency snippets):
 
 1. every `novasharp` fence in the specification parses (80+ examples);
 2. every whole-program example that passes semantic analysis is compiled end to
@@ -69,7 +69,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §4.9.6/4.9.7 `&`/`*` reference expressions | ✅ | pointer/reference tests |
 | §4.9.26 `??` with `Optional`/`Result` and all continuations | ✅ | coalescing + user `operator ??` tests |
 | §4.9.27 `?:` conditional expression | ✅ | conditional e2e |
-| §5 statements: blocks, locals/fixed, set/compound, if, while/do, for, match, break/continue, return, trap/finally, throw, dispose, export/use | ✅ | statement e2e tests; `finally` executes on fall-through and normal `return` paths (rejected `return` inside `finally`); `do-while` conditions are checked in the body block's scope; `dispose` targets must be heap allocation units (scope-lifetime instances are rejected per §5.8); pointer-member dispose targets are diagnosed because field points-to analysis is not implemented (deviation 12); the `local @` no-optimize marker is only accepted immediately after `local` (applying to all items), not per item; runtime statements/expressions are rejected at file/module top level (only declarations, `#{}`, `#if` and `#()` are allowed there) |
+| §5 statements: blocks, locals/fixed, set/compound, if, while/do, for, match, break/continue, return, trap/finally, throw, dispose, export/use | ✅ | statement e2e tests; `finally` executes on fall-through and normal `return` paths (rejected `return` inside `finally`); `do-while` conditions are checked in the body block's scope; `dispose` targets must be heap allocation units (scope-lifetime instances are rejected per §5.8); direct local field pointer dispose targets are supported, arbitrary pointer/container paths are diagnosed (deviation 12); the `local @` no-optimize marker is only accepted immediately after `local` (applying to all items), not per item; runtime statements/expressions are rejected at file/module top level (only declarations, `#{}`, `#if` and `#()` are allowed there) |
 | §5.6 `use` imports (per scope, later imports first, multi-file) | ✅ | use tests |
 | §5.9 `match`: patterns, guards, logical control flow (break/continue/labels) | ✅ | match e2e tests |
 | §5.9.5 `for`: arrays, VLA, ranges, `&` element alias, `IIterator`/`IIterable` targets | ✅ | for e2e tests |
@@ -81,7 +81,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §4.3 type conversion `Expression as Type` | ✅ | only the `as` operator at the `is` precedence is accepted; the Draft 1.13 `Cast<T>(value)` syntax was removed from the grammar and is now rejected |
 | §4.9.15/§4.9.16 circular shifts `<<<`/`>>>` (and `<<<=`/`>>>=`) | ✅ | integer/cardinal operands, count taken modulo the operand bit width, no sign extension; runtime lowering and constant folding; compound forms supported |
 | §5.9.5 directional ranges `..<`, `..<=`, `..>`, `..>=`; inferred `for` binding types | ✅ | parser/lexer, default step from the operator direction, direction-specific loop conditions, explicit types inferred from array/iterator/range targets; array-literal range expansion honours direction; step/direction contradictions diagnosed |
-| §11.7 lazy two-phase conditional evaluation | ✅ | enabled automatically when a top-level/module `#if` condition references a not-yet-produced **immutable** binding (`#{}` `fixed` constant, `#` constant parameter, generic/type/platform constant): unconditional `#{}` execute first in file/source order, deferred `#if` settle in dependency rounds and lock their selected branch once (declarations collected, branch `#{}` executed once); `local`/mutable forward dependencies are diagnosed; a round that settles nothing reports a no-progress static error (e.g. mutual dependencies); Draft 1.152 removed fixed-point/oscillation detection and candidate-error buffering, so none is implemented. Top-level `#()` statements are parsed and executed (compiler-API calls in the declaration pass, other expressions in the second pass); forward bindings are shared across the whole program, and deferred `#if` declarations are restored into their original module scope during settlement. |
+| §11.7 lazy two-phase conditional evaluation | ✅ | enabled automatically when a top-level/module `#if` condition references a not-yet-produced **immutable** binding (`#{}` `fixed` constant, `#` constant parameter, generic/type/platform constant): unconditional `#{}` execute first in file/source order, deferred `#if` settle in dependency rounds and lock their selected branch once (declarations collected, branch `#{}` executed once); `local`/mutable forward dependencies are diagnosed; a round that settles nothing reports a no-progress static error (e.g. mutual dependencies); Draft 1.153 removed fixed-point/oscillation detection and candidate-error buffering, so none is implemented. Top-level `#()` statements are parsed and executed (compiler-API calls in the declaration pass, other expressions in the second pass); forward bindings are shared across the whole program, and deferred `#if` declarations are restored into their original module scope during settlement. |
 | §11.2/§11.4 compile-time execution: top-level `#{}`/`#if`/`#()`, function-body `#{}` scope and end products | 🟡 | top-level blocks and compile-time functions interpret constants, assignments, if/while/do-while/for-range, `match` with value/comparison/wildcard patterns and guards, API calls and compile-time calls; `#{}` does not scope declarations and retained end products stay visible; function-body blocks keep their end products when read at run time and reject run-time writes; scalar compile-time `heap` allocation/assignment/`dispose` is interpreted (the unit is freed with compile-time execution and is not visible at run time); non-scalar compile-time heap objects, `throw`/`trap` and `is` match patterns remain unimplemented in compile-time interpretation |
 | §11.9 compiler API: Type/Compiler/Platform/NOLAA, `#if` platform queries | ✅ | compile-time contexts (`#{}`, `#(...)`, `#if`) may call the API; runtime code must wrap Type/Compiler/Platform calls in `#(...)`/`#if` (NOLAA markers remain run-time statements); `Type.SizeOf` returns a pointer-width value (i686 = 4); `Platform.Is` evaluates against the selected `--target` (`PlatformKind` from the target triple; host when no target; UEFI is `Other`); standard platform names only (the compiler defines no extension names, permitted by §11.9.3) |
 | §14.3.1 no-optimize marker: `@(expr)`, `@{ block }`, `local @Name`, `fixed @Name`, verbatim bodies | ✅ | parsed and enforced (nested markers, `#` inside markers and constant folding of marked storages rejected; `optnone` for marked bodies; e2e tests) |
@@ -135,7 +135,7 @@ implementing them is conforming and they are therefore not listed as deviations.
    diagnostic. Compile-time infinite loops are not capped: an intentional
    `#{ while true { ... } }` is genuinely nonterminating, as specified.
 6. **Single-expression function-literal bodies**: §2.7.9's EBNF allows only
-   `Block | VerbatimBlock`, but Draft 1.152's own function-type-constructor
+   `Block | VerbatimBlock`, but Draft 1.153's own function-type-constructor
    example uses `(value: integer(4)) => value`. ai-nsc accepts the single
    expression and treats it as an implicit return; tests otherwise use block
    bodies. This is a spec-example accommodation, not a preferred extension.
@@ -162,9 +162,8 @@ implementing them is conforming and they are therefore not listed as deviations.
    the developer's responsibility); bare `heap` is diagnosed. `run` is rejected
    (boot with qemu + OVMF or real firmware); aarch64 UEFI is not supported yet.
 
-12. **Pointer-member dispose targets**: §5.8's grammar allows
-    `dispose ( Identifier | PointerMemberAccessExpression )`, but ai-nsc performs
-    no field points-to/alias analysis, so `dispose holder->Target` is diagnosed
-    even when the member clearly points at a heap unit. Identifier targets,
-    direct aliases and returned references are supported; this is the remaining
-    NOLAA/alias gap.
+12. **Pointer-member dispose targets**: §5.9's grammar allows
+    `dispose ( Identifier | PointerMemberAccessExpression )`. A direct local
+    field alias (`holder.Target = &heapUnit; dispose holder->Target`) is now
+    tracked and disposed; arbitrary pointer/container/field paths still require
+    full points-to analysis and are diagnosed rather than guessed.

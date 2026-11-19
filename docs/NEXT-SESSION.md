@@ -2,56 +2,56 @@
 
 ## State
 
-- Branch `main`; last feature commit `82bcbdc`
-- **Active goal: 100% draft-1.152 conformance, no more no less** (no
-  compatibility syntax beyond the draft; no unimplemented normative rules).
-  `git status` is clean.
+- Branch `main`; last feature commit `82bcbdc` + round-23 baseline (pending commit).
+- **Active goal: 100% Draft 1.153 conformance, no more no less.** The
+  authoritative specification is `docs/grammar/Draft 1.153.md`; Draft 1.152 is
+  historical only.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  — **381 tests green** (41 lib unit including the lexer longest-match test, 118 CLI,
-  2 codegen/LLVM, 1 MCJIT probe, 2 JIT compile-time evaluation, 204 end-to-end
-  execution, 10 parser, 3 spec-example conformance). The spec-conformance tests
-  read `Draft 1.152.md`: all 91 `novasharp` examples parse, and every whole-program
-  example that passes semantic analysis is compiled end to end.
-- Targets: x86_64/aarch64/riscv64; **i686** build+run on x86_64 hosts (verified
-  end to end) and **armv7** cross-linked with `--sysroot` + lld and executed under
-  qemu-arm; **x86_64 UEFI** builds a freestanding EFI application (qemu+OVMF boot
-  test). All are covered by CLI tests. riscv32 is object-only (no 32-bit RISC-V
-  sysroot on this host); aarch64 UEFI is not supported yet. UEFI has no platform
-  `DefaultAllocator` (allocators are the developer's responsibility).
-- Compile-time execution (§11): top-level `#{}` blocks run at compile time
-  (constants, assignments incl. compound, if/while/for-range, break/continue,
-  `#if`, ordinary + recursive function calls, external linkable calls through the
-  host JIT; strict constant predicate for `#` parameters and array dimensions;
-  compile-time errors abort execution immediately). On the host target the full language is
-  executed through LLVM's MCJIT (LLVM 18 has no IR interpreter); cross targets use
-  the integer interpreter.
-- Built-in library (§15) complete: `Object`, `CallingConvention`, `PlatformKind`,
-  the exception hierarchy with `InnerException`/constructors, `Optional<T>`,
-  `Result<TValue; TAlternative>`, `IIterator<T>`, `IIterable<T>`, `IAllocator`,
-  the platform `DefaultAllocator`, and the compile-time library
-  (`Type.SizeOf`, `Compiler.Log*`/`Assert`, `Platform.Is`, `NOLAA.*`). Containers
-  are intentionally not provided (§15.2 does not define them).
-- Docs: `docs/COVERAGE.md` maps every spec section to ✅/🟡/⛔ with evidence and
-  deliberate deviations; `docs/AUDIT.md` tracks the 154 reproduced defects (all
-  fixed or marked partial with the fixing commit). Draft 1.152 changes are covered:
-  `as` conversions, circular shifts, directional ranges, inferred `for` binding
-  types, `@` markers, `for` without a binding, contextual keyword names.
-- Draft 1.152 changes: lazy two-phase `#if` evaluation (§11.7) is implemented
-  (immutable `fixed` forward bindings, settlement rounds, locked branches,
-  no-progress diagnostics; oscillation/fixed-point detection was removed by the
-  draft and is intentionally absent). Top-level `#()` statements execute in the
-  phase-A/phase-B ordering and forward bindings are shared across modules.
-  Residual limitation: non-API top-level `#()` expressions run in the second
-  pass rather than the startup pass.
-- Remaining gaps: keyword shadowing that disables a keyword meaning
-  (§2.4/§6.4); compiler-defined platform extension names (§11.8.3 permits but
-  does not require them, so only the standard names are matched). Compile-time
-  API scoping, `Type.SizeOf` pointer width, accessor `this` rules and
-  `array(Name: Type) T` expansion are implemented and tested.
-- Build flags (required on this host):
-  `CARGO_HOME=/tmp/ainsc-cargo LLVM_SYS_181_PREFIX=/usr/lib/llvm-18`
-- CLI: `target/debug/ai-nsc check|emit-ir|emit-obj|build|run [--target=<triple>]
-  [--sysroot=<path>] <file.ns> ...`.
+  — **381 tests green** (41 lib unit, 117 CLI, 2 codegen/LLVM, 1 MCJIT probe,
+  2 JIT compile-time evaluation, 205 end-to-end execution, 10 parser, 3
+  spec-example conformance). The spec-conformance tests read `Draft 1.153.md`:
+  all 97 `novasharp` examples parse (the bare inline-assembly block and the bare
+  function-type fragment are recorded as syntax fragments), and every whole
+  program that passes semantic analysis compiles end to end.
+- Draft 1.153 baseline (round 23): spec path/whitelists switched, 1.152 parser
+  tolerances removed (expression-bodied function literals, `case pattern:`
+  single statements), inline-assembly examples temporarily skipped as fragments.
+- **Draft 1.153 new work still open**:
+  1. §5.2 inline assembly: lexer raw mode, AST/parser/placeholders/clobbers,
+     per-architecture syntax validation, LLVM InlineAsm lowering, barriers,
+     compile-time/host restrictions, tests.
+  2. §11.9.3 `Environment` API replacing `Platform`: `PlatformKind`,
+     `ArchitectureKind`, `EnvironmentKind`, `EnvironmentFacts`, `Current/Host/
+     Target`, string queries, `#if` direct-call rule, host/target facts.
+  3. §8.5/§13.2 `#`/`&`: participate in type equality but not overload
+     signature; only-contract overloads forbidden; mangling hash includes
+     contract markers.
+  4. §11.7 default value expressions no longer need to be compile-time
+     constants; they are caller-side behavior.
+  5. §9.5 duplicate `scoped` forbidden; §10.2 monomorphization base must be an
+     `Identifier`; §11.9.1 `SizeOf` returns a 64-bit value (32-bit targets may
+     use the low 32 bits).
+  6. §5.2-§5.11 section renumbering: COVERAGE/AUDIT anchors, spec-notes and
+     generated EBNF/example snapshots still need a mechanical 1.153 refresh.
+- Older remaining gaps (still valid): NOLAA full CFG/points-to and
+  container/pointer aliases; compile-time non-scalar heap, throw/trap and `is`
+  match patterns; value-type explicit-allocator returned-heap ownership.
+- Targets: x86_64/aarch64/riscv64; i686 build+run on x86_64 hosts; armv7
+  cross-linked with `--sysroot` + lld and run under qemu-arm; x86_64 UEFI builds
+  a freestanding EFI application (qemu+OVMF boot test). riscv32 is object-only
+  (no 32-bit RISC-V sysroot on this host).
+- Compile-time execution (§11): top-level `#{}`/`#if`/`#()`, constants,
+  assignments, control flow, match/do-while, scalar compile-time heap, ordinary
+  and recursive compile-time functions, external linkable calls through the host
+  JIT. Remaining §11 gaps listed above.
+- Built-in library: `Object`, `CallingConvention`, `PlatformKind`, exceptions,
+  `Optional`, `Result`, `IIterator`, `IIterable`, `IAllocator`,
+  `DefaultAllocator`, `Type.SizeOf`, `Compiler.Log*/Assert`, `NOLAA.*`; the
+  `Environment` module and `ArchitectureKind`/`EnvironmentKind`/`EnvironmentFacts`
+  are the next additions.
+- Docs: `docs/COVERAGE.md` maps every spec section to status; `docs/AUDIT.md`
+  tracks 156 reproduced defects. `docs/spec-notes/_inconsistencies.md` was
+  rewritten for 1.153.
 
 ## Remaining backlog (status as of round 128)
 

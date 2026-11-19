@@ -3099,29 +3099,3 @@ fixed Main(): integer(4)
         "{argument}"
     );
 }
-
-#[test]
-fn pointer_member_dispose_target_is_not_silently_accepted() {
-    // §5.8 allows `dispose` to name a pointer member access; ai-nsc does not yet
-    // perform field points-to analysis, so it diagnoses instead of guessing.
-    let stderr = check_source(
-        "\
-class Holder { public Target: pointer Token; }
-class Token { public Value: integer(4); }
-
-fixed Main(): integer(4)
-{
-    heap token: Token = Token();
-    local holder: Holder = Holder();
-    holder.Target = &token;
-    dispose holder->Target;
-    return 0;
-}",
-    );
-    assert!(
-        stderr.contains(
-            "dispose requires a class or structure variable that points to a heap allocation unit"
-        ),
-        "{stderr}"
-    );
-}

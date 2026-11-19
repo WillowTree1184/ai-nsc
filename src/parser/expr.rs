@@ -405,10 +405,7 @@ impl<'a> Parser<'a> {
         let start_token = self.position;
         let header = self.try_parse(Self::parse_function_literal_header);
         if let Some((parameters, calling_convention, return_type)) = header {
-            // §2.7.9 says the body is a Block or VerbatimBlock, but the draft's
-            // own examples (e.g. the function-type-constructor example) use a
-            // single expression after `=>`; accept it and treat it as an
-            // implicit return (recorded in docs/spec-notes/_inconsistencies.md).
+            // Draft 1.153 §2.7.9 requires a Block or VerbatimBlock body.
             self.push_shadow_scope();
             for parameter in &parameters {
                 self.declare_shadow_name(&parameter.name);
@@ -418,7 +415,8 @@ impl<'a> Parser<'a> {
             } else if self.at(TokenKind::LeftBrace) {
                 self.parse_block()
             } else {
-                self.parse_expression()
+                self.error_here("expected '{' after '=>' in a function literal (§2.7.9)");
+                None
             };
             self.pop_shadow_scope();
             let body = body?;

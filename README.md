@@ -43,7 +43,7 @@ Implemented and tested today:
   `Result<TValue; TAlternative>`, `IIterator<T>`, `IIterable<T>`, `IAllocator`
   and the platform `DefaultAllocator`, plus the compile-time library.
 
-`cargo test` runs **234 tests** (40 lib unit, 54 CLI, 2 LLVM codegen, 125
+`cargo test` runs **381 tests** (41 lib unit, 117 CLI, 2 LLVM codegen, 205
 end-to-end programs, 10 parser, 2 spec-conformance tests that read the
 specification itself: every `novasharp` example parses, and every whole-program
 example that passes semantic analysis is compiled end to end by the CLI).
@@ -106,7 +106,7 @@ src/lib.rs           crate root and toolchain constants
 src/main.rs          thin binary entry point
 tests/               CLI and LLVM codegen integration tests
 docs/                architecture, roadmap, toolchain notes
-docs/grammar/        the language specification (Draft 1.152 is current)
+docs/grammar/        the language specification (Draft 1.153 is current)
 docs/spec-notes/     exhaustive per-section extraction of the spec + open questions
 runtime/             NovaSharp runtime support library (planned)
 examples/            example programs (added with the language)

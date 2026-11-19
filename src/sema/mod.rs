@@ -963,6 +963,11 @@ pub struct SemaResult {
     pub heap_reference_locals: HashSet<LocalId>,
     /// Locals referencing a returned explicit-allocator heap class instance.
     pub heap_custom_reference_locals: HashSet<LocalId>,
+    /// A pointer field (`base.Field`) currently known to hold a heap unit
+    /// (§5.8 pointer-member dispose, direct local-field alias only).
+    pub field_heap_aliases: HashMap<(LocalId, String), u32>,
+    /// `dispose holder->Field` nodes resolved to the heap unit stored in the field.
+    pub dispose_target_units: HashMap<NodeId, LocalId>,
     /// Methods belonging to non-named owners (array extensions, §3.8.3).
     pub owner_methods: HashMap<TypeId, Vec<u32>>,
     /// Accessors belonging to non-named owners (array extensions, §3.8.3).
@@ -1229,6 +1234,8 @@ pub fn analyze_with_options(
         heap_custom_return_functions: HashSet::new(),
         heap_reference_locals: HashSet::new(),
         heap_custom_reference_locals: HashSet::new(),
+        field_heap_aliases: HashMap::new(),
+        dispose_target_units: HashMap::new(),
         heap_demand_edges: HashMap::new(),
         heap_unit_locals: HashMap::new(),
         early_dispose_warned: std::collections::HashSet::new(),
@@ -1343,6 +1350,10 @@ pub(crate) struct Sema<'a> {
     pub(crate) heap_reference_locals: HashSet<LocalId>,
     /// Locals known to reference a returned custom-allocator heap unit.
     pub(crate) heap_custom_reference_locals: HashSet<LocalId>,
+    /// Direct pointer-field aliases to heap units (§5.8 pointer-member dispose).
+    pub(crate) field_heap_aliases: HashMap<(LocalId, String), u32>,
+    /// `dispose holder->Field` nodes resolved to their heap unit.
+    pub(crate) dispose_target_units: HashMap<NodeId, LocalId>,
     /// Demand edges between heap units discovered from field stores (§12.2).
     pub(crate) heap_demand_edges: HashMap<u32, Vec<u32>>,
     /// Index into `heap_units` for each heap local.

@@ -5332,3 +5332,29 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 5);
 }
+
+#[test]
+fn direct_pointer_field_dispose_target_executes() {
+    let source = "\
+class Token
+{
+    public Value: integer(4);
+}
+
+class Holder
+{
+    public Target: pointer Token;
+}
+
+fixed Main(): integer(4)
+{
+    heap token: Token = Token();
+    token.Value = 7;
+    local holder: Holder = Holder();
+    holder.Target = &token;
+    local value: integer(4) = token.Value;
+    dispose holder->Target;
+    return value;
+}";
+    assert_eq!(run_program(source), 7);
+}

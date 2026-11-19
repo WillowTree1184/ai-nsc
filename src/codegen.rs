@@ -2737,6 +2737,17 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
     }
 
     fn gen_dispose_statement(&mut self, statement: &crate::ast::DisposeStmt) -> Result<(), String> {
+        if !matches!(self.ast.node(statement.target).kind, NodeKind::Name(_)) {
+            if let Some(local) = self
+                .sema
+                .dispose_target_units
+                .get(&statement.target)
+                .copied()
+            {
+                return self.gen_dispose_local(local);
+            }
+            return Err("dispose requires a named heap variable".to_string());
+        }
         let NodeKind::Name(name) = self.ast.node(statement.target).kind.clone() else {
             return Err("dispose requires a named heap variable".to_string());
         };

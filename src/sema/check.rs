@@ -5390,6 +5390,7 @@ impl<'a> Sema<'a> {
         self.bodies_checked = self.result.functions.len();
         self.result.heap_reference_locals = self.heap_reference_locals.clone();
         self.result.heap_custom_reference_locals = self.heap_custom_reference_locals.clone();
+        self.result.dispose_target_units = self.dispose_target_units.clone();
         self.finalize_compile_time_block_locals();
         self.check_return_paths();
     }
@@ -6283,6 +6284,21 @@ impl<'a> Sema<'a> {
                     return;
                 }
                 self.ensure_assignable(statement.target);
+                if let NodeKind::MemberAccess(member) = self.node_kind(statement.target) {
+                    if let NodeKind::Name(base_name) = self.node_kind(member.base) {
+                        if let Some(Symbol::Local(base)) = self.lookup(&base_name.name).cloned() {
+                            let key = (base, member.name.clone());
+                            match self.heap_unit_for_name_expression(statement.value) {
+                                Some(unit) => {
+                                    self.field_heap_aliases.insert(key, unit);
+                                }
+                                None => {
+                                    self.field_heap_aliases.remove(&key);
+                                }
+                            }
+                        }
+                    }
+                }
                 if let Some(Resolution::Local(target)) =
                     self.result.resolutions[statement.target as usize].clone()
                 {
@@ -7210,6 +7226,10 @@ impl<'a> Sema<'a> {
     /// The heap allocation unit an alias expression directly names (§12.2), if
     /// the expression is a plain local reference to a heap unit or alias.
     fn heap_unit_for_name_expression(&self, node: NodeId) -> Option<u32> {
+        let node = match self.node_kind(node) {
+            NodeKind::Unary(unary) if unary.op == UnaryOp::Reference => unary.operand,
+            _ => node,
+        };
         let NodeKind::Name(name) = self.node_kind(node) else {
             return None;
         };
@@ -7363,6 +7383,38 @@ impl<'a> Sema<'a> {
     }
 
     fn check_dispose_statement(&mut self, statement: &DisposeStmt) {
+        if let NodeKind::PointerMemberAccess(member) = self.node_kind(statement.target) {
+            let base = match self.node_kind(member.base) {
+                NodeKind::Name(base_name) => match self.lookup(&base_name.name).cloned() {
+                    Some(Symbol::Local(base)) => Some(base),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(base) = base {
+                if let Some(unit) = self
+                    .field_heap_aliases
+                    .get(&(base, member.name.clone()))
+                    .copied()
+                {
+                    let local = self.heap_units[unit as usize].local;
+                    self.dispose_target_units.insert(statement.target, local);
+                    if self.heap_units[unit as usize].disposed {
+                        self.warn(
+                            self.span_of(statement.target),
+                            "this heap unit is disposed more than once",
+                        );
+                    }
+                    self.heap_units[unit as usize].disposed = true;
+                    return;
+                }
+            }
+            self.error(
+                self.span_of(statement.target),
+                "dispose requires a class or structure variable that points to a heap allocation unit (§5.8)",
+            );
+            return;
+        }
         if let NodeKind::Name(name) = self.node_kind(statement.target) {
             if let Some(Symbol::Local(local)) = self.lookup(&name.name).cloned() {
                 let info = self.local_info(local).cloned();

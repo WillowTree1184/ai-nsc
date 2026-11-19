@@ -3535,7 +3535,15 @@ impl<'a> Sema<'a> {
 
     /// Resolves a member access chain to an object name and dotted scalar field
     /// path (including nested value structures and pointer traversal).
-    fn compile_time_field_path(&self, node: NodeId) -> Option<(String, String)> {
+    fn compile_time_field_path(&mut self, node: NodeId) -> Option<(String, String)> {
+        if let NodeKind::Index(index_expr) = self.node_kind(node).clone() {
+            let (object_name, base_path) = self.compile_time_field_path(index_expr.base)?;
+            let index = self.eval_const_int(index_expr.index)?;
+            if index < 0 {
+                return None;
+            }
+            return Some((object_name, format!("{base_path}.{index}")));
+        }
         let NodeKind::MemberAccess(member) = self.node_kind(node).clone() else {
             return None;
         };
@@ -3601,6 +3609,25 @@ impl<'a> Sema<'a> {
         value: &NodeId,
         compound: Option<crate::ast::BinaryOp>,
     ) {
+        if matches!(self.node_kind(*target), NodeKind::Index(_)) {
+            if let Some((object_name, path)) = self.compile_time_field_path(*target) {
+                if self
+                    .compile_time_objects
+                    .get(&object_name)
+                    .is_some_and(|object| object.fields.contains_key(&path))
+                {
+                    self.suppress_errors += 1;
+                    let evaluated = self.eval_const_int(*value);
+                    self.suppress_errors -= 1;
+                    if let Some(evaluated) = evaluated {
+                        if let Some(object) = self.compile_time_objects.get_mut(&object_name) {
+                            object.fields.insert(path, evaluated);
+                        }
+                        return;
+                    }
+                }
+            }
+        }
         if let NodeKind::MemberAccess(_) = self.node_kind(*target).clone() {
             if let Some((object_name, path)) = self.compile_time_field_path(*target) {
                 if self
@@ -4623,6 +4650,21 @@ impl<'a> Sema<'a> {
                         .unwrap_or(0);
                     fields.insert(path, value);
                 }
+                Type::Array {
+                    dimensions,
+                    element,
+                } => {
+                    if dimensions.len() == 1 {
+                        let scalar =
+                            matches!(self.types_of(element), Type::Integer { .. } | Type::Boolean);
+                        if scalar {
+                            let length = dimensions[0];
+                            for position in 0..length {
+                                fields.insert(format!("{path}.{position}"), 0);
+                            }
+                        }
+                    }
+                }
                 Type::Named(field_index) => {
                     let kind = self.result.type_defs[field_index as usize].kind;
                     if kind == TypeDefKind::Enumeration {
@@ -4793,6 +4835,23 @@ impl<'a> Sema<'a> {
                         return false;
                     };
                     fields.push((path, value));
+                }
+                Type::Array {
+                    dimensions,
+                    element,
+                } => {
+                    if dimensions.len() != 1
+                        || !matches!(self.types_of(element), Type::Integer { .. } | Type::Boolean)
+                    {
+                        return false;
+                    }
+                    for position in 0..dimensions[0] {
+                        let element_path = format!("{path}.{position}");
+                        let Some(value) = values.get(&element_path).copied() else {
+                            return false;
+                        };
+                        fields.push((element_path, value));
+                    }
                 }
                 Type::Named(field_index) => {
                     let kind = self.result.type_defs[field_index as usize].kind;

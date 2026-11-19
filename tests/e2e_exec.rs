@@ -6180,3 +6180,25 @@ class Parent
 fixed Main(): integer(4) { return seen; }";
     assert_eq!(run_program(source), 5);
 }
+
+#[test]
+fn compile_time_objects_support_array_valued_fields() {
+    let source = "\
+structure Bag
+{
+    public Values: array(3) integer(4);
+}
+
+#{
+    heap bag: Bag = Bag();
+    bag.Values[0] = 3;
+    bag.Values[1] = 4;
+}
+
+fixed Main(): integer(4)
+{
+    local copy: Bag = bag;
+    return copy.Values[1];
+}";
+    assert_eq!(run_program(source), 4);
+}

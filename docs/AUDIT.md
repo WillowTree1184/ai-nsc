@@ -448,3 +448,5 @@ report an error (§4.8).
 
 | 211 | HIGH | §11.4/§11.8 | Direct non-scalar value fields (nested structures) were not stored, readable, writable or copyable for compile-time objects | fixed: nested scalar leaves are stored under dotted paths, `outer.Inner.X` reads/writes work, copyable nested structures snapshot recursively, and codegen rebuilds nested LLVM constant structs (e2e returns 7) |
 | 212 | MED | §11.4 | Class-valued fields of compile-time objects were not representable as object references | fixed: class-typed fields share the compile-time reference map with pointers, can reference another compile-time object, and traversal `parent.Child.Value` resolves through the reference; such objects are excluded from runtime copies per §11.8 (e2e returns 5) |
+
+| 213 | MED | §11.4/§11.8 | Array-valued fields of compile-time objects were not stored, indexed or copyable | fixed: one-dimensional scalar array fields store element leaves under dotted paths, `bag.Values[i]` reads/writes work, snapshots include them and codegen rebuilds constant array fields (e2e returns 4) |

@@ -6768,6 +6768,31 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                     let llvm_type = self.llvm_type(field.ty)?.into_int_type();
                     llvm_type.const_int(*value as u64, false).into()
                 }
+                Type::Array {
+                    dimensions,
+                    element,
+                } => {
+                    if dimensions.len() != 1 {
+                        continue;
+                    }
+                    let element_type = self.llvm_type(element)?.into_int_type();
+                    let mut elements = Vec::new();
+                    let mut complete = true;
+                    for position in 0..dimensions[0] {
+                        let element_path = format!("{path}.{position}");
+                        let Some((_, value)) =
+                            values.iter().find(|(name, _)| name == &element_path)
+                        else {
+                            complete = false;
+                            break;
+                        };
+                        elements.push(element_type.const_int(*value as u64, false));
+                    }
+                    if !complete {
+                        continue;
+                    }
+                    element_type.const_array(&elements).into()
+                }
                 Type::Named(field_index) => {
                     if self.sema.type_defs[field_index as usize].kind == TypeDefKind::Enumeration {
                         let Some((_, value)) = values.iter().find(|(name, _)| name == &path) else {

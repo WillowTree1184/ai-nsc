@@ -21,7 +21,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **369 tests**: 41 lib unit tests (lexer, literal,
+`cargo test` currently runs **370 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
 that read `docs/grammar/Draft 1.152.md` directly:
@@ -92,7 +92,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §10 generics / monomorphization | ✅ | types/functions/constraints/extension-for-generic/caching/mangling; methods that declare their own type parameters; array extension targets (methods/accessors/operators); class/structure index accessors are tested, and array-target index accessors are rejected per §4.9.2 (index accessors may only be declared in class/structure extension blocks). §14.3.2 optimisation directives are permissions, not requirements. |
 | §11.1–11.7 compile-time: `#(...)`, `#if`/`#else`, `#{}` blocks (incl. top-level and cross-file order), `#` constant parameters, compile-time boundary | ✅ | compile-time e2e tests; blocks are lowered as runtime equivalents of compile-time results (semantics-preserving approximation) |
 | §11.8 compiler API: `Type.SizeOf<T>`, `Compiler.LogNote/LogWarning/LogError/Assert`, `Platform.Is`, `NOLAA.Abandon/Bind/AssumeNoDemandNext` | ✅ | compiler API tests |
-| §12 memory model: locals/heap/dispose/destructors, `manual`, custom `IAllocator` + `DefaultAllocator`, NOLAA (double-dispose/early-dispose/never-disposed warnings, alias/store demand tracking, auto-insertion at block-end/return/break/continue safe points, Bind groups, SCC grouping) | ✅ | heap/dispose/allocation/NOLAA tests; heap storage can hold value types (including integer/array/union targets) and assignment writes through to the heap storage; mutually-needed units linked through class fields are merged into one analysis group (automatic SCC) and disposed together; NOLAA analysis is deliberately conservative for indirect aliases/pointers |
+| §12 memory model: locals/heap/dispose/destructors, `manual`, custom `IAllocator` + `DefaultAllocator`, NOLAA (double-dispose/early-dispose/never-disposed warnings, alias/store demand tracking, auto-insertion at block-end/return/break/continue safe points, Bind groups, SCC grouping) | ✅ | heap/dispose/allocation/NOLAA tests; heap storage can hold value types (including integer/array/union targets) and assignment writes through to the heap storage; mutually-needed units linked through class fields are merged into one analysis group (automatic SCC) and disposed together; NOLAA reports escaped units as never disposed unless they were disposed or abandoned; analysis remains conservative for indirect aliases/pointers |
 | §13 ABI: name mangling (§13.2), layouts, calling conventions, type info/vtables/interface tables | ✅ | mangling unit test + IR smoke tests; cross-target conventions beyond host diagnosed |
 | §14 startup: launcher, static/runtime initializers, exit code = Main return | ✅ | launcher IR/e2e exit-code tests |
 | §15 Built-In Library: `Object`, `CallingConvention`, `PlatformKind`, exception hierarchy with `InnerException`/constructors, `Optional<T>`, `Result<TValue; TAlternative>`, `IIterator<T>`, `IIterable<T>`, `IAllocator`, `DefaultAllocator`, compile-time library | ✅ | builtin library e2e tests; containers are not part of the spec's §15.2 |

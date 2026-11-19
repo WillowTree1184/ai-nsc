@@ -5216,8 +5216,9 @@ impl<'a> Sema<'a> {
                 FunctionBody::BuiltinAllocate | FunctionBody::BuiltinDeallocate => {}
             }
             self.in_function_body = previous_in_body;
-            // NOLAA never-disposed warning (§12.2): conservative — units that
-            // escaped the function (returned, passed on or stored) are exempt.
+            // NOLAA never-disposed warning (§12.2): a unit that was never
+            // destroyed is reported even when it escaped the function, unless it
+            // was explicitly disposed or abandoned.
             let pending: Vec<(Span, String)> = self
                 .heap_units
                 .iter()
@@ -5230,12 +5231,11 @@ impl<'a> Sema<'a> {
                     if unit.linkable_abandoned {
                         return true;
                     }
-                    !unit.escaped
-                        && !self
-                            .result
-                            .jump_dispose
-                            .values()
-                            .any(|locals| locals.contains(&unit.local))
+                    !self
+                        .result
+                        .jump_dispose
+                        .values()
+                        .any(|locals| locals.contains(&unit.local))
                 })
                 .map(|unit| {
                     (

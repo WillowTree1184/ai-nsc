@@ -5523,3 +5523,25 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 12);
 }
+
+#[test]
+fn environment_facts_values_and_queries_execute() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local facts: EnvironmentFacts = Environment.Host;
+    local platform: PlatformKind = facts.Platform;
+    local architecture: ArchitectureKind = facts.Architecture;
+    local linux: boolean = #(facts.PlatformIs(\"Linux\"));
+    local x86: boolean = #(facts.ArchitectureIs(\"X86_64\"));
+    if (platform == PlatformKind.Linux
+        && architecture == ArchitectureKind.X86_64
+        && linux
+        && x86)
+    {
+        return 7;
+    }
+    return 0;
+}";
+    assert_eq!(run_program(source), 7);
+}

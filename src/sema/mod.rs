@@ -777,6 +777,11 @@ pub enum Resolution {
         /// The type whose memory size is produced.
         ty: TypeId,
     },
+    /// A frozen `EnvironmentFacts` value (§11.9.3; `true` = host facts).
+    EnvironmentFacts {
+        /// Whether this value describes the compiler host.
+        host: bool,
+    },
     /// A structure or class field.
     Field {
         /// The declaring type.
@@ -1263,6 +1268,7 @@ pub fn analyze_with_options(
         heap_custom_reference_locals: HashSet::new(),
         disposing_parameters: HashMap::new(),
         parameter_escapes: HashMap::new(),
+        environment_fact_locals: HashMap::new(),
         pointer_aliases: HashMap::new(),
         element_heap_aliases: HashMap::new(),
         local_blocks: HashMap::new(),
@@ -1391,6 +1397,8 @@ pub(crate) struct Sema<'a> {
     pub(crate) disposing_parameters: HashMap<u32, Vec<usize>>,
     /// Per-function flags: whether each parameter's reference may escape.
     pub(crate) parameter_escapes: HashMap<u32, Vec<bool>>,
+    /// Locals holding an `EnvironmentFacts` value (true = host facts).
+    pub(crate) environment_fact_locals: HashMap<LocalId, bool>,
     /// Pointer locals aliasing a heap unit (`local p = &heapUnit;`).
     pub(crate) pointer_aliases: HashMap<LocalId, u32>,
     /// Local containers holding heap units through element writes (`bucket[i] = unit`).
@@ -1955,6 +1963,74 @@ impl<'a> Sema<'a> {
         type_id
     }
 
+    /// Pushes a synthetic structure declaration with explicit field offsets
+    /// (Built-In Library, §15.2).
+    fn push_builtin_structure(
+        &mut self,
+        name: &str,
+        fields: &[(&str, TypeId, u64)],
+        size: u64,
+        align: u64,
+    ) -> TypeId {
+        let index = self.result.type_defs.len() as TypeDefId;
+        let node = NodeId::MAX - 500 - index;
+        self.result.type_defs.push(TypeDef {
+            name: name.to_string(),
+            qualified_name: name.to_string(),
+            kind: TypeDefKind::Structure,
+            node,
+            generic_parameters: Vec::new(),
+            generic_arguments: Vec::new(),
+            template: None,
+            decl_scope: 0,
+            static_fields: std::collections::HashMap::new(),
+            static_methods: std::collections::HashMap::new(),
+            builtin_variant: None,
+            builtin_interface: None,
+            fields: fields
+                .iter()
+                .map(|(field, ty, offset)| FieldInfo {
+                    name: (*field).to_string(),
+                    ty: *ty,
+                    offset: *offset,
+                    accessibility: crate::ast::Accessibility::Public,
+                    readonly: false,
+                    scoped: Vec::new(),
+                })
+                .collect(),
+            field_initializers: vec![None; fields.len()],
+            methods: std::collections::HashMap::new(),
+            method_list: Vec::new(),
+            accessors: Vec::new(),
+            operators: Vec::new(),
+            interfaces: Vec::new(),
+            interface_dispatch: Vec::new(),
+            interface_bases: Vec::new(),
+            static_accessors: Vec::new(),
+            modules: HashMap::new(),
+            sealed: false,
+            is_abstract: false,
+            is_static: false,
+            vtable: Vec::new(),
+            vtable_ready: true,
+            base: None,
+            variant_states: Vec::new(),
+            union_members: Vec::new(),
+            tag_type: None,
+            payload_offset: 0,
+            payload_size: 0,
+            instance_size: size,
+            instance_align: align,
+            enum_members: Vec::new(),
+            underlying: None,
+            size,
+            align,
+        });
+        let type_id = self.result.types.intern(Type::Named(index));
+        self.declare(name.to_string(), Symbol::Type(type_id), Span::default());
+        type_id
+    }
+
     /// Pushes a synthetic interface declaration (Built-In Library, §15.2).
     fn push_builtin_interface(&mut self, name: &str) -> TypeId {
         let index = self.result.type_defs.len() as TypeDefId;
@@ -2243,13 +2319,13 @@ impl<'a> Sema<'a> {
                 "MicrosoftX64",
             ],
         );
-        self.push_builtin_enumeration(
+        let platform_kind = self.push_builtin_enumeration(
             "PlatformKind",
             false,
             4,
             &["Other", "Windows", "Linux", "MacOS", "FreeBSD"],
         );
-        self.push_builtin_enumeration(
+        let architecture_kind = self.push_builtin_enumeration(
             "ArchitectureKind",
             false,
             4,
@@ -2258,6 +2334,15 @@ impl<'a> Sema<'a> {
             ],
         );
         self.push_builtin_enumeration("EnvironmentKind", false, 4, &["Host", "Target"]);
+        self.push_builtin_structure(
+            "EnvironmentFacts",
+            &[
+                ("Platform", platform_kind, 0),
+                ("Architecture", architecture_kind, 4),
+            ],
+            8,
+            4,
+        );
         const NAMES: [&str; 6] = [
             "Exception",
             "NotImplementedException",

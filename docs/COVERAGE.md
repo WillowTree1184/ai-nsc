@@ -21,7 +21,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **407 tests**: 41 lib unit tests (lexer, literal,
+`cargo test` currently runs **408 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
 that read `docs/grammar/Draft 1.153.md` directly (a closed-set test also asserts that the only spec programs failing semantic analysis are the documented demonstration/inconsistency snippets):
@@ -84,7 +84,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §5.9.5 directional ranges `..<`, `..<=`, `..>`, `..>=`; inferred `for` binding types | ✅ | parser/lexer, default step from the operator direction, direction-specific loop conditions, explicit types inferred from array/iterator/range targets; array-literal range expansion honours direction; step/direction contradictions diagnosed |
 | §11.7 lazy two-phase conditional evaluation | ✅ | enabled automatically when a top-level/module `#if` condition references a not-yet-produced **immutable** binding (`#{}` `fixed` constant, `#` constant parameter, generic/type/platform constant): unconditional `#{}` execute first in file/source order, deferred `#if` settle in dependency rounds and lock their selected branch once (declarations collected, branch `#{}` executed once); `local`/mutable forward dependencies are diagnosed; a round that settles nothing reports a no-progress static error (e.g. mutual dependencies); Draft 1.153 removed fixed-point/oscillation detection and candidate-error buffering, so none is implemented. Top-level `#()` statements are parsed and executed (compiler-API calls in the declaration pass, other expressions in the second pass); forward bindings are shared across the whole program, and deferred `#if` declarations are restored into their original module scope during settlement. |
 | §11.2/§11.4 compile-time execution: top-level `#{}`/`#if`/`#()`, function-body `#{}` scope and end products | 🟡 | top-level blocks and compile-time functions interpret constants, assignments, if/while/do-while/for-range, `match` with value/comparison/wildcard patterns and guards, API calls and compile-time calls; `#{}` does not scope declarations and retained end products stay visible; function-body blocks keep their end products when read at run time and reject run-time writes; scalar compile-time `heap` allocation/assignment/`dispose` is interpreted (the unit is freed with compile-time execution and is not visible at run time); non-scalar compile-time heap objects, `throw`/`trap` and `is` match patterns remain unimplemented in compile-time interpretation |
-| §11.9 compiler API: Type/Compiler/Environment/NOLAA, `#if` environment queries | ✅ | compile-time contexts (`#{}`, `#(...)`, `#if`) may call the API; runtime code must wrap Type/Compiler/Environment calls in `#(...)`/`#if` (NOLAA markers remain run-time statements); Draft 1.153 §11.9.3 replaces `Platform` with `Environment`: `Current`/`Host`/`Target` facts are frozen, `PlatformIs`/`ArchitectureIs` compare canonical names byte-exactly and case-sensitively, unknown names answer false, `Other` has no name, and `#if` conditions use direct calls. `Type.SizeOf` returns a 64-bit unsigned value (32-bit targets use the low 32 bits; i686 test verifies). The compiler defines no extension names (permitted by §11.9.3). Current follows the target/program environment; Host gives the compiler-host facts explicitly. Value queries (`Environment.Current.Platform`/`.Architecture`, `Environment.Kind`) fold to `PlatformKind`/`ArchitectureKind`/`EnvironmentKind` constants, and cross-target architecture objects are emitted for x86_64/aarch64/riscv64 |
+| §11.9 compiler API: Type/Compiler/Environment/NOLAA, `#if` environment queries | ✅ | compile-time contexts (`#{}`, `#(...)`, `#if`) may call the API; runtime code must wrap Type/Compiler/Environment calls in `#(...)`/`#if` (NOLAA markers remain run-time statements); Draft 1.153 §11.9.3 replaces `Platform` with `Environment`: `Current`/`Host`/`Target` facts are frozen, `PlatformIs`/`ArchitectureIs` compare canonical names byte-exactly and case-sensitively, unknown names answer false, `Other` has no name, and `#if` conditions use direct calls. `Type.SizeOf` returns a 64-bit unsigned value (32-bit targets use the low 32 bits; i686 test verifies). The compiler defines no extension names (permitted by §11.9.3). Current follows the target/program environment; Host gives the compiler-host facts explicitly. Value queries (`Environment.Current.Platform`/`.Architecture`, `Environment.Kind`) fold to `PlatformKind`/`ArchitectureKind`/`EnvironmentKind` constants; the `EnvironmentFacts` structure and `Environment.Current`/`Host`/`Target` values are built-in and can be stored in locals (field/query folding works for those constants), and cross-target architecture objects are emitted for x86_64/aarch64/riscv64 |
 | §14.3.1 no-optimize marker: `@(expr)`, `@{ block }`, `local @Name`, `fixed @Name`, verbatim bodies | ✅ | parsed and enforced (nested markers, `#` inside markers and constant folding of marked storages rejected; `optnone` for marked bodies; e2e tests) |
 | §5.9.5 `for` without an iteration variable (range only) | ✅ | parser/sema/codegen; range type inferred from the first non-literal expression and all range expressions must share it (literal `1` adopts `x`'s type in `for 1..x`); e2e ascending/descending/labelled-break and mixed-type diagnostics |
 | §3.6.3 function types: `wildcard`, calling conventions, defaults, type equality/conversion | ✅ | `wildcard` matches unchecked trailing arguments (fixed prefix validated; small ints/bools promoted, `float(4)`→`f64`, arrays/VLAs decay to pointers); variadic declarations emitted; explicit calling conventions accepted after parameters/wildcard, bare `CallingConvention` member names resolved, `CDeclaration` uses the LLVM default C convention, `SystemVAMD64`/`MicrosoftX64` map to their LLVM conventions (method `wildcard` signatures still share the fixed-prefix matcher) |
@@ -177,13 +177,16 @@ implementing them is conforming and they are therefore not listed as deviations.
     tracked and disposed; arbitrary pointer/container/field paths still require
     full points-to analysis and are diagnosed rather than guessed.
 
-13. **`EnvironmentFacts`/`Environment` are not materialised as ordinary
-    built-in declarations**: §11.9.3's queries and the `PlatformKind`/
-    `ArchitectureKind`/`EnvironmentKind` enumerations are implemented and
-    compile-time folded, but the `EnvironmentFacts` structure and `Environment`
-    module are recognised syntactically rather than declared in the built-in
-    type space. This affects reflection over those built-ins only; all specified
-    query forms are evaluated. Tracked for the final §15.2 audit.
+13. **`EnvironmentFacts`/`Environment` materialisation is partial**: the
+    `EnvironmentFacts` structure (Platform/Architecture fields) and the
+    `Environment.Current`/`Host`/`Target` values are now built-in types/values;
+    field reads, `PlatformIs`/`ArchitectureIs` on frozen facts (including locals
+    initialized from those values) fold at compile time and the facts value can
+    flow into runtime storage. Still not materialised: the `Environment` module
+    declaration and the declared `EnvironmentFacts` member functions for unknown
+    facts values (for example a facts-typed parameter whose value is not tracked);
+    those forms are diagnosed rather than miscompiled. Tracked for the final
+    §15.2 audit.
 
 14. **No-clobber assembly barrier breadth**: an operand-free `assembly` block
     without `clobber(...)` now declares all target GPR/vector registers,

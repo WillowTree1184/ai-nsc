@@ -6546,6 +6546,14 @@ impl<'a> Sema<'a> {
                             self.heap_custom_reference_locals.remove(&target);
                         }
                     }
+                    match self.environment_fact_source(statement.value) {
+                        Some(host) => {
+                            self.environment_fact_locals.insert(target, host);
+                        }
+                        None => {
+                            self.environment_fact_locals.remove(&target);
+                        }
+                    }
                     match self.heap_source_unit(statement.value) {
                         Some(unit) => {
                             let is_pointer = self.local_info(target).is_some_and(|info| {
@@ -7126,6 +7134,9 @@ impl<'a> Sema<'a> {
         // checks see through them (§12.2).
         for (local, item) in locals.iter().zip(declaration.items.iter()) {
             if let Some(initializer) = item.init {
+                if let Some(host) = self.environment_fact_source(initializer) {
+                    self.environment_fact_locals.insert(*local, host);
+                }
                 if let Some(unit) = self.heap_source_unit(initializer) {
                     let is_pointer = self
                         .local_info(*local)
@@ -9898,7 +9909,31 @@ impl<'a> Sema<'a> {
 
     /// Whether an expression is a compile-time constant (§11.2): literals,
     /// operators over constants, fixed globals and the compiler API.
+    /// EnvironmentFacts values and their field/query expressions are frozen
+    /// compile-time constants (§11.9.3).
+    fn is_environment_constant_expression(&self, node: NodeId) -> bool {
+        match self.node_kind(node) {
+            NodeKind::MemberAccess(access) => {
+                if matches!(access.name.as_str(), "Platform" | "Architecture") {
+                    return self.environment_fact_source(access.base).is_some();
+                }
+                self.environment_fact_source(node).is_some()
+            }
+            NodeKind::Call(call) => {
+                let NodeKind::MemberAccess(access) = self.node_kind(call.callee) else {
+                    return false;
+                };
+                matches!(access.name.as_str(), "PlatformIs" | "ArchitectureIs")
+                    && self.environment_fact_source(access.base).is_some()
+            }
+            _ => false,
+        }
+    }
+
     fn is_compile_time_constant(&self, node: NodeId) -> bool {
+        if self.is_environment_constant_expression(node) {
+            return true;
+        }
         if let NodeKind::Name(name) = self.node_kind(node) {
             if self.compile_time_heap.contains_key(&name.name) {
                 return true;
@@ -11587,15 +11622,6 @@ impl<'a> Sema<'a> {
         }
     }
 
-    fn environment_world(&self, name: &str) -> Option<bool> {
-        // `true` selects the Host facts, `false` the Target/Current facts.
-        match name {
-            "Host" => Some(true),
-            "Target" | "Current" => Some(false),
-            _ => None,
-        }
-    }
-
     fn environment_string_argument(&mut self, call: &CallExpr) -> Option<String> {
         if call.arguments.len() != 1 {
             return None;
@@ -11633,98 +11659,93 @@ impl<'a> Sema<'a> {
         }
     }
 
-    /// Recognises the §11.9.3 environment API without requiring a materialised
-    /// `Environment` module declaration; all queries are compile-time folded.
-    fn check_environment_expression(&mut self, node: NodeId) -> Option<Option<TypeId>> {
-        // Only environment paths are inspected; every other expression falls
-        // through unchanged.
-        let recognised = match self.node_kind(node) {
-            NodeKind::Call(call) => {
-                self.environment_segments(call.callee)
-                    .is_some_and(|segments| {
-                        segments.len() == 2
-                            && matches!(segments[1].as_str(), "PlatformIs" | "ArchitectureIs")
-                    })
+    /// Whether `node` evaluates to a frozen `EnvironmentFacts` value; the flag
+    /// is true for the compiler host facts.
+    fn environment_fact_source(&self, node: NodeId) -> Option<bool> {
+        if let NodeKind::Name(name) = self.node_kind(node) {
+            if let Some(Symbol::Local(local)) = self.lookup(&name.name).cloned() {
+                if let Some(host) = self.environment_fact_locals.get(&local) {
+                    return Some(*host);
+                }
             }
-            _ => self.environment_segments(node).is_some_and(|segments| {
-                matches!(segments.as_slice(), [kind] if kind == "Kind")
-                    || matches!(
-                        segments.as_slice(),
-                        [world, member]
-                            if matches!(world.as_str(), "Current" | "Host" | "Target")
-                                && matches!(member.as_str(), "Platform" | "Architecture")
-                    )
-            }),
-        };
-        if !recognised {
             return None;
         }
-        if !self.in_compile_time_code() && self.environment_eval_depth == 0 {
-            self.error(
-                self.span_of(node),
-                "environment queries must be evaluated at compile time through '#(...)' or a '#if' condition (§11.9.3)",
-            );
-            return Some(None);
-        }
-        // Calls: `Environment.<world>.PlatformIs("...")` /
-        // `ArchitectureIs`.
-        if let NodeKind::Call(call) = self.node_kind(node) {
-            let segments = self.environment_segments(call.callee)?;
-            if segments.len() != 2 {
-                return None;
-            }
-            let host = self.environment_world(&segments[0])?;
-            let method = segments[1].as_str();
-            if method != "PlatformIs" && method != "ArchitectureIs" {
-                return None;
-            }
-            let Some(name) = self.environment_string_argument(&call) else {
-                return Some(None);
-            };
-            let (platform, architecture) = self.environment_facts(host);
-            let matches = if method == "PlatformIs" {
-                Self::platform_kind_from_name(&name).is_some_and(|kind| kind == platform)
-            } else {
-                Self::architecture_kind_from_name(&name).is_some_and(|kind| kind == architecture)
-            };
-            self.result.resolutions[node as usize] = Some(Resolution::Constant {
-                ty: TypeId::BOOLEAN,
-                value: i128::from(matches),
-            });
-            return Some(Some(TypeId::BOOLEAN));
-        }
-        // Values: `Environment.Kind`, `Environment.<world>.Platform`,
-        // `Environment.<world>.Architecture`.
         let segments = self.environment_segments(node)?;
-        let (host, member, ty) = match segments.as_slice() {
-            [kind] if kind == "Kind" => {
-                return {
-                    self.result.resolutions[node as usize] = Some(Resolution::Constant {
-                        ty: self.lookup_type_id("EnvironmentKind")?,
-                        value: 1,
-                    });
-                    Some(Some(self.lookup_type_id("EnvironmentKind")?))
+        match segments.as_slice() {
+            [world] if world == "Host" => Some(true),
+            [world] if world == "Current" || world == "Target" => Some(false),
+            _ => None,
+        }
+    }
+
+    /// Recognises the §11.9.3 environment API. Value forms (`Current`/`Host`/
+    /// `Target`, their `Platform`/`Architecture` fields and `Kind`) fold to
+    /// constants; query calls must be compile-time evaluated.
+    fn check_environment_expression(&mut self, node: NodeId) -> Option<Option<TypeId>> {
+        match self.node_kind(node) {
+            NodeKind::Call(call) => {
+                let NodeKind::MemberAccess(access) = self.node_kind(call.callee) else {
+                    return None;
                 };
-            }
-            [world, member] => {
-                let host = self.environment_world(world)?;
-                let ty = match member.as_str() {
-                    "Platform" => self.lookup_type_id("PlatformKind")?,
-                    "Architecture" => self.lookup_type_id("ArchitectureKind")?,
-                    _ => return None,
+                if !matches!(access.name.as_str(), "PlatformIs" | "ArchitectureIs") {
+                    return None;
+                }
+                let host = self.environment_fact_source(access.base)?;
+                if !self.in_compile_time_code() && self.environment_eval_depth == 0 {
+                    self.error(
+                        self.span_of(node),
+                        "environment queries must be evaluated at compile time through '#(...)' or a '#if' condition (§11.9.3)",
+                    );
+                    return Some(None);
+                }
+                let name = self.environment_string_argument(&call)?;
+                let (platform, architecture) = self.environment_facts(host);
+                let matches = if access.name == "PlatformIs" {
+                    Self::platform_kind_from_name(&name).is_some_and(|kind| kind == platform)
+                } else {
+                    Self::architecture_kind_from_name(&name)
+                        .is_some_and(|kind| kind == architecture)
                 };
-                (host, member.as_str(), ty)
+                self.result.resolutions[node as usize] = Some(Resolution::Constant {
+                    ty: TypeId::BOOLEAN,
+                    value: i128::from(matches),
+                });
+                Some(Some(TypeId::BOOLEAN))
             }
-            _ => return None,
-        };
-        let (platform, architecture) = self.environment_facts(host);
-        let value = if member == "Platform" {
-            i128::from(platform)
-        } else {
-            i128::from(architecture)
-        };
-        self.result.resolutions[node as usize] = Some(Resolution::Constant { ty, value });
-        Some(Some(ty))
+            NodeKind::MemberAccess(access) => {
+                let segments = self.environment_segments(node);
+                if matches!(segments.as_deref(), Some([kind]) if kind == "Kind") {
+                    let ty = self.lookup_type_id("EnvironmentKind")?;
+                    self.result.resolutions[node as usize] =
+                        Some(Resolution::Constant { ty, value: 1 });
+                    return Some(Some(ty));
+                }
+                if matches!(access.name.as_str(), "Platform" | "Architecture") {
+                    if let Some(host) = self.environment_fact_source(access.base) {
+                        let (platform, architecture) = self.environment_facts(host);
+                        let ty = if access.name == "Platform" {
+                            self.lookup_type_id("PlatformKind")?
+                        } else {
+                            self.lookup_type_id("ArchitectureKind")?
+                        };
+                        let value = if access.name == "Platform" {
+                            i128::from(platform)
+                        } else {
+                            i128::from(architecture)
+                        };
+                        self.result.resolutions[node as usize] =
+                            Some(Resolution::Constant { ty, value });
+                        return Some(Some(ty));
+                    }
+                }
+                let host = self.environment_fact_source(node)?;
+                let ty = self.lookup_type_id("EnvironmentFacts")?;
+                self.result.resolutions[node as usize] =
+                    Some(Resolution::EnvironmentFacts { host });
+                Some(Some(ty))
+            }
+            _ => None,
+        }
     }
 
     /// Looks up a built-in type id by name.

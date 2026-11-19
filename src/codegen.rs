@@ -5572,6 +5572,35 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         }
     }
 
+    /// Emits a frozen `EnvironmentFacts` constant (§11.9.3).
+    fn gen_environment_facts_value(
+        &mut self,
+        node: NodeId,
+        host: bool,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let (platform, architecture) = if host {
+            (
+                crate::sema::Sema::platform_kind_for_triple(Some(crate::HOST_TRIPLE)),
+                crate::sema::Sema::architecture_kind_for_triple(Some(crate::HOST_TRIPLE)),
+            )
+        } else {
+            (
+                crate::sema::Sema::platform_kind_for_triple(self.options.target.as_deref()),
+                crate::sema::Sema::architecture_kind_for_triple(self.options.target.as_deref()),
+            )
+        };
+        let struct_type = match self.llvm_type(self.type_of(node))? {
+            BasicTypeEnum::StructType(struct_type) => struct_type,
+            _ => return Err("EnvironmentFacts is not a structure type".to_string()),
+        };
+        let i32_type = self.context.i32_type();
+        let value = struct_type.const_named_struct(&[
+            i32_type.const_int(u64::from(platform), false).into(),
+            i32_type.const_int(u64::from(architecture), false).into(),
+        ]);
+        Ok(value.into())
+    }
+
     fn gen_value_from_resolution(&mut self, node: NodeId) -> Result<BasicValueEnum<'ctx>, String> {
         let ty = self.type_of(node);
         match self.sema.resolutions[node as usize].clone() {
@@ -5762,6 +5791,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 let size = self.sema.size_align(ty).0;
                 let llvm_type = self.llvm_type(self.type_of(node))?.into_int_type();
                 Ok(llvm_type.const_int(size, false).into())
+            }
+            Some(Resolution::EnvironmentFacts { host }) => {
+                self.gen_environment_facts_value(node, host)
             }
             Some(Resolution::Function(index)) => Ok(self.function_value_closure(index)?.into()),
             Some(Resolution::Type(_)) | None => Err("name cannot be used as a value".to_string()),
@@ -6550,6 +6582,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 let size = self.sema.size_align(ty).0;
                 let llvm_type = self.llvm_type(self.type_of(node))?.into_int_type();
                 Ok(llvm_type.const_int(size, false).into())
+            }
+            Some(Resolution::EnvironmentFacts { host }) => {
+                self.gen_environment_facts_value(node, host)
             }
             Some(Resolution::Function(index)) => {
                 let function = *self

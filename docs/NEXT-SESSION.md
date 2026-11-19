@@ -2,7 +2,7 @@
 
 ## State
 
-- Branch `main`; last feature commit `3474e62`.
+- Branch `main`; last feature commit `98d5900`.
 - **Active goal: 100% Draft 1.161 conformance.** Authoritative specification:
   `docs/grammar/Draft 1.161.md` (1.153 and earlier are historical only).
 - Gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,

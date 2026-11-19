@@ -4575,8 +4575,8 @@ fn no_optimize_markers_and_keyword_names_keep_their_values() {
 fixed Main(): integer(4)
 {
     local integer: integer(4) = 4;
-    local @marked: integer(4) = 1 + 2;
-    local folded: integer(4) = @(1 + 2);
+    local @marked: @integer(4) = 1 + 2;
+    local folded: @integer(4) = @(1 + 2);
     return marked + folded + integer;
 }";
     assert_eq!(run_program(source), 10);
@@ -4858,4 +4858,41 @@ fixed Main(): integer(4)
     return M.Value;
 }";
     assert_eq!(run_program(source), 7);
+}
+
+#[test]
+fn shadowed_keywords_require_the_at_marker() {
+    // §2.4/§6.4: a same-spelling declaration shadows the keyword in the current
+    // and inner scopes; `@keyword` forces the keyword meaning again.
+    let source = "\
+local class: integer(4) = 1;
+
+@class MyClass { }
+
+@structure MyStructure { }
+
+@class integer { }
+
+fixed Main(): @integer(4)
+{
+    local x: @integer(4) = 1;
+    return x;
+}";
+    assert_eq!(run_program(source), 1);
+}
+
+#[test]
+fn forced_statement_keyword_after_shadowing_works() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local if: integer(4) = 0;
+    local x: integer(4) = 1;
+    @if x == 1
+    {
+        return 0;
+    }
+    return 1;
+}";
+    assert_eq!(run_program(source), 0);
 }

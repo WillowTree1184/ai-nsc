@@ -73,6 +73,10 @@ pub(crate) struct Parser<'a> {
     pub(crate) position: usize,
     pub(crate) ast: Ast,
     pub(crate) errors: Vec<ParseError>,
+    /// Declared names per lexical scope, for keyword shadowing (§2.4/§6.4).
+    shadow_scopes: Vec<std::collections::HashSet<String>>,
+    /// Set while consuming a `@keyword` forced keyword (§2.4).
+    forced_keyword: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -88,6 +92,8 @@ impl<'a> Parser<'a> {
             position: 0,
             ast,
             errors: Vec::new(),
+            shadow_scopes: vec![std::collections::HashSet::new()],
+            forced_keyword: false,
         }
     }
 
@@ -97,17 +103,78 @@ impl<'a> Parser<'a> {
         self.tokens[self.position.min(self.tokens.len() - 1)]
     }
 
-    pub(crate) fn peek_kind(&self) -> TokenKind {
-        self.peek().kind
+    /// Whether a keyword spelling is shadowed by a declared name in any enclosing
+    /// scope (§2.4, §6.4).
+    fn keyword_shadowed(&self, kind: TokenKind) -> bool {
+        kind.keyword_spelling().is_some_and(|spelling| {
+            self.shadow_scopes
+                .iter()
+                .any(|scope| scope.contains(spelling))
+        })
     }
 
+    pub(crate) fn peek_kind(&self) -> TokenKind {
+        let kind = self.peek().kind;
+        if self.forced_keyword && kind.is_keyword() {
+            return kind;
+        }
+        if kind.is_keyword() && self.keyword_shadowed(kind) {
+            TokenKind::Identifier
+        } else {
+            kind
+        }
+    }
+
+    /// Raw lookahead (shadowing only affects the current token's keyword
+    /// interpretation; `@keyword` lookahead needs the real keyword token).
     pub(crate) fn peek_at(&self, offset: usize) -> TokenKind {
+        if offset == 0 {
+            return self.peek_kind();
+        }
         let index = (self.position + offset).min(self.tokens.len() - 1);
         self.tokens[index].kind
     }
 
     pub(crate) fn at(&self, kind: TokenKind) -> bool {
         self.peek_kind() == kind
+    }
+
+    fn push_shadow_scope(&mut self) {
+        self.shadow_scopes.push(std::collections::HashSet::new());
+    }
+
+    fn pop_shadow_scope(&mut self) {
+        if self.shadow_scopes.len() > 1 {
+            self.shadow_scopes.pop();
+        }
+    }
+
+    /// Records a declared identifier so it shadows any same-spelling keyword in
+    /// the current and inner scopes (§2.4/§6.4).
+    fn declare_shadow_name(&mut self, name: &str) {
+        if let Some(scope) = self.shadow_scopes.last_mut() {
+            scope.insert(name.to_string());
+        }
+    }
+
+    /// Declares generic parameter names in the current scope (§10.1).
+    fn declare_generic_parameters(&mut self, generics: &[GenericParameter]) {
+        for parameter in generics {
+            self.declare_shadow_name(&parameter.name);
+        }
+    }
+
+    /// Declares parameter names of a function type in the current scope.
+    fn declare_function_type_parameters(&mut self, ty: Option<NodeId>) {
+        let Some(ty) = ty else { return };
+        let NodeKind::FunctionType(function) = self.ast.node(ty).kind.clone() else {
+            return;
+        };
+        for parameter in &function.parameters {
+            if let Some(name) = &parameter.name {
+                self.declare_shadow_name(name);
+            }
+        }
     }
 
     pub(crate) fn at_end(&self) -> bool {
@@ -118,6 +185,9 @@ impl<'a> Parser<'a> {
         let token = self.peek();
         if !self.at_end() {
             self.position += 1;
+        }
+        if self.forced_keyword && token.kind.is_keyword() {
+            self.forced_keyword = false;
         }
         token
     }
@@ -948,26 +1018,9 @@ impl<'a> Parser<'a> {
         }
         // `@class Name { }` forces the keyword meaning even when an identifier
         // of that name shadows it (§2.4).
-        if self.at(TokenKind::At)
-            && matches!(
-                self.peek_at(1),
-                TokenKind::Class
-                    | TokenKind::Structure
-                    | TokenKind::Interface
-                    | TokenKind::Enumeration
-                    | TokenKind::Variant
-                    | TokenKind::Union
-                    | TokenKind::Module
-                    | TokenKind::Extension
-                    | TokenKind::Accessor
-                    | TokenKind::Operator
-                    | TokenKind::Local
-                    | TokenKind::Fixed
-                    | TokenKind::Heap
-                    | TokenKind::Linkable
-            )
-        {
+        if self.at(TokenKind::At) && self.peek_at(1).is_keyword() {
             self.bump();
+            self.forced_keyword = true;
         }
         let modifiers = self.parse_modifiers();
 
@@ -1053,7 +1106,9 @@ impl<'a> Parser<'a> {
             self.synchronize();
             return None;
         }
+        self.push_shadow_scope();
         let statements = self.parse_block_statements_until_right_brace();
+        self.pop_shadow_scope();
         let span = self.span_between(start_token, self.position);
         Some(self.ast.push(span, NodeKind::Block(statements)))
     }
@@ -1081,11 +1136,14 @@ impl<'a> Parser<'a> {
         let start_token = self.position;
         self.bump(); // class / structure / interface
         let (name, _) = self.parse_name()?;
+        self.declare_shadow_name(&name);
+        self.push_shadow_scope();
         let generics = if self.at(TokenKind::Less) {
             self.parse_generic_parameters()
         } else {
             Vec::new()
         };
+        self.declare_generic_parameters(&generics);
         let mut bases = Vec::new();
         if self.eat(TokenKind::Colon) {
             loop {
@@ -1097,6 +1155,7 @@ impl<'a> Parser<'a> {
             }
         }
         let members = self.parse_member_block()?;
+        self.pop_shadow_scope();
         let span = self.span_between(start_token, self.position);
         let declaration = ClassDecl {
             modifiers,
@@ -1116,6 +1175,7 @@ impl<'a> Parser<'a> {
     /// Parses a braced member list (type body), returning member node ids.
     fn parse_member_block(&mut self) -> Option<Vec<NodeId>> {
         self.expect(TokenKind::LeftBrace, "'{'")?;
+        self.push_shadow_scope();
         let mut members = Vec::new();
         while !self.at(TokenKind::RightBrace) && !self.at_end() {
             let before = self.position;
@@ -1131,6 +1191,7 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(TokenKind::RightBrace, "'}'");
+        self.pop_shadow_scope();
         Some(members)
     }
 
@@ -1153,6 +1214,7 @@ impl<'a> Parser<'a> {
         let start_token = self.position;
         self.bump();
         let (name, _) = self.parse_name()?;
+        self.declare_shadow_name(&name);
         self.expect(TokenKind::Colon, "':' before the enumeration's basic type");
         let underlying = self.parse_type()?;
         self.expect(TokenKind::LeftBrace, "'{'");
@@ -1196,6 +1258,7 @@ impl<'a> Parser<'a> {
         let start_token = self.position;
         self.bump();
         let (name, _) = self.parse_name()?;
+        self.declare_shadow_name(&name);
         let generics = if self.at(TokenKind::Less) {
             self.parse_generic_parameters()
         } else {
@@ -1242,6 +1305,7 @@ impl<'a> Parser<'a> {
         let start_token = self.position;
         self.bump();
         let (name, _) = self.parse_name()?;
+        self.declare_shadow_name(&name);
         let generics = if self.at(TokenKind::Less) {
             self.parse_generic_parameters()
         } else {
@@ -1291,6 +1355,7 @@ impl<'a> Parser<'a> {
         let start_token = self.position;
         self.bump();
         let (name, _) = self.parse_name()?;
+        self.declare_shadow_name(&name);
         let members = self.parse_member_block()?;
         let span = self.span_between(start_token, self.position);
         Some(self.ast.push(
@@ -1389,6 +1454,7 @@ impl<'a> Parser<'a> {
         let start_token = self.position;
         self.bump();
         let (name, _) = self.parse_name()?;
+        self.declare_shadow_name(&name);
         self.expect(TokenKind::Colon, "':' in accessor definition");
         let ty = self.parse_type()?;
         let backing = if self.eat(TokenKind::FatArrow) {
@@ -1644,6 +1710,7 @@ impl<'a> Parser<'a> {
     fn parse_field(&mut self, modifiers: Modifiers) -> Option<NodeId> {
         let start_token = self.position;
         let head = self.parse_definition_head(true)?;
+        self.declare_shadow_name(&head.name);
         let init = if self.eat(TokenKind::Equals) {
             self.parse_expression().map(Initializer::Expression)
         } else if self.at(TokenKind::LeftBrace) {
@@ -1673,11 +1740,15 @@ impl<'a> Parser<'a> {
             let item_start = self.position;
             let verbatim = leading_verbatim || self.eat(TokenKind::At);
             let head = self.parse_definition_head(false)?;
+            self.declare_shadow_name(&head.name);
+            self.push_shadow_scope();
+            self.declare_function_type_parameters(head.ty);
             let init = if self.eat(TokenKind::Equals) {
                 self.parse_expression()
             } else {
                 None
             };
+            self.pop_shadow_scope();
             items.push(LocalItem {
                 verbatim,
                 name: head.name,
@@ -1707,11 +1778,15 @@ impl<'a> Parser<'a> {
             None
         };
         let head = self.parse_definition_head(false)?;
+        self.declare_shadow_name(&head.name);
+        self.push_shadow_scope();
+        self.declare_function_type_parameters(head.ty);
         let init = if self.eat(TokenKind::Equals) {
             self.parse_expression()
         } else {
             None
         };
+        self.pop_shadow_scope();
         let span = self.span_between(start_token, self.position);
         Some(self.ast.push(
             span,
@@ -1733,6 +1808,10 @@ impl<'a> Parser<'a> {
             modifiers.verbatim = true;
         }
         let head = self.parse_definition_head(true)?;
+        self.declare_shadow_name(&head.name);
+        self.push_shadow_scope();
+        self.declare_generic_parameters(&head.generics);
+        self.declare_function_type_parameters(head.ty);
         let init = if self.eat(TokenKind::Equals) {
             self.parse_expression().map(Initializer::Expression)
         } else if self.at(TokenKind::LeftBrace) {
@@ -1742,6 +1821,7 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        self.pop_shadow_scope();
         let span = self.span_between(start_token, self.position);
         Some(self.ast.push(
             span,
@@ -1773,6 +1853,10 @@ impl<'a> Parser<'a> {
             None
         };
         let head = self.parse_definition_head(true)?;
+        self.declare_shadow_name(&head.name);
+        self.push_shadow_scope();
+        self.declare_generic_parameters(&head.generics);
+        self.declare_function_type_parameters(head.ty);
         let init = if self.eat(TokenKind::Equals) {
             self.parse_expression().map(Initializer::Expression)
         } else if self.at(TokenKind::LeftBrace) {
@@ -1780,6 +1864,7 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
+        self.pop_shadow_scope();
         let span = self.span_between(start_token, self.position);
         Some(self.ast.push(
             span,

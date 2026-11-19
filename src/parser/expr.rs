@@ -407,13 +407,19 @@ impl<'a> Parser<'a> {
             // The grammar says Block or VerbatimBlock, but single-expression
             // bodies appear in the spec's own examples; sema treats those as
             // implicit returns.
+            self.push_shadow_scope();
+            for parameter in &parameters {
+                self.declare_shadow_name(&parameter.name);
+            }
             let body = if self.at(TokenKind::At) && self.peek_at(1) == TokenKind::LeftBrace {
-                self.parse_verbatim_block()?
+                self.parse_verbatim_block()
             } else if self.at(TokenKind::LeftBrace) {
-                self.parse_block()?
+                self.parse_block()
             } else {
-                self.parse_expression()?
+                self.parse_expression()
             };
+            self.pop_shadow_scope();
+            let body = body?;
             let span = self.span_between(start_token, self.position);
             return Some(self.ast.push(
                 span,

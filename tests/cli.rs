@@ -2619,3 +2619,30 @@ fixed Main(): integer(4)
         "{stderr}"
     );
 }
+
+#[test]
+fn shadowed_keyword_in_keyword_position_is_rejected_without_at() {
+    let stderr = check_source(
+        "\
+local class: integer(4) = 1;
+
+class MyClass { }
+
+fixed Main(): integer(4)
+{
+    return 0;
+}",
+    );
+    assert!(!stderr.is_empty(), "{stderr}");
+    let stderr = check_source(
+        "\
+@class integer { }
+
+fixed Main(): integer(4)
+{
+    local value: integer(4) = 1;
+    return value;
+}",
+    );
+    assert!(!stderr.is_empty(), "{stderr}");
+}

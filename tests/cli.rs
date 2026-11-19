@@ -2986,3 +2986,37 @@ fn nolaa_reports_escaped_units_as_never_disposed() {
         "{stderr}"
     );
 }
+
+#[test]
+fn compile_time_heap_of_non_scalar_types_is_diagnosed() {
+    let stderr = check_source(
+        "\
+class Token { public Value: integer(4); }
+
+#{ heap token: Token = Token(); }
+
+fixed Main(): integer(4)
+{
+    return 0;
+}",
+    );
+    assert!(
+        stderr.contains("non-scalar compile-time heap initializers")
+            || stderr.contains("compile-time heap allocation of non-scalar types"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn compile_time_heap_units_do_not_enter_runtime() {
+    let stderr = check_source(
+        "\
+#{ heap number: integer(4) = 1; }
+
+fixed Main(): integer(4)
+{
+    return number;
+}",
+    );
+    assert!(stderr.contains("unknown name 'number'"), "{stderr}");
+}

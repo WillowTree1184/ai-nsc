@@ -5234,3 +5234,44 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 12);
 }
+
+#[test]
+fn compile_time_scalar_heap_allocation_executes() {
+    let source = "\
+#{ 
+    heap number: integer(4) = 42;
+    number = 43;
+    local result: integer(4) = number;
+    dispose number;
+}
+
+local value: integer(4) = result;
+
+fixed Main(): integer(4)
+{
+    return value;
+}";
+    assert_eq!(run_program(source), 43);
+}
+
+#[test]
+fn compile_time_heap_counter_is_usable_in_control_flow() {
+    let source = "\
+#{ 
+    heap counter: integer(4) = 0;
+    while counter < 3
+    {
+        counter = counter + 1;
+    }
+    local result: integer(4) = counter;
+    dispose counter;
+}
+
+local value: integer(4) = result;
+
+fixed Main(): integer(4)
+{
+    return value;
+}";
+    assert_eq!(run_program(source), 3);
+}

@@ -4147,19 +4147,25 @@ impl<'a> Sema<'a> {
                 }
             }
             NodeKind::Name(name) => {
-                match (if self.unknown_compile_time_names.contains(&name.name) {
-                    None
-                } else {
-                    self.top_level_constants
-                        .get(&name.name)
-                        .map(|(value, _)| *value)
-                })
-                .or_else(|| {
-                    self.constant_env
-                        .iter()
-                        .rev()
-                        .find_map(|environment| environment.get(&name.name).copied())
-                }) {
+                match self
+                    .compile_time_heap
+                    .get(&name.name)
+                    .map(|(value, _)| *value)
+                    .or_else(|| {
+                        if self.unknown_compile_time_names.contains(&name.name) {
+                            None
+                        } else {
+                            self.top_level_constants
+                                .get(&name.name)
+                                .map(|(value, _)| *value)
+                        }
+                    })
+                    .or_else(|| {
+                        self.constant_env
+                            .iter()
+                            .rev()
+                            .find_map(|environment| environment.get(&name.name).copied())
+                    }) {
                     Some(value) => Some(value != 0),
                     None => match self.lookup(&name.name).cloned() {
                         Some(Symbol::Global(global)) => {
@@ -5011,6 +5017,9 @@ impl<'a> Sema<'a> {
                 // Top-level compile-time variables are compile-time bindings
                 // (§11.2); values may still be unknown while function bodies are
                 // checked before the second compile-time pass.
+                if let Some((value, _)) = self.compile_time_heap.get(&name.name) {
+                    return Some(*value);
+                }
                 if !self.unknown_compile_time_names.contains(&name.name) {
                     if let Some((value, _)) = self.top_level_constants.get(&name.name) {
                         return Some(*value);
@@ -8907,6 +8916,9 @@ impl<'a> Sema<'a> {
     /// operators over constants, fixed globals and the compiler API.
     fn is_compile_time_constant(&self, node: NodeId) -> bool {
         if let NodeKind::Name(name) = self.node_kind(node) {
+            if self.compile_time_heap.contains_key(&name.name) {
+                return true;
+            }
             if self.top_level_constants.contains_key(&name.name)
                 && !self.unknown_compile_time_names.contains(&name.name)
             {

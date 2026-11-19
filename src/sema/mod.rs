@@ -1226,6 +1226,7 @@ pub fn analyze_with_options(
         in_function_body: false,
         expected_array_element: None,
         top_level_constants: HashMap::new(),
+        compile_time_heap: HashMap::new(),
         two_phase_future_fixed: std::collections::HashSet::new(),
         two_phase_future_locals: std::collections::HashSet::new(),
         two_phase_pending: Vec::new(),
@@ -1341,6 +1342,10 @@ pub(crate) struct Sema<'a> {
     /// Compile-time variables produced by top-level `#{}` blocks, in execution
     /// order (§11.2, §11.4).
     pub(crate) top_level_constants: HashMap<String, (i128, TypeId)>,
+    /// Scalar heap units allocated during compile-time execution (§5.4/§11.8);
+    /// they are freed when the compile-time execution ends and never enter the
+    /// runtime artifact.
+    pub(crate) compile_time_heap: HashMap<String, (i128, TypeId)>,
     /// Immutable bindings produced by `#{}` blocks anywhere in the program,
     /// used to detect forward dependencies for lazy two-phase evaluation (§11.7).
     two_phase_future_fixed: std::collections::HashSet<String>,
@@ -2912,7 +2917,13 @@ impl<'a> Sema<'a> {
             }
             return;
         };
-        let Some((current, ty)) = self.top_level_constants.get(&name.name).copied() else {
+        let from_heap = self.compile_time_heap.contains_key(&name.name);
+        let Some((current, ty)) = self
+            .compile_time_heap
+            .get(&name.name)
+            .copied()
+            .or_else(|| self.top_level_constants.get(&name.name).copied())
+        else {
             if self.compile_time_phase_b {
                 self.error(
                     self.span_of(*target),
@@ -2958,8 +2969,13 @@ impl<'a> Sema<'a> {
                 }
             }
         };
-        self.top_level_constants
-            .insert(name.name.clone(), (updated, ty));
+        if from_heap {
+            self.compile_time_heap
+                .insert(name.name.clone(), (updated, ty));
+        } else {
+            self.top_level_constants
+                .insert(name.name.clone(), (updated, ty));
+        }
         self.unknown_compile_time_names.remove(&name.name);
     }
 
@@ -2983,6 +2999,7 @@ impl<'a> Sema<'a> {
             return;
         }
         self.top_level_constants.clear();
+        self.compile_time_heap.clear();
         self.compile_time_phase_b = true;
         self.compile_time_deferred = false;
         let units = self.top_level_units.clone();
@@ -3335,6 +3352,22 @@ impl<'a> Sema<'a> {
                 NodeKind::Match(match_statement) => {
                     self.execute_compile_time_match(&match_statement, in_loop)
                 }
+                NodeKind::Heap(declaration) => {
+                    self.execute_compile_time_heap(*statement, &declaration);
+                    continue;
+                }
+                NodeKind::Dispose(dispose) => {
+                    if let NodeKind::Name(name) = self.node_kind(dispose.target) {
+                        if self.compile_time_heap.remove(&name.name).is_some() {
+                            continue;
+                        }
+                    }
+                    self.unsupported(
+                        self.span_of(*statement),
+                        "compile-time dispose of a non-compile-time heap unit",
+                    );
+                    continue;
+                }
                 NodeKind::For(for_statement) => self.execute_compile_time_for(&for_statement),
                 NodeKind::Break(_) => {
                     if !in_loop {
@@ -3577,6 +3610,46 @@ impl<'a> Sema<'a> {
             (None, Some(value)) => Some((i128::from(value), true)),
             (None, None) => None,
         }
+    }
+
+    /// Executes a scalar `heap` definition in a compile-time block (§5.4,
+    /// §11.4). Compile-time allocation units never enter the runtime artifact;
+    /// non-scalar compile-time heap objects are not representable by the
+    /// constant interpreter and are diagnosed.
+    fn execute_compile_time_heap(&mut self, node: NodeId, declaration: &crate::ast::HeapDecl) {
+        let declared = declaration.ty.and_then(|ty| self.resolve_type(ty));
+        let Some(expression) = declaration.init else {
+            self.unsupported(
+                self.span_of(node),
+                "uninitialized compile-time heap storage",
+            );
+            return;
+        };
+        self.suppress_errors += 1;
+        let value = self.eval_compile_time_value(expression, declared);
+        self.suppress_errors -= 1;
+        let Some((value, ty)) = value else {
+            self.unsupported(
+                self.span_of(expression),
+                "non-scalar compile-time heap initializers",
+            );
+            return;
+        };
+        let allowed = ty == TypeId::BOOLEAN
+            || matches!(
+                self.result.types.get(ty),
+                crate::sema::types::Type::Integer { .. }
+            );
+        if !allowed {
+            self.unsupported(
+                self.span_of(expression),
+                "compile-time heap allocation of non-scalar types",
+            );
+            return;
+        }
+        self.compile_time_heap
+            .insert(declaration.name.clone(), (value, ty));
+        self.unknown_compile_time_names.remove(&declaration.name);
     }
 
     /// Executes a `match` statement at compile time over constant values

@@ -6076,3 +6076,33 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 1);
 }
+
+#[test]
+fn compile_time_unions_and_variants_copy_to_runtime_constants() {
+    let source = "\
+union Number
+{
+    Int: integer(4);
+    Float: float(4);
+}
+
+variant Option
+{
+    None;
+    Some: integer(4);
+}
+
+#{
+    heap number: Number = Number.Int(4);
+    heap option: Option = Option.Some(3);
+}
+
+fixed Main(): integer(4)
+{
+    local number_copy: Number = number;
+    local option_copy: Option = option;
+    if (number_copy.Int == 4 && option_copy == Option.Some(3)) { return 1; }
+    return 0;
+}";
+    assert_eq!(run_program(source), 1);
+}

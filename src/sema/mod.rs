@@ -233,7 +233,7 @@ pub struct InterfaceConstantInfo {
 }
 
 /// A declared type.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct TypeDef {
     /// Declared name.
     pub name: String,
@@ -825,6 +825,14 @@ pub enum Resolution {
         /// Index into the type's field list.
         index: u32,
     },
+    /// A copy of a copyable compile-time union/variant materialised as runtime
+    /// constant bytes (§11.4/§11.8).
+    CompileTimeBytesCopy {
+        /// Snapshot name.
+        name: String,
+        /// Object type.
+        ty: TypeId,
+    },
     /// A copy of a copyable compile-time array materialised as a runtime
     /// constant (§11.4/§11.8).
     CompileTimeArrayCopy {
@@ -1019,6 +1027,8 @@ pub struct SemaResult {
     pub compile_time_array_copies: HashMap<String, (TypeId, Vec<i128>)>,
     /// Copyable compile-time enumeration snapshots for runtime constants.
     pub compile_time_scalar_copies: HashMap<String, (TypeId, i128)>,
+    /// Copyable compile-time union/variant byte snapshots for runtime constants.
+    pub compile_time_bytes_copies: HashMap<String, (TypeId, Vec<u8>)>,
     /// Explicit heap allocator used for each heap local, for deallocation.
     pub heap_allocator_locals: HashMap<LocalId, NodeId>,
     /// Iteration over `IIterator`/`IIterable` targets, keyed by the `for` node
@@ -1443,6 +1453,8 @@ pub(crate) struct CompileTimeObject {
     pub array: Option<Vec<i128>>,
     /// Scalar value for compile-time enumerations.
     pub scalar: Option<i128>,
+    /// Raw instance bytes for copyable unions/variants with scalar payloads.
+    pub bytes: Option<Vec<u8>>,
 }
 
 pub(crate) struct Sema<'a> {
@@ -4028,6 +4040,7 @@ impl<'a> Sema<'a> {
                         if let Some(object) = self.compile_time_objects.remove(&name.name) {
                             self.compile_time_object_order
                                 .retain(|candidate| *candidate != name.name);
+                            self.snapshot_compile_time_object(&name.name, &object);
                             self.execute_compile_time_object_method(
                                 object.ty,
                                 &name.name,
@@ -4085,6 +4098,7 @@ impl<'a> Sema<'a> {
                                             fields,
                                             array: None,
                                             scalar: None,
+                                            bytes: None,
                                         });
                                     }
                                 }
@@ -4512,6 +4526,12 @@ impl<'a> Sema<'a> {
     /// Copies a compile-time object into the runtime-constant snapshot map if
     /// §11.8 permits it (value type, scalar fields, no destructor).
     fn snapshot_compile_time_object(&mut self, name: &str, object: &CompileTimeObject) {
+        if let Some(bytes) = &object.bytes {
+            self.result
+                .compile_time_bytes_copies
+                .insert(name.to_string(), (object.ty, bytes.clone()));
+            return;
+        }
         if let Some(value) = object.scalar {
             if let Type::Named(index) = self.types_of(object.ty) {
                 if self.result.type_defs[index as usize].kind == TypeDefKind::Enumeration {
@@ -4622,6 +4642,108 @@ impl<'a> Sema<'a> {
         Some((object_name, value))
     }
 
+    /// Writes an integer value into little-endian instance bytes.
+    fn write_compile_time_scalar(bytes: &mut [u8], offset: u64, value: i128, size: u64) {
+        let start = offset as usize;
+        for index in 0..size as usize {
+            if let Some(byte) = bytes.get_mut(start + index) {
+                *byte = ((value as u128 >> (index * 8)) & 0xff) as u8;
+            }
+        }
+    }
+
+    /// Builds copyable instance bytes for a union or variant value with a scalar
+    /// payload (§11.4/§11.8).
+    fn compile_time_variant_union_bytes(
+        &mut self,
+        ty: TypeId,
+        expression: NodeId,
+    ) -> Option<Vec<u8>> {
+        let Type::Named(index) = self.types_of(ty) else {
+            return None;
+        };
+        let definition = self.result.type_defs[index as usize].clone();
+        let mut bytes = vec![0u8; definition.instance_size as usize];
+        match definition.kind {
+            TypeDefKind::Union => {
+                let NodeKind::Call(call) = self.node_kind(expression) else {
+                    return None;
+                };
+                let NodeKind::MemberAccess(access) = self.node_kind(call.callee) else {
+                    return None;
+                };
+                let member = definition
+                    .union_members
+                    .iter()
+                    .find(|member| member.name == access.name)?;
+                let value = call
+                    .arguments
+                    .first()
+                    .and_then(|argument| self.eval_const_int(argument.value))?;
+                let size = self.size_align(member.ty).0;
+                let scalar = match self.types_of(member.ty) {
+                    Type::Integer { .. } | Type::Boolean => true,
+                    Type::Named(index) => matches!(
+                        self.result.type_defs[index as usize].kind,
+                        TypeDefKind::Enumeration
+                    ),
+                    _ => false,
+                };
+                if !scalar {
+                    return None;
+                }
+                Self::write_compile_time_scalar(&mut bytes, member.offset, value, size);
+                Some(bytes)
+            }
+            TypeDefKind::Variant => {
+                let (state_name, payload) = match self.node_kind(expression).clone() {
+                    NodeKind::MemberAccess(access) => (access.name, None),
+                    NodeKind::Call(call) => {
+                        let NodeKind::MemberAccess(access) = self.node_kind(call.callee) else {
+                            return None;
+                        };
+                        let value = call
+                            .arguments
+                            .first()
+                            .and_then(|argument| self.eval_const_int(argument.value))?;
+                        (access.name, Some(value))
+                    }
+                    _ => return None,
+                };
+                let state = definition
+                    .variant_states
+                    .iter()
+                    .position(|state| state.name == state_name)?;
+                let tag_type = definition.tag_type?;
+                let tag_size = self.size_align(tag_type).0;
+                Self::write_compile_time_scalar(&mut bytes, 0, state as i128, tag_size);
+                if let Some(value) = payload {
+                    let payload_type = definition.variant_states[state].payload?;
+                    let scalar = match self.types_of(payload_type) {
+                        Type::Integer { .. } | Type::Boolean => true,
+                        Type::Named(index) => matches!(
+                            self.result.type_defs[index as usize].kind,
+                            TypeDefKind::Enumeration
+                        ),
+                        _ => false,
+                    };
+                    if !scalar {
+                        return None;
+                    }
+                    let size = self.size_align(payload_type).0;
+                    Self::write_compile_time_scalar(
+                        &mut bytes,
+                        definition.payload_offset,
+                        value,
+                        size,
+                    );
+                }
+                Some(bytes)
+            }
+            _ => None,
+        }
+    }
+
     fn execute_compile_time_heap(&mut self, node: NodeId, declaration: &crate::ast::HeapDecl) {
         let declared = declaration.ty.and_then(|ty| self.resolve_type(ty));
         let Some(expression) = declaration.init else {
@@ -4663,7 +4785,32 @@ impl<'a> Sema<'a> {
                 return;
             };
             if let Type::Named(type_index) = self.types_of(ty) {
-                if self.result.type_defs[type_index as usize].kind == TypeDefKind::Enumeration {
+                let kind = self.result.type_defs[type_index as usize].kind;
+                if matches!(kind, TypeDefKind::Union | TypeDefKind::Variant) {
+                    if !self.compile_time_phase_b {
+                        self.result
+                            .compile_time_bytes_copies
+                            .insert(declaration.name.clone(), (ty, Vec::new()));
+                        return;
+                    }
+                    if let Some(bytes) = self.compile_time_variant_union_bytes(ty, expression) {
+                        self.compile_time_objects.insert(
+                            declaration.name.clone(),
+                            CompileTimeObject {
+                                ty,
+                                fields: HashMap::new(),
+                                array: None,
+                                scalar: None,
+                                bytes: Some(bytes),
+                            },
+                        );
+                        self.compile_time_object_order
+                            .push(declaration.name.clone());
+                        self.unknown_compile_time_names.remove(&declaration.name);
+                        return;
+                    }
+                }
+                if kind == TypeDefKind::Enumeration {
                     let mut value = self.eval_const_int(expression);
                     if value.is_none() {
                         let (node, name) = {
@@ -4683,6 +4830,7 @@ impl<'a> Sema<'a> {
                                 fields: HashMap::new(),
                                 array: None,
                                 scalar: Some(value),
+                                bytes: None,
                             },
                         );
                         self.compile_time_object_order
@@ -4716,6 +4864,7 @@ impl<'a> Sema<'a> {
                                     fields: HashMap::new(),
                                     array: Some(values),
                                     scalar: None,
+                                    bytes: None,
                                 },
                             );
                             self.compile_time_object_order
@@ -4738,6 +4887,7 @@ impl<'a> Sema<'a> {
                                         fields: HashMap::new(),
                                         array: Some(values),
                                         scalar: None,
+                                        bytes: None,
                                     },
                                 );
                                 self.compile_time_object_order
@@ -4757,6 +4907,7 @@ impl<'a> Sema<'a> {
                     fields,
                     array: None,
                     scalar: None,
+                    bytes: None,
                 },
             );
             self.compile_time_object_order
@@ -4782,6 +4933,7 @@ impl<'a> Sema<'a> {
                         fields: HashMap::new(),
                         array: None,
                         scalar: Some(value),
+                        bytes: None,
                     },
                 );
                 self.compile_time_object_order

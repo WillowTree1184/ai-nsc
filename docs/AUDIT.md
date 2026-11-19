@@ -439,3 +439,5 @@ report an error (§4.8).
 | 206 | MED | §11.4/§11.8 | Copyable compile-time strings were not representable/copyable to runtime constants | partially fixed: string literals in compile-time array heap objects are decoded into byte arrays, snapshotted and materialised as LLVM constant arrays (e2e reads byte 0 = 104). Remaining: enum/union/variant copies |
 
 | 207 | MED | §11.4/§11.8 | Compile-time enumerations could not be created/read as compile-time heap values or copied to runtime constants because enum member values were not resolved before the runtime body check | fixed: compile-time enum heap allocation resolves enum members on demand and snapshots the scalar value; runtime reads materialise the enum as a constant (e2e copied == Status.Running returns 1) |
+
+| 208 | HIGH | §11.4/§11.8 | Compile-time unions/variants were not copyable to independent runtime constants | fixed: union member values and variant tag/scalar payloads are serialised into instance bytes, snapshotted at compile-time destruction/dispose, and materialised as LLVM constant `i8` instance arrays; e2e union member 4 and variant `Some(3)` compare correctly |

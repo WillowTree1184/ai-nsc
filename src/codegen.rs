@@ -5947,6 +5947,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             Some(Resolution::CompileTimeArrayCopy { name, ty }) => {
                 self.gen_compile_time_array_copy(&name, ty)
             }
+            Some(Resolution::CompileTimeBytesCopy { name, ty }) => {
+                self.gen_compile_time_bytes_copy(&name, ty)
+            }
             Some(Resolution::Operator { .. })
             | Some(Resolution::DerivedNotEqual { .. })
             | Some(Resolution::DerivedComparison { .. })
@@ -6661,6 +6664,30 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .build_store(slot, value)
             .map_err(|error| format!("cannot store value: {error}"))?;
         Ok(slot)
+    }
+
+    /// Materialises raw union/variant instance bytes as a constant i8 array
+    /// (§11.4/§11.8).
+    fn gen_compile_time_bytes_copy(
+        &mut self,
+        name: &str,
+        ty: TypeId,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        let Some((_, bytes)) = self.sema.compile_time_bytes_copies.get(name).cloned() else {
+            return Err("missing compile-time byte snapshot".to_string());
+        };
+        let llvm_type = self.llvm_type(ty)?;
+        let BasicTypeEnum::ArrayType(array_type) = llvm_type else {
+            return Err("byte snapshot requires an array-like instance".to_string());
+        };
+        let element = self.context.i8_type();
+        let length = array_type.len();
+        let mut values: Vec<IntValue<'ctx>> = Vec::with_capacity(length as usize);
+        for index in 0..length {
+            let byte = bytes.get(index as usize).copied().unwrap_or(0);
+            values.push(element.const_int(u64::from(byte), false));
+        }
+        Ok(element.const_array(&values).into())
     }
 
     /// Materialises a copyable compile-time array snapshot as an LLVM constant

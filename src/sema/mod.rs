@@ -4664,7 +4664,18 @@ impl<'a> Sema<'a> {
             };
             if let Type::Named(type_index) = self.types_of(ty) {
                 if self.result.type_defs[type_index as usize].kind == TypeDefKind::Enumeration {
-                    if let Some(value) = self.eval_const_int(expression) {
+                    let mut value = self.eval_const_int(expression);
+                    if value.is_none() {
+                        let (node, name) = {
+                            let definition = &self.result.type_defs[type_index as usize];
+                            (definition.node, definition.name.clone())
+                        };
+                        self.suppress_errors += 1;
+                        self.resolve_enumeration(node, name);
+                        self.suppress_errors -= 1;
+                        value = self.eval_const_int(expression);
+                    }
+                    if let Some(value) = value {
                         self.compile_time_objects.insert(
                             declaration.name.clone(),
                             CompileTimeObject {

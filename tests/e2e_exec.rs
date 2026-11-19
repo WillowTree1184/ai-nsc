@@ -6054,3 +6054,25 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 104);
 }
+
+#[test]
+fn compile_time_enumerations_copy_to_runtime_constants() {
+    let source = "\
+enumeration Status: integer(4)
+{
+    Pending = 0;
+    Running = 1;
+}
+
+#{
+    heap status: Status = Status.Running;
+}
+
+fixed Main(): integer(4)
+{
+    local copied: Status = status;
+    if (copied == Status.Running) { return 1; }
+    return 0;
+}";
+    assert_eq!(run_program(source), 1);
+}

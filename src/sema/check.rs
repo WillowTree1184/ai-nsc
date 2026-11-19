@@ -6452,7 +6452,9 @@ impl<'a> Sema<'a> {
     fn check_statement_at(&mut self, node: NodeId, block: NodeId) {
         let previous = self.current_direct_statement;
         self.current_direct_statement = Some((node, block));
+        self.direct_statement_stack.push((node, block));
         self.check_statement(node);
+        self.direct_statement_stack.pop();
         self.current_direct_statement = previous;
     }
 
@@ -7589,10 +7591,14 @@ impl<'a> Sema<'a> {
             let Some(unit) = self.heap_units.get(index) else {
                 continue;
             };
-            let demand = match self.current_direct_statement {
-                Some((statement, block)) if block == unit.block => UnitDemand::Direct(statement),
-                Some(_) | None => UnitDemand::Nested,
-            };
+            let demand = self
+                .direct_statement_stack
+                .iter()
+                .rev()
+                .find(|(_, block)| *block == unit.block)
+                .map_or(UnitDemand::Nested, |(statement, _)| {
+                    UnitDemand::Direct(*statement)
+                });
             self.unit_demands.insert(index, demand);
         }
     }

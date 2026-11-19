@@ -5488,3 +5488,37 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 12);
 }
+
+#[test]
+fn nolaa_safe_point_after_a_nested_control_statement() {
+    let source = "\
+local order: integer(4) = 0;
+
+class Token
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Destruct(this: &Token)
+        {
+            order = order * 10 + 1;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    {
+        heap token: Token = Token();
+        if (true)
+        {
+            local value: integer(4) = token.Value;
+        }
+        order = order * 10 + 2;
+        local copy: integer(4) = order;
+    }
+    return order;
+}";
+    assert_eq!(run_program(source), 12);
+}

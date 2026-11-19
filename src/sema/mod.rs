@@ -1267,6 +1267,7 @@ pub fn analyze_with_options(
         local_blocks: HashMap::new(),
         unit_demands: HashMap::new(),
         current_direct_statement: None,
+        direct_statement_stack: Vec::new(),
         field_heap_aliases: HashMap::new(),
         dispose_target_units: HashMap::new(),
         heap_demand_edges: HashMap::new(),
@@ -1397,6 +1398,8 @@ pub(crate) struct Sema<'a> {
     pub(crate) unit_demands: HashMap<usize, UnitDemand>,
     /// The direct statement currently being checked and its block.
     pub(crate) current_direct_statement: Option<(NodeId, NodeId)>,
+    /// Stack of enclosing direct statements (statement, block), innermost last.
+    pub(crate) direct_statement_stack: Vec<(NodeId, NodeId)>,
     /// Direct pointer-field aliases to heap units (§5.8 pointer-member dispose).
     pub(crate) field_heap_aliases: HashMap<(LocalId, String), u32>,
     /// `dispose holder->Field` nodes resolved to their heap unit.

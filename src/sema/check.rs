@@ -1103,6 +1103,10 @@ impl<'a> Sema<'a> {
         let scope: Vec<String> = owner_name.split('.').map(str::to_string).collect();
         let mangled = mangle_function(&scope, &declaration.name, &[self.spelling(ty)]);
         let index = self.result.globals.len() as u32;
+        eprintln!(
+            "DBG ext const {} access {:?}",
+            declaration.name, declaration.modifiers.accessibility
+        );
         self.result.globals.push(GlobalInfo {
             accessibility: declaration.modifiers.accessibility,
             scoped: Vec::new(),
@@ -1622,6 +1626,13 @@ impl<'a> Sema<'a> {
             return None;
         };
         let parameters = self.resolve_parameters(&function)?;
+        if parameters.iter().any(|parameter| parameter.name == "this") {
+            self.error(
+                self.span_of(node),
+                "a static fixed method must not exist (§9.14/§3.9.3); use a non-static method or a static fixed function constant",
+            );
+            return None;
+        }
         let return_type = function.return_type.and_then(|ty| self.resolve_type(ty));
         let method_convention = self.resolve_calling_convention(function.calling_convention);
         let Type::Named(owner_index) = self.types_of(owner) else {
@@ -1743,7 +1754,11 @@ impl<'a> Sema<'a> {
                     .get(&constant.name)
                     .copied();
                 match implementation {
-                    Some(global) if self.result.globals[global as usize].ty == constant.ty => {
+                    Some(global)
+                        if self.result.globals[global as usize].ty == constant.ty
+                            && self.result.globals[global as usize].accessibility
+                                == crate::ast::Accessibility::Public =>
+                    {
                         constant_implementations.push(global);
                     }
                     Some(_) => {

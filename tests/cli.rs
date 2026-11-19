@@ -4087,3 +4087,53 @@ fixed Main(): integer(4) { return 0; }",
         "{stderr}"
     );
 }
+
+#[test]
+fn static_fixed_methods_are_rejected() {
+    let stderr = check_source(
+        "\
+class Counter
+{
+    extension
+    {
+        public static fixed Bump(this: Counter)
+        {
+            this.Value = 1;
+        }
+    }
+    public Value: integer(4);
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(
+        stderr.contains("static fixed method must not exist"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn private_interface_value_constant_implementation_is_rejected() {
+    let stderr = check_source(
+        "\
+interface IValue
+{
+    public fixed Default: integer(4);
+}
+
+class Box: IValue
+{
+    extension
+    {
+        private fixed Default: integer(4) = 5;
+    }
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(
+        stderr.contains("does not implement interface constant")
+            || stderr.contains("does not match interface constant"),
+        "{stderr}"
+    );
+}

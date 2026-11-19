@@ -11,12 +11,12 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-Current result: **438 tests green**, formatting clean, clippy with zero warnings.
+Current result: **440 tests green**, formatting clean, clippy with zero warnings.
 
 | Target | Tests |
 | --- | ---: |
 | lib unit | 41 |
-| CLI/driver | 144 |
+| CLI/driver | 146 |
 | LLVM codegen | 2 |
 | MCJIT probe | 1 |
 | JIT compile-time evaluation | 2 |

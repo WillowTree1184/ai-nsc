@@ -6,7 +6,7 @@
 - **Active goal: 100% Draft 1.162 conformance.** Authoritative specification:
   `docs/grammar/Draft 1.162.md` (1.153 and earlier are historical only).
 - Gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-  `cargo test` — **438 tests green** (41 lib unit, 144 CLI, 2 codegen/LLVM,
+  `cargo test` — **440 tests green** (41 lib unit, 146 CLI, 2 codegen/LLVM,
   1 MCJIT probe, 2 JIT compile-time evaluation, 235 end-to-end execution,
   10 parser, 3 spec-example conformance).
 - Spec tests read Draft 1.162 directly: 102 `novasharp` fences; all parse except

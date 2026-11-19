@@ -15,7 +15,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **438 tests**: 41 lib unit, 144 CLI/driver,
+`cargo test` currently runs **440 tests**: 41 lib unit, 146 CLI/driver,
 2 LLVM codegen, 1 MCJIT probe, 2 JIT compile-time evaluation, 228 end-to-end
 execution, 10 parser and 3 spec-example conformance tests. The spec tests read
 `Draft 1.162.md` directly: 102 `novasharp` fences, all parse except five documented

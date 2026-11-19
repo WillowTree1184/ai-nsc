@@ -49,3 +49,23 @@ questions each. The ones that shape the implementation most:
    `docs/ABI.md`) unless the spec settles it first.
 
 | 8 | §3.6.2 | 指针减法结果为「元素个数」，但未规定该结果的具体整数类型（符号、宽度）。实现取 `integer(8)`（有符号 64 位），并在 `docs/AUDIT.md` #11 中记录。 |
+
+## Draft 1.152 example snippets that are not complete programs
+
+A systematic audit of every `novasharp` example containing `fixed Main` found
+that the examples below still fail semantic analysis for reasons that are
+properties of the snippets, not compiler gaps:
+
+- Lines around 3784, 4729, 4797, 6408, 6476, 6538, 6717, 8651: functions with a
+  non-void return type omit a `return` statement (their bodies are demonstration
+  fragments / contain `// ...`), so §5.10.2's return-path rule correctly rejects
+  them.
+- Line 4229's `Main` ends without a `return` statement for the same reason.
+- Line 10216 deliberately declares three `Main` overloads to illustrate the
+  launcher rule ("exactly one Main"), so it is not a single executable.
+- Line 7016/7078 were fixed (boolean condition literal inference) and are not in
+  this list any more.
+
+The conformance test `sema_clean_spec_programs_compile` excludes examples that
+fail semantic analysis by design; the audit above distinguishes snippet
+incompleteness from genuine gaps.

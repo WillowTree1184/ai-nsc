@@ -640,7 +640,7 @@ structure Token
 
 fixed Main(): integer(4)
 {
-    local made: Token;
+    heap made: Token = Token();
     dispose made;
     dispose made;
     return 0;

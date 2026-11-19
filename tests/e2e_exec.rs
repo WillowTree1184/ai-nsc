@@ -1843,10 +1843,11 @@ structure Token
 
 fixed Main(): integer(4)
 {
-    local made: Token;
+    heap made: Token = Token();
     made.Value = 5;
+    local value: integer(4) = made.Value;
     dispose made;
-    return destroyed * 10 + made.Value;
+    return destroyed * 10 + value;
 }";
     assert_eq!(run_program(source), 15);
 }
@@ -5008,4 +5009,105 @@ fixed Main(): integer(4)
     return value;
 }";
     assert_eq!(run_program(source), 2);
+}
+
+#[test]
+fn literal_expressions_infer_the_expected_integer_type() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local a: integer(4) = -2 * 3;
+    local c: integer(4) = 1 + 2 << 3;
+    local e: integer(4) = (1 + 2) * 3;
+    local cond: boolean = 1 + 1 == 2;
+    if (!cond) { return 0; }
+    return a + c + e;
+}";
+    assert_eq!(run_program(source), 27);
+}
+
+#[test]
+fn infinite_is_and_literal_overload_resolution_work() {
+    let source = "\
+fixed Pick(a: integer(4), b: integer(4)): integer(4)
+{
+    return 1;
+}
+
+fixed Pick(a: float(4), b: float(4)): float(4)
+{
+    return 2.0;
+}
+
+fixed Main(): integer(4)
+{
+    local i: integer(4) = Pick(1, 2);
+    local f: float(4) = Pick(1.0, 2.0);
+    if (-infinite is -infinite)
+    {
+        return i + (f as integer(4));
+    }
+    return 0;
+}";
+    assert_eq!(run_program(source), 3);
+}
+
+#[test]
+fn heap_value_storage_can_be_assigned_and_disposed() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    heap number: integer(4) = 42;
+    number = 43;
+    dispose number;
+    return 43;
+}";
+    assert_eq!(run_program(source), 43);
+}
+
+#[test]
+fn accessor_backing_and_indexer_expression_shorthands_work() {
+    let source = "\
+class Counter
+{
+    public Count: integer(4);
+    public Items[3]: integer(4);
+
+    extension
+    {
+        public accessor Value: integer(4) => Count;
+
+        operator [index: cardinal(4)]: integer(4)
+        {
+            get = (this: Counter, index: cardinal(4)) integer(4) => { return this.Items[index]; };
+            set = (this: Counter, index: cardinal(4), value: integer(4)) => { this.Items[index] = value; }
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local counter: Counter = Counter();
+    counter.Value = 3;
+    counter[0] = 6;
+    return counter.Value + counter[0];
+}";
+    assert_eq!(run_program(source), 9);
+}
+
+#[test]
+fn do_while_condition_scope_and_lambda_function_constants_work() {
+    let source = "\
+fixed Desugar: function() integer(4) =
+    () =>
+    {
+        return 7;
+    };
+
+fixed Main(): integer(4)
+{
+    do { local x: integer(4) = 1; x = 2; } while (x == 1);
+    return Desugar();
+}";
+    assert_eq!(run_program(source), 7);
 }

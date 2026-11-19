@@ -14,6 +14,14 @@ enum CompileFunctionFlow {
     Return(i128),
 }
 
+/// Natural type family of a literal expression for overload exactness (§4.5).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LiteralFamily {
+    Integer,
+    Float,
+    Boolean,
+}
+
 impl<'a> Sema<'a> {
     // ==================================================================
     // Type resolution
@@ -1729,6 +1737,24 @@ impl<'a> Sema<'a> {
         self.resolve_pending_accessors();
     }
 
+    /// The implementation body of an accessor member: a function-literal
+    /// shorthand is unwrapped to its body so `this`/index/value parameters are
+    /// bound by the generated method (§3.8.2).
+    fn accessor_member_body(&self, member: &crate::ast::AccessorMember) -> Option<FunctionBody> {
+        match (member.expression, member.body) {
+            (Some(expression), None) => match self.node_kind(expression) {
+                NodeKind::FunctionLiteral(literal) => Some(match self.node_kind(literal.body) {
+                    NodeKind::Block(_) => FunctionBody::Block(literal.body),
+                    NodeKind::VerbatimBlock(inner) => FunctionBody::Block(inner),
+                    _ => FunctionBody::Expression(literal.body),
+                }),
+                _ => Some(FunctionBody::Expression(expression)),
+            },
+            (None, Some(block)) => Some(FunctionBody::Block(block)),
+            _ => None,
+        }
+    }
+
     /// Resolves accessor declarations into getter/setter methods (§3.8.2).
     /// Resolves an operator definition into implementation functions (§4.9).
     pub(crate) fn resolve_operator_declaration(&mut self, node: NodeId, owner: Option<TypeId>) {
@@ -1784,18 +1810,15 @@ impl<'a> Sema<'a> {
                 let mut getter = None;
                 let mut setter = None;
                 for member in members {
-                    let implementation = match (member.expression, member.body) {
-                        (Some(expression), None) => Some(FunctionBody::Expression(expression)),
-                        (None, Some(block)) => Some(FunctionBody::Block(block)),
-                        (None, None) => None,
-                        (Some(_), Some(_)) => {
-                            self.error(
-                                member.span,
-                                "an accessor member takes either an expression or a block",
-                            );
-                            None
-                        }
-                    };
+                    let implementation = self.accessor_member_body(&member);
+                    if implementation.is_none()
+                        && (member.expression.is_some() || member.body.is_some())
+                    {
+                        self.error(
+                            member.span,
+                            "an accessor member takes either an expression or a block",
+                        );
+                    }
                     let body = if is_interface { None } else { implementation };
                     if !is_interface && body.is_none() {
                         self.error(
@@ -2646,17 +2669,15 @@ impl<'a> Sema<'a> {
                     }
                 }
             }
-            let implementation = match (member.expression, member.body) {
-                (Some(expression), None) => Some(FunctionBody::Expression(expression)),
-                (None, Some(block)) => Some(FunctionBody::Block(block)),
-                (Some(_), Some(_)) => {
-                    self.error(
-                        member.span,
-                        "an accessor member takes either an expression or a block",
-                    );
-                    None
-                }
-                (None, None) => {
+            let implementation = match self.accessor_member_body(member) {
+                Some(body) => Some(body),
+                None => {
+                    if member.expression.is_some() && member.body.is_some() {
+                        self.error(
+                            member.span,
+                            "an accessor member takes either an expression or a block",
+                        );
+                    }
                     if member.is_getter {
                         default_get
                     } else {
@@ -2691,6 +2712,32 @@ impl<'a> Sema<'a> {
                 accessor.getter = method;
             } else {
                 accessor.setter = method;
+            }
+        }
+        if !is_interface {
+            if accessor.getter.is_none() {
+                if let Some(body) = default_get {
+                    accessor.getter = self.create_accessor_method(
+                        owner,
+                        &declaration.name.clone(),
+                        true,
+                        ty,
+                        Some(body),
+                        self.span_of(node),
+                    );
+                }
+            }
+            if accessor.setter.is_none() {
+                if let Some(body) = default_set {
+                    accessor.setter = self.create_accessor_method(
+                        owner,
+                        &declaration.name.clone(),
+                        false,
+                        ty,
+                        Some(body),
+                        self.span_of(node),
+                    );
+                }
             }
         }
         let definition = &mut self.result.type_defs[owner_index as usize];
@@ -3511,19 +3558,37 @@ impl<'a> Sema<'a> {
             self.resolve_global_fixed(node, declaration);
             return;
         };
-        let body = match declaration.init {
-            Some(Initializer::Block(block)) => block,
-            _ => {
+        // `fixed f: function(...) = (params) => Block` is a function-valued
+        // constant defined by a lambda expression (§5.3).
+        let (body, literal) = match declaration.init {
+            Some(Initializer::Block(block)) => (block, None),
+            Some(Initializer::Expression(expression)) => {
+                let NodeKind::FunctionLiteral(literal) = self.node_kind(expression).clone() else {
+                    self.unsupported(self.span_of(node), "function-valued constants (lambdas)");
+                    return;
+                };
+                (literal.body, Some(literal))
+            }
+            None => {
                 self.unsupported(self.span_of(node), "function-valued constants (lambdas)");
                 return;
             }
         };
-        let Some(parameters) = self.resolve_parameters(&function) else {
+        let Some(mut parameters) = self.resolve_parameters(&function) else {
             return;
         };
+        if let Some(literal) = &literal {
+            for (index, parameter) in literal.parameters.iter().enumerate() {
+                if let Some(signature) = parameters.get_mut(index) {
+                    signature.name = parameter.name.clone();
+                    signature.compile_time |= parameter.compile_time;
+                    signature.by_ref |= parameter.by_ref;
+                }
+            }
+        }
         let return_type = function.return_type.and_then(|ty| self.resolve_type(ty));
         let calling_convention = self.resolve_calling_convention(function.calling_convention);
-        self.register_function(FunctionDeclaration {
+        let index = self.register_function(FunctionDeclaration {
             node,
             name: declaration.name.clone(),
             body,
@@ -3534,6 +3599,13 @@ impl<'a> Sema<'a> {
             exposed_symbol: None,
             calling_convention,
         });
+        if literal.is_some() {
+            let body_mode = match self.node_kind(body) {
+                NodeKind::Block(_) | NodeKind::VerbatimBlock(_) => Some(FunctionBody::Block(body)),
+                _ => Some(FunctionBody::Expression(body)),
+            };
+            self.result.functions[index as usize].body = body_mode;
+        }
     }
 
     /// Expands the array parameter sugar
@@ -5996,10 +6068,18 @@ impl<'a> Sema<'a> {
             NodeKind::DoWhile(loop_statement) => {
                 self.loop_labels.push(loop_statement.label.clone());
                 self.loop_blocks.push(loop_statement.body);
-                self.check_block(loop_statement.body);
+                // §5.9.4: the condition is checked in the body block's scope, so
+                // identifiers declared in the body are visible to it.
+                self.push_scope();
+                let statements = self.block_statements(loop_statement.body);
+                for statement in &statements {
+                    self.check_statement(*statement);
+                }
+                self.plan_auto_dispose(loop_statement.body);
+                self.check_condition(loop_statement.condition);
+                self.pop_scope();
                 self.loop_blocks.pop();
                 self.loop_labels.pop();
-                self.check_condition(loop_statement.condition);
             }
             NodeKind::For(for_statement) => self.check_for_statement(node, &for_statement),
             NodeKind::Match(match_statement) => self.check_match_statement(node, &match_statement),
@@ -6420,8 +6500,6 @@ impl<'a> Sema<'a> {
                     if let Some(info) = self.local_info(local) {
                         if info.fixed {
                             self.error(self.span_of(node), "cannot assign to a constant");
-                        } else if info.storage == Storage::Heap {
-                            self.error(self.span_of(node), "cannot reassign heap storage");
                         }
                     }
                 }
@@ -6795,14 +6873,10 @@ impl<'a> Sema<'a> {
             if let Some(Symbol::Local(local)) = self.lookup(&name.name).cloned() {
                 let info = self.local_info(local).cloned();
                 if let Some(info) = info {
-                    let disposable = matches!(
-                        self.types_of(info.ty),
-                        Type::Named(index)
-                            if matches!(
-                                self.result.type_defs[index as usize].kind,
-                                TypeDefKind::Class | TypeDefKind::Structure
-                            )
-                    );
+                    // §5.8: the target must point to a heap allocation unit; a
+                    // scope-lifetime instance is not disposable.
+                    let disposable = self.heap_unit_locals.contains_key(&local)
+                        || self.heap_alias_units.contains_key(&local);
                     if disposable {
                         self.disposed_locals.insert(local);
                         let unit = self.heap_unit_locals.get(&local).copied().or_else(|| {
@@ -6850,7 +6924,7 @@ impl<'a> Sema<'a> {
         }
         self.error(
             self.span_of(statement.target),
-            "dispose requires a class or structure variable",
+            "dispose requires a class or structure variable that points to a heap allocation unit (§5.8)",
         );
     }
 
@@ -7502,6 +7576,17 @@ impl<'a> Sema<'a> {
             self.result.node_types[node as usize] = Some(ty);
         }
         ty
+    }
+
+    /// Whether `node` is an infinite-value literal, possibly negated (§2.7.10).
+    fn is_infinite_literal_expression(&self, node: NodeId) -> bool {
+        match self.node_kind(node) {
+            NodeKind::InfiniteLiteral => true,
+            NodeKind::Unary(unary) if unary.op == UnaryOp::Negate => {
+                matches!(self.node_kind(unary.operand), NodeKind::InfiniteLiteral)
+            }
+            _ => false,
+        }
     }
 
     fn check_expr_inner(&mut self, node: NodeId, expected: Option<TypeId>) -> Option<TypeId> {
@@ -9214,6 +9299,63 @@ impl<'a> Sema<'a> {
         None
     }
 
+    /// Natural literal family for overload exactness: an integer literal is a
+    /// genuine match only for integer/cardinal parameters, not a conversion to
+    /// a floating parameter (§4.5).
+    fn literal_family(&self, node: NodeId) -> Option<LiteralFamily> {
+        match self.node_kind(node) {
+            NodeKind::IntegerLiteral(_) | NodeKind::CharacterLiteral(_) => {
+                Some(LiteralFamily::Integer)
+            }
+            NodeKind::FloatLiteral(_) | NodeKind::InfiniteLiteral | NodeKind::IllegalLiteral => {
+                Some(LiteralFamily::Float)
+            }
+            NodeKind::BooleanLiteral(_) => Some(LiteralFamily::Boolean),
+            NodeKind::Unary(unary)
+                if matches!(
+                    unary.op,
+                    UnaryOp::Negate | UnaryOp::LogicalNot | UnaryOp::BitwiseNot
+                ) =>
+            {
+                self.literal_family(unary.operand)
+            }
+            NodeKind::Binary(binary) => match (
+                self.literal_family(binary.left),
+                self.literal_family(binary.right),
+            ) {
+                (Some(LiteralFamily::Float), _) | (_, Some(LiteralFamily::Float)) => {
+                    Some(LiteralFamily::Float)
+                }
+                (Some(_), Some(_)) => Some(LiteralFamily::Integer),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Whether an expression consists only of literals and negations/arithmetic
+    /// on them, so it can adopt an expected numeric type (§2.7.1).
+    fn is_literal_expression(&self, node: NodeId) -> bool {
+        match self.node_kind(node) {
+            NodeKind::IntegerLiteral(_)
+            | NodeKind::FloatLiteral(_)
+            | NodeKind::CharacterLiteral(_) => true,
+            NodeKind::Unary(unary)
+                if matches!(
+                    unary.op,
+                    UnaryOp::Negate | UnaryOp::LogicalNot | UnaryOp::BitwiseNot
+                ) =>
+            {
+                self.is_literal_expression(unary.operand)
+            }
+            NodeKind::Binary(binary) => {
+                self.is_literal_expression(binary.left) && self.is_literal_expression(binary.right)
+            }
+            NodeKind::CompileTimeExpr(_) | NodeKind::VerbatimExpression(_) => false,
+            _ => false,
+        }
+    }
+
     fn check_binary(
         &mut self,
         node: NodeId,
@@ -9221,19 +9363,16 @@ impl<'a> Sema<'a> {
         expected: Option<TypeId>,
     ) -> Option<TypeId> {
         // Literals take their type from the surrounding context; if the context
-        // does not provide one, the other operand does (§2.7.1, §2.7.2).
-        let left_is_literal = matches!(
-            self.node_kind(binary.left),
-            NodeKind::IntegerLiteral(_) | NodeKind::FloatLiteral(_) | NodeKind::CharacterLiteral(_)
-        );
-        let right_is_literal = matches!(
-            self.node_kind(binary.right),
-            NodeKind::IntegerLiteral(_) | NodeKind::FloatLiteral(_) | NodeKind::CharacterLiteral(_)
-        );
+        // does not provide one, the other operand does (§2.7.1, §2.7.2). A
+        // literal expression may be a unary/binary combination of literals
+        // (`-2 * 3`), so the whole expression adopts the expected type.
+        let left_is_literal = self.is_literal_expression(binary.left);
+        let right_is_literal = self.is_literal_expression(binary.right);
 
-        // A pointer expectation never types a literal operand (§3.6.2).
-        let literal_expected =
-            expected.filter(|ty| !matches!(self.type_of(*ty), Type::Pointer { .. }));
+        // Only a numeric expectation types a literal operand: a boolean result
+        // expectation (e.g. the condition of `if 1 + 1 == 2`) must not force the
+        // integer operands to boolean.
+        let literal_expected = expected.filter(|ty| self.is_numeric(*ty));
         let mut left_type = self.check_expr(
             binary.left,
             if left_is_literal {
@@ -9277,7 +9416,7 @@ impl<'a> Sema<'a> {
                 (expected, left_type, right_type)
             {
                 if (expected_type != left_seen || expected_type != right_seen)
-                    && (self.is_numeric(expected_type) || self.is_boolean(expected_type))
+                    && self.is_numeric(expected_type)
                 {
                     left_type = self.check_expr(binary.left, Some(expected_type));
                     right_type = self.check_expr(binary.right, Some(expected_type));
@@ -9774,7 +9913,12 @@ impl<'a> Sema<'a> {
     }
 
     fn check_is_expression(&mut self, node: NodeId, is_expression: &IsExpr) -> Option<TypeId> {
-        let value_type = self.check_expr(is_expression.value, None)?;
+        // An infinite-value literal has no type of its own; when it is compared
+        // against `infinite`/`-infinite` there is no numeric statement context,
+        // so the default floating type provides the required context (§2.7.10).
+        let infinite_value = self.is_infinite_literal_expression(is_expression.value);
+        let expected = infinite_value.then(|| self.result.types.float(8));
+        let value_type = self.check_expr(is_expression.value, expected)?;
         match &is_expression.target {
             IsTarget::Identifier {
                 text,
@@ -10949,8 +11093,15 @@ impl<'a> Sema<'a> {
                 mapped
                     .iter()
                     .zip(parameters.iter().skip(1))
-                    .all(|(value, parameter)| {
-                        self.check_expr(*value, Some(parameter.ty)) == Some(parameter.ty)
+                    .all(|(value, parameter)| match self.literal_family(*value) {
+                        Some(LiteralFamily::Integer) => {
+                            matches!(self.types_of(parameter.ty), Type::Integer { .. })
+                        }
+                        Some(LiteralFamily::Float) => {
+                            matches!(self.types_of(parameter.ty), Type::Float { .. })
+                        }
+                        Some(LiteralFamily::Boolean) => parameter.ty == TypeId::BOOLEAN,
+                        None => self.check_expr(*value, Some(parameter.ty)) == Some(parameter.ty),
                     })
             });
             self.suppress_errors -= 1;
@@ -11412,8 +11563,15 @@ impl<'a> Sema<'a> {
                 mapped
                     .iter()
                     .zip(parameters.iter())
-                    .all(|(value, parameter)| {
-                        self.check_expr(*value, Some(parameter.ty)) == Some(parameter.ty)
+                    .all(|(value, parameter)| match self.literal_family(*value) {
+                        Some(LiteralFamily::Integer) => {
+                            matches!(self.types_of(parameter.ty), Type::Integer { .. })
+                        }
+                        Some(LiteralFamily::Float) => {
+                            matches!(self.types_of(parameter.ty), Type::Float { .. })
+                        }
+                        Some(LiteralFamily::Boolean) => parameter.ty == TypeId::BOOLEAN,
+                        None => self.check_expr(*value, Some(parameter.ty)) == Some(parameter.ty),
                     })
             });
             self.suppress_errors -= 1;

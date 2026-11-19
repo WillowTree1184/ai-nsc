@@ -21,7 +21,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **234 tests**: 40 lib unit tests (lexer, literal,
+`cargo test` currently runs **360 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
 that read `docs/grammar/Draft 1.152.md` directly:
@@ -58,18 +58,18 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §3.7.6 unions: overlap layout, member offsets via `aligned`, member construction | ✅ | union e2e tests |
 | §3.7.7 base lists: one class + interfaces, generic bases | ✅ | generics/bases tests |
 | §3.8.1 fields, initializers (type-checked in declaring scope), readonly, accessibility | ✅ | field/initializer/readonly/accessibility tests |
-| §3.8.2 accessors: extension/interface accessors, free accessors at module/function scope, backing get/set, expression/block bodies, static accessor alias | ✅ | accessor e2e tests; free accessors at module/function scope (local backings by reference, explicit members) |
+| §3.8.2 accessors: extension/interface accessors, free accessors at module/function scope, backing get/set, expression/block bodies, static accessor alias | ✅ | accessor e2e tests; free accessors at module/function scope (local backings by reference, explicit members); a backing field supplies the missing default get/set automatically, and function-literal member shorthands (`get = (this, index) T => ...`) are unwrapped so `this`/index/value bind to the generated method |
 | §3.8.3 extensions: members, extension-scoped functions, generic extension targets | ✅ | extension e2e tests |
 | §4.1–4.4 value/parenthesized/cast/access expressions | ✅ | parser + e2e |
 | §4.4.3 index access (arrays, VLA, indexer operators) | ✅ | bounds check raises `OutOfRangeException` |
-| §4.5 calls: overloads, defaults, named arguments, function values, closures, nested functions, function pointers | ✅ | call/closure e2e tests |
+| §4.5 calls: overloads, defaults, named arguments, function values, closures, nested functions, function pointers | ✅ | call/closure e2e tests; literal-family exactness prefers an integer/cardinal overload for integer literals and a floating overload for float literals (removing spurious ambiguity) |
 | §4.6–4.7 construction and member construction | ✅ | construction tests |
-| §4.8 `is` expressions: classes, interfaces, variants, special floats | ✅ | RTTI and `is illegal/infinite` tests |
+| §4.8 `is` expressions: classes, interfaces, variants, special floats | ✅ | RTTI and `is illegal/infinite` tests; an infinite-value literal used against `infinite`/`-infinite` receives the default floating type context (§2.7.10) |
 | §4.9 operators: overloads, derived comparisons, indexer, conversion, `implicitable`, user `??` | ✅ | operator/implicit conversion tests |
 | §4.9.6/4.9.7 `&`/`*` reference expressions | ✅ | pointer/reference tests |
 | §4.9.26 `??` with `Optional`/`Result` and all continuations | ✅ | coalescing + user `operator ??` tests |
 | §4.9.27 `?:` conditional expression | ✅ | conditional e2e |
-| §5 statements: blocks, locals/fixed, set/compound, if, while/do, for, match, break/continue, return, trap/finally, throw, dispose, export/use | ✅ | statement e2e tests; `finally` executes on fall-through and normal `return` paths (rejected `return` inside `finally`) |
+| §5 statements: blocks, locals/fixed, set/compound, if, while/do, for, match, break/continue, return, trap/finally, throw, dispose, export/use | ✅ | statement e2e tests; `finally` executes on fall-through and normal `return` paths (rejected `return` inside `finally`); `do-while` conditions are checked in the body block's scope; `dispose` targets must be heap allocation units (scope-lifetime instances are rejected per §5.8) |
 | §5.6 `use` imports (per scope, later imports first, multi-file) | ✅ | use tests |
 | §5.9 `match`: patterns, guards, logical control flow (break/continue/labels) | ✅ | match e2e tests |
 | §5.9.5 `for`: arrays, VLA, ranges, `&` element alias, `IIterator`/`IIterable` targets | ✅ | for e2e tests |
@@ -92,7 +92,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 | §10 generics / monomorphization | ✅ | types/functions/constraints/extension-for-generic/caching/mangling; methods that declare their own type parameters; array extension targets (methods/accessors/operators); class/structure index accessors are tested, and array-target index accessors are rejected per §4.9.2 (index accessors may only be declared in class/structure extension blocks). §14.3.2 optimisation directives are permissions, not requirements. |
 | §11.1–11.7 compile-time: `#(...)`, `#if`/`#else`, `#{}` blocks (incl. top-level and cross-file order), `#` constant parameters, compile-time boundary | ✅ | compile-time e2e tests; blocks are lowered as runtime equivalents of compile-time results (semantics-preserving approximation) |
 | §11.8 compiler API: `Type.SizeOf<T>`, `Compiler.LogNote/LogWarning/LogError/Assert`, `Platform.Is`, `NOLAA.Abandon/Bind/AssumeNoDemandNext` | ✅ | compiler API tests |
-| §12 memory model: locals/heap/dispose/destructors, `manual`, custom `IAllocator` + `DefaultAllocator`, NOLAA (double-dispose/early-dispose/never-disposed warnings, alias/store demand tracking, auto-insertion at block-end/return/break/continue safe points, Bind groups) | ✅ | heap/dispose/allocation/NOLAA tests; NOLAA analysis is deliberately conservative (escapes are exempt) |
+| §12 memory model: locals/heap/dispose/destructors, `manual`, custom `IAllocator` + `DefaultAllocator`, NOLAA (double-dispose/early-dispose/never-disposed warnings, alias/store demand tracking, auto-insertion at block-end/return/break/continue safe points, Bind groups) | ✅ | heap/dispose/allocation/NOLAA tests; heap storage can hold value types (including integer/array/union targets) and assignment writes through to the heap storage; NOLAA analysis is deliberately conservative (escapes are exempt) |
 | §13 ABI: name mangling (§13.2), layouts, calling conventions, type info/vtables/interface tables | ✅ | mangling unit test + IR smoke tests; cross-target conventions beyond host diagnosed |
 | §14 startup: launcher, static/runtime initializers, exit code = Main return | ✅ | launcher IR/e2e exit-code tests |
 | §15 Built-In Library: `Object`, `CallingConvention`, `PlatformKind`, exception hierarchy with `InnerException`/constructors, `Optional<T>`, `Result<TValue; TAlternative>`, `IIterator<T>`, `IIterable<T>`, `IAllocator`, `DefaultAllocator`, compile-time library | ✅ | builtin library e2e tests; containers are not part of the spec's §15.2 |

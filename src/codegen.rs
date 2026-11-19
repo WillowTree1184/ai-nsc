@@ -2462,7 +2462,17 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .local_slots
             .get(&local)
             .ok_or_else(|| "missing heap slot".to_string())?;
-        let instance_type = self.instance_llvm_type(info.ty)?;
+        let instance_type = match self.sema.types.get(info.ty).clone() {
+            Type::Named(index)
+                if matches!(
+                    self.sema.type_defs[index as usize].kind,
+                    TypeDefKind::Structure | TypeDefKind::Class
+                ) =>
+            {
+                self.instance_llvm_type(info.ty)?
+            }
+            _ => self.llvm_type(info.ty)?,
+        };
         let size = self.instance_size(info.ty);
         // An explicit allocator expression allocates through IAllocator (§5.4);
         // otherwise the platform allocator is used.
@@ -2490,8 +2500,16 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 }
             }
         };
+        let zero: BasicValueEnum<'ctx> = match instance_type {
+            BasicTypeEnum::IntType(int_type) => int_type.const_zero().into(),
+            BasicTypeEnum::FloatType(float_type) => float_type.const_zero().into(),
+            BasicTypeEnum::PointerType(pointer_type) => pointer_type.const_zero().into(),
+            BasicTypeEnum::ArrayType(array_type) => array_type.const_zero().into(),
+            BasicTypeEnum::StructType(struct_type) => struct_type.const_zero().into(),
+            _ => return Err("cannot zero-initialize heap storage".to_string()),
+        };
         self.builder
-            .build_store(storage, instance_type.const_zero())
+            .build_store(storage, zero)
             .map_err(|error| format!("cannot initialize heap storage: {error}"))?;
         // Heap-allocated class instances need their vtable/typeinfo header just
         // like stack-constructed ones, or interface/virtual dispatch crashes.

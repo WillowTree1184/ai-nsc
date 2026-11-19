@@ -100,98 +100,62 @@ means the area has tests, not that every conceivable defect is ruled out.
 
 ## Known deviations / remaining backlog
 
-These are deliberate, documented limitations rather than silent miscompiles:
+These are the remaining deliberate, documented limitations rather than silent
+miscompiles. §14.3.2 volume/speed optimisations are permissions in the draft and
+are not listed.
 
-(§14.3.2 volume/speed optimisations are stated as permissions in the draft; not
-implementing them is conforming and they are therefore not listed as deviations.)
-
-1. **Compile-time blocks**: `#{}` no longer opens a lexical scope: its
-   declarations stay in the enclosing compile-time scope and are visible to
-   later code. Compile-time-only blocks are dropped (their locals are marked
-   dead for codegen) and side effects warn (#75). A later **runtime** read of a
-   block-declared variable keeps the block emitted as the carrier of its end
-   product, while a runtime **assignment** to such a variable is diagnosed per
-   §11.4. `do-while` and value/comparison/wildcard `match` (with guards) are now
-   interpreted both at top level and in compile-time functions. Compile-time
-   scalar `heap` allocation/assignment/`dispose` is interpreted (freed with the
-   compile-time execution, never visible at run time); non-scalar compile-time
-   heap objects, `throw`/`trap` and `is` match patterns are still not
-   interpreted; such blocks are lowered with a warning or an explicit
-   unsupported diagnostic, so §11.4's full compile-time execution remains
-   partially implemented.
-5. **`@` no-optimize markers** (§14.3.1): marked expressions, blocks, `local
-   @Name` and `fixed @Name` force the enclosing function to `optnone`, are
-   rejected in compile-time contexts, and marked expressions materialise literal
-   operands through memory so the IR builder cannot constant-fold the marked
-   expression (`@(1 + 2)` keeps its `add`). The `@` adjacency rules (no
-   whitespace before a keyword, `(`, `{` or declared name) are diagnosed, a
-   `fixed @Name` must not use a `@` expression as its initial value, and a
-   `local @Name` initializer may not perform compile-time evaluation (§14.3.1).
-6. **Compile-time libraries for external `linkable` functions** (§5.6: "编译期
-   所需的库必须由编译器命令参数提供"): on the host target the compiler process's
-   own C library acts as the compile-time library, so calls such as `printf` in
-   `#{}` execute at compile time through a cached JIT trampoline (side effects
-   happen during compilation and never enter the run-time artifact). Cross-target
-   compilation has no host compile-time library and reports an explicit
-   diagnostic. Compile-time infinite loops are not capped: an intentional
-   `#{ while true { ... } }` is genuinely nonterminating, as specified.
-6. **Single-expression function-literal bodies**: §2.7.9's EBNF allows only
+1. **Compile-time non-scalar execution (§11.4)**: top-level blocks and
+   compile-time functions interpret constants, assignments, if/while/do-while/
+   for-range, `match` with value/comparison/wildcard patterns and guards, API
+   calls, compile-time calls, and scalar compile-time `heap` allocation/
+   assignment/`dispose` (freed with the compile-time execution, never visible at
+   run time). Non-scalar compile-time heap objects, compile-time `throw`/`trap`
+   and `is` match patterns are not interpreted; those forms are diagnosed rather
+   than miscompiled.
+2. **Single-expression function-literal bodies**: §2.7.9's EBNF allows only
    `Block | VerbatimBlock`, but Draft 1.153's own function-type-constructor
    example uses `(value: integer(4)) => value`. ai-nsc accepts the single
-   expression and treats it as an implicit return; tests otherwise use block
-   bodies. This is a spec-example accommodation, not a preferred extension.
-6. **NOLAA** is a conservative approximation: warnings (including Early-Dispose),
-   block-end/return/break/continue auto-dispose, alias/store demand tracking,
-   `NOLAA.Bind` groups, `NOLAA.AssumeNoDemandNext`, and automatic SCC grouping of
-   mutually-needed heap units linked through class fields. Direct aliases of heap
-   units and pointer aliases (`local p = &heapUnit`) are tracked, so
-   Double-Dispose and Use-After-Dispose are detected through
-   `local alias = heapUnit;`, pointer members, and later assignment; aliases that
-   could outlive the unit's block mark it escaped; pointer-member field writes and
-   local container element writes are tracked as aliases (with escape propagation
-   and use-after-dispose through the container). Dispose state is merged
-   path-sensitively across if/match branches and loops (definitely vs maybe
-   disposed), so a branch-only disposal no longer suppresses Never-Disposed and
-   exclusive branches do not produce false Double-Dispose warnings. General CFG
-   safe-point insertion, flow-sensitive points-to for arbitrary pointer/container
-   element aliases and interprocedural summaries remain conservative (see
-   `docs/NOLAA.md`).
-8. **Target selection**: `--target` configures code generation, object emission
-   and the semantic data layout for x86_64, aarch64, riscv64, i686 (runs natively
-   on x86_64 hosts) and armv7 (cross-link with `--sysroot` + LLVM lld, run under
-   qemu-arm). Other architectures are diagnosed; riscv32 output is object-only
-   because no 32-bit RISC-V sysroot is available on the development host.
-   **UEFI**: `--target=x86_64-unknown-uefi` builds a freestanding EFI application
-   (§1's post-ExitBootServices bare-metal goal): the driver emits a COFF object via
-   the Windows MSVC backend (LLVM 18 rejects `-uefi` triples on this host),
-   generates an `efi_main` thunk that calls the generated `main`, and links with
-   `lld-link /subsystem:efi_application /nodefaultlib`. There is no host C library
-   and therefore **no platform `DefaultAllocator`** on UEFI: the developer supplies
-   an `IAllocator` and uses explicit `heap` allocator expressions (allocators are
-   the developer's responsibility); bare `heap` is diagnosed. `run` is rejected
-   (boot with qemu + OVMF or real firmware); aarch64 UEFI is not supported yet.
+   expression as an implicit return; tests otherwise use block bodies. This is a
+   spec-example accommodation, not a preferred extension.
+3. **NOLAA precision**: direct/pointer/field/pointer-member/container-element
+   aliases, path-sensitive definitely/maybe disposal, direct parameter-disposal
+   ownership transfer, read-only parameter summaries (for already-checked
+   callees) and last-demand safe points are implemented. Remaining conservative
+   areas: arbitrary pointer/container points-to paths, field-write/interprocedural
+   fixed-point summaries, callees checked after a caller (fall back to escape),
+   and pointer-member dispose through complex paths. `docs/NOLAA.md` tracks the
+   migration plan.
+4. **Value-type explicit-allocator returns**: a heap class instance returned from
+   another function carries its explicit allocator in the class header and can be
+   disposed by the caller; a returned *structure* allocated with an explicit
+   allocator has no instance header and its caller-side `dispose` is diagnosed.
+   The allocation-size rule (§5.5: storage size exactly fits the type value)
+   rules out simply prefixing the instance with allocator metadata.
+5. **EnvironmentFacts member queries on untracked facts**: the
+   `EnvironmentFacts` structure/module, frozen Current/Host/Target values and
+   `PlatformIs`/`ArchitectureIs` declarations are materialised; queries on
+   frozen facts and locals initialized from them fold at compile time. A query on
+   a facts-typed parameter/value whose origin is not statically tracked is
+   explicitly diagnosed (§11.9.3 requires compile-time evaluation).
+6. **Operand-block assembly all-register barrier**: an operand-free `assembly`
+   block without `clobber(...)` declares all target GPR/vector registers, flags
+   and memory clobbered. An assembly block with operands cannot declare every
+   register because LLVM needs registers free for operand allocation, so it
+   declares memory/flags and relies on explicit `clobber(...)` for other
+   registers.
 
-12. **Pointer-member dispose targets**: §5.9's grammar allows
-    `dispose ( Identifier | PointerMemberAccessExpression )`. A direct local
-    field alias (`holder.Target = &heapUnit; dispose holder->Target`) is now
-    tracked and disposed; arbitrary pointer/container/field paths still require
-    full points-to analysis and are diagnosed rather than guessed.
+## Capabilities and implementation notes (not deviations)
 
-13. **`EnvironmentFacts` member functions are partial**: the `EnvironmentFacts`
-    structure (with declared `PlatformIs`/`ArchitectureIs` members), the
-    `Environment` module and Kind/Current/Host/Target constants, and frozen facts
-    values are materialised; field reads and member queries on frozen facts
-    (including locals initialized from those values) fold at compile time, and
-    facts values can flow into runtime storage. Still missing: resolving member
-    queries on a facts-typed parameter/value whose origin is not statically
-    tracked; those forms are explicitly diagnosed instead of miscompiled.
-    Tracked for the final §15.2 audit.
-
-14. **No-clobber assembly barrier breadth**: an operand-free `assembly` block
-    without `clobber(...)` now declares all target GPR/vector registers,
-    condition flags and memory clobbered (§5.2) and remains a global barrier.
-    An assembly block *with operands* cannot declare every register: LLVM needs
-    registers free for operand allocation and rejects such blocks ("requires
-    more registers than available"), so operand blocks still only declare
-    memory/flags and must use explicit `clobber(...)` when they touch other
-    registers.
+- `@` no-optimize markers are fully implemented (§14.3.1): expressions, blocks,
+  `local @Name`, `fixed @Name`, `optnone`, literal materialisation, adjacency
+  diagnostics and fixed/local initial-value restrictions.
+- Compile-time libraries for external `linkable` functions: on the host the
+  compiler process's C library acts as the compile-time library; cross targets
+  report an explicit diagnostic. Compile-time infinite loops are intentionally
+  uncapped.
+- Target selection: `--target` supports x86_64, aarch64, riscv64, i686 (native
+  execution on an x86_64 host) and armv7 (qemu-arm with `--sysroot`); x86_64
+  UEFI builds a freestanding EFI application with lld-link; aarch64 UEFI is not
+  supported. UEFI has no platform `DefaultAllocator` (the developer supplies an
+  IAllocator). These describe the verification prototype's platform coverage,
+  not language rules.

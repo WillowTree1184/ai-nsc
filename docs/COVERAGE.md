@@ -21,7 +21,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **395 tests**: 41 lib unit tests (lexer, literal,
+`cargo test` currently runs **396 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
 that read `docs/grammar/Draft 1.153.md` directly (a closed-set test also asserts that the only spec programs failing semantic analysis are the documented demonstration/inconsistency snippets):
@@ -147,9 +147,12 @@ implementing them is conforming and they are therefore not listed as deviations.
    units and pointer aliases (`local p = &heapUnit`) are tracked, so
    Double-Dispose and Use-After-Dispose are detected through
    `local alias = heapUnit;`, pointer members, and later assignment; aliases that
-   could outlive the unit's block mark it escaped. General CFG safe-point
-   insertion, flow-sensitive points-to for arbitrary pointer/container element
-   aliases and interprocedural summaries remain conservative (see
+   could outlive the unit's block mark it escaped. Dispose state is merged
+   path-sensitively across if/match branches and loops (definitely vs maybe
+   disposed), so a branch-only disposal no longer suppresses Never-Disposed and
+   exclusive branches do not produce false Double-Dispose warnings. General CFG
+   safe-point insertion, flow-sensitive points-to for arbitrary pointer/container
+   element aliases and interprocedural summaries remain conservative (see
    `docs/NOLAA.md`).
 8. **Target selection**: `--target` configures code generation, object emission
    and the semantic data layout for x86_64, aarch64, riscv64, i686 (runs natively

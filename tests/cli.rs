@@ -3585,3 +3585,57 @@ fixed Main(): integer(4)
         "outer-scope pointer alias must prevent automatic disposal: {escaped}"
     );
 }
+
+#[test]
+fn nolaa_merges_dispose_state_across_branches() {
+    let one_branch = check_source_ok(
+        "\
+class Token { public Value: integer(4); }
+
+fixed Main(flag: boolean): integer(4)
+{
+    heap token: Token = Token();
+    if (flag)
+    {
+        dispose token;
+    }
+    return 0;
+}",
+    );
+    assert!(one_branch.contains("never disposed"), "{one_branch}");
+    let both_branches = check_source_ok(
+        "\
+class Token { public Value: integer(4); }
+
+fixed Main(flag: boolean): integer(4)
+{
+    heap token: Token = Token();
+    if (flag)
+    {
+        dispose token;
+    }
+    else
+    {
+        dispose token;
+    }
+    return 0;
+}",
+    );
+    assert!(both_branches.is_empty(), "{both_branches}");
+    let match_cases = check_source_ok(
+        "\
+class Token { public Value: integer(4); }
+
+fixed Main(flag: boolean): integer(4)
+{
+    heap token: Token = Token();
+    match flag
+    {
+        case true { dispose token; }
+        case wildcard { dispose token; }
+    }
+    return 0;
+}",
+    );
+    assert!(match_cases.is_empty(), "{match_cases}");
+}

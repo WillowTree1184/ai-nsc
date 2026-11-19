@@ -14,14 +14,20 @@ intraprocedural heuristics in `src/sema/check.rs` to a full analysis.
   same pattern feeds SCC/demand edges for mutually needed units.
 - Automatic disposal at block natural exits/fall-through and jump disposal at
   `return`/`break`/`continue`; SCC grouping for units needed through fields.
+- Path-sensitive dispose state: `if`/`else-if`/`else`, `match` cases (including
+  wildcard exhaustiveness), `while`/`do-while`/`for` merge definitely-vs-maybe
+  disposed states; jump disposal is skipped when a unit may already be disposed
+  on some path.
 - Warnings: Double-Dispose, Early-Dispose (use after dispose), Never-Disposed
-  (including escaped units), linkable-call abandonment.
+  (including escaped units and units disposed on only some paths), linkable-call
+  abandonment.
 - Interprocedural ownership for references returned by functions (default
   allocator, plus explicit-allocator class instances via the class-header slot).
 
 ## Remaining / next
 
-1. **CFG-safe-point insertion**: currently fall-through disposal is at block end;
+1. **CFG-safe-point insertion**: fall-through disposal is at block end and branch
+   state is merged structurally;
    the CFG/dominator analysis should select the latest point where no demand
    remains, including branch/loop joins, instead of relying on block-end and
    jump-disposal heuristics.

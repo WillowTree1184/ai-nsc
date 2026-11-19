@@ -5967,6 +5967,7 @@ impl<'a> Sema<'a> {
                     && !unit.abandoned
                     && !unit.escaped
                     && !unit.disposed
+                    && !unit.maybe_disposed
                     && inside.contains(&unit.block)
             })
             .map(|unit| unit.local)
@@ -6087,7 +6088,13 @@ impl<'a> Sema<'a> {
         let candidates: Vec<LocalId> = self
             .heap_units
             .iter()
-            .filter(|unit| !unit.manual && !unit.abandoned && !unit.escaped && !unit.disposed)
+            .filter(|unit| {
+                !unit.manual
+                    && !unit.abandoned
+                    && !unit.escaped
+                    && !unit.disposed
+                    && !unit.maybe_disposed
+            })
             .map(|unit| unit.local)
             .collect();
         for local in candidates {
@@ -6285,6 +6292,7 @@ impl<'a> Sema<'a> {
                 unit.block == block
                     && !unit.manual
                     && !unit.disposed
+                    && !unit.maybe_disposed
                     && !unit.abandoned
                     && !unit.escaped
             })
@@ -6591,26 +6599,47 @@ impl<'a> Sema<'a> {
                 }
             }
             NodeKind::If(statement) => {
+                let before = self.dispose_snapshot();
+                let mut merged: Option<_> = None;
                 for branch in &statement.branches {
+                    self.restore_dispose_snapshot(&before);
                     let condition = self.check_expr(branch.condition, Some(TypeId::BOOLEAN));
                     if let Some(condition) = condition {
                         self.expect_assignable(branch.span, condition, TypeId::BOOLEAN);
                     }
                     self.check_block(branch.body);
+                    let after = self.dispose_snapshot();
+                    merged = Some(match merged {
+                        Some(previous) => self.merge_dispose_snapshots(&previous, &after),
+                        None => after,
+                    });
                 }
-                if let Some(else_block) = statement.else_block {
+                let else_state = if let Some(else_block) = statement.else_block {
+                    self.restore_dispose_snapshot(&before);
                     self.check_block(else_block);
-                }
+                    self.dispose_snapshot()
+                } else {
+                    before.clone()
+                };
+                let after = merged.map_or(else_state.clone(), |merged| {
+                    self.merge_dispose_snapshots(&merged, &else_state)
+                });
+                self.restore_dispose_snapshot(&after);
             }
             NodeKind::While(loop_statement) => {
+                let before = self.dispose_snapshot();
                 self.check_condition(loop_statement.condition);
                 self.loop_labels.push(loop_statement.label.clone());
                 self.loop_blocks.push(loop_statement.body);
                 self.check_block(loop_statement.body);
                 self.loop_blocks.pop();
                 self.loop_labels.pop();
+                let body = self.dispose_snapshot();
+                let after = self.merge_loop_snapshot(&before, &body);
+                self.restore_dispose_snapshot(&after);
             }
             NodeKind::DoWhile(loop_statement) => {
+                let before = self.dispose_snapshot();
                 self.loop_labels.push(loop_statement.label.clone());
                 self.loop_blocks.push(loop_statement.body);
                 // §5.9.4: the condition is checked in the body block's scope, so
@@ -6625,6 +6654,12 @@ impl<'a> Sema<'a> {
                 self.pop_scope();
                 self.loop_blocks.pop();
                 self.loop_labels.pop();
+                let body = self.dispose_snapshot();
+                // The body executes at least once; a later iteration can repeat
+                // any disposal, so a definite body disposal becomes "maybe" for
+                // paths that loop again unless it was already definite.
+                let after = self.merge_dispose_snapshots(&before, &body);
+                self.restore_dispose_snapshot(&after);
             }
             NodeKind::For(for_statement) => self.check_for_statement(node, &for_statement),
             NodeKind::Match(match_statement) => self.check_match_statement(node, &match_statement),
@@ -7563,6 +7598,7 @@ impl<'a> Sema<'a> {
             span: self.span_of(node),
             manual: declaration.modifiers.manual,
             disposed: false,
+            maybe_disposed: false,
             abandoned: false,
             escaped: false,
             returned: false,
@@ -7633,6 +7669,101 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Snapshot of NOLAA dispose state used to merge branch paths.
+    fn dispose_snapshot(
+        &self,
+    ) -> (
+        std::collections::HashSet<LocalId>,
+        std::collections::HashSet<LocalId>,
+        Vec<(bool, bool)>,
+    ) {
+        (
+            self.disposed_locals.clone(),
+            self.certain_disposed_locals.clone(),
+            self.heap_units
+                .iter()
+                .map(|unit| (unit.disposed, unit.maybe_disposed))
+                .collect(),
+        )
+    }
+
+    fn restore_dispose_snapshot(
+        &mut self,
+        snapshot: &(
+            std::collections::HashSet<LocalId>,
+            std::collections::HashSet<LocalId>,
+            Vec<(bool, bool)>,
+        ),
+    ) {
+        self.disposed_locals = snapshot.0.clone();
+        self.certain_disposed_locals = snapshot.1.clone();
+        for (index, (disposed, maybe)) in snapshot.2.iter().enumerate() {
+            if let Some(unit) = self.heap_units.get_mut(index) {
+                unit.disposed = *disposed;
+                unit.maybe_disposed = *maybe;
+            }
+        }
+    }
+
+    fn merge_dispose_snapshots(
+        &self,
+        left: &(
+            std::collections::HashSet<LocalId>,
+            std::collections::HashSet<LocalId>,
+            Vec<(bool, bool)>,
+        ),
+        right: &(
+            std::collections::HashSet<LocalId>,
+            std::collections::HashSet<LocalId>,
+            Vec<(bool, bool)>,
+        ),
+    ) -> (
+        std::collections::HashSet<LocalId>,
+        std::collections::HashSet<LocalId>,
+        Vec<(bool, bool)>,
+    ) {
+        let locals = left.0.union(&right.0).cloned().collect();
+        let certain = left.1.intersection(&right.1).cloned().collect();
+        let len = left.2.len().min(right.2.len());
+        let mut units = Vec::with_capacity(len);
+        for index in 0..len {
+            let (ld, lm) = left.2[index];
+            let (rd, rm) = right.2[index];
+            units.push((ld && rd, (ld || lm || rd || rm) && !(ld && rd)));
+        }
+        (locals, certain, units)
+    }
+
+    /// Merge the state of a loop body that may execute zero or more times.
+    fn merge_loop_snapshot(
+        &self,
+        before: &(
+            std::collections::HashSet<LocalId>,
+            std::collections::HashSet<LocalId>,
+            Vec<(bool, bool)>,
+        ),
+        body: &(
+            std::collections::HashSet<LocalId>,
+            std::collections::HashSet<LocalId>,
+            Vec<(bool, bool)>,
+        ),
+    ) -> (
+        std::collections::HashSet<LocalId>,
+        std::collections::HashSet<LocalId>,
+        Vec<(bool, bool)>,
+    ) {
+        let locals = before.0.union(&body.0).cloned().collect();
+        let certain = before.1.clone();
+        let len = before.2.len().min(body.2.len());
+        let mut units = Vec::with_capacity(len);
+        for index in 0..len {
+            let (bd, bm) = before.2[index];
+            let (wd, wm) = body.2[index];
+            units.push((bd, (bd || bm || wd || wm) && !bd));
+        }
+        (locals, certain, units)
+    }
+
     fn check_dispose_statement(&mut self, statement: &DisposeStmt) {
         if let NodeKind::PointerMemberAccess(member) = self.node_kind(statement.target) {
             let base = match self.node_kind(member.base) {
@@ -7691,6 +7822,7 @@ impl<'a> Sema<'a> {
                         || self.heap_custom_reference_locals.contains(&local);
                     if disposable {
                         let was_disposed = !self.disposed_locals.insert(local);
+                        let was_certain = !self.certain_disposed_locals.insert(local);
                         let unit = self.heap_unit_locals.get(&local).copied().or_else(|| {
                             self.heap_alias_units
                                 .get(&local)
@@ -7699,7 +7831,10 @@ impl<'a> Sema<'a> {
                         });
                         match unit {
                             Some(index) => {
-                                if self.heap_units[index].disposed {
+                                if self.heap_units[index].disposed
+                                    || self.heap_units[index].maybe_disposed
+                                    || was_certain
+                                {
                                     self.warn(
                                         self.span_of(statement.target),
                                         format!("'{}' is disposed more than once", name.name),
@@ -7715,10 +7850,11 @@ impl<'a> Sema<'a> {
                                         );
                                     }
                                     self.heap_units[index].disposed = true;
+                                    self.heap_units[index].maybe_disposed = false;
                                 }
                             }
                             None => {
-                                if was_disposed {
+                                if was_disposed && was_certain {
                                     self.warn(
                                         self.span_of(statement.target),
                                         format!("'{}' is disposed more than once", name.name),
@@ -7932,6 +8068,7 @@ impl<'a> Sema<'a> {
         if statement.name.is_some() {
             self.result.node_types[node as usize] = Some(binding_type);
         }
+        let before = self.dispose_snapshot();
         self.push_scope();
         if let Some(name) = &statement.name {
             let binding_local = self.add_local(
@@ -7954,6 +8091,9 @@ impl<'a> Sema<'a> {
         self.loop_blocks.pop();
         self.loop_labels.pop();
         self.pop_scope();
+        let body = self.dispose_snapshot();
+        let after = self.merge_loop_snapshot(&before, &body);
+        self.restore_dispose_snapshot(&after);
     }
 
     /// The element type produced by traversing `target_type` (§5.9.5, §3.6.1).
@@ -8075,8 +8215,11 @@ impl<'a> Sema<'a> {
 
     fn check_match_statement(&mut self, node: NodeId, statement: &MatchStmt) {
         let value_type = self.check_expr(statement.value, None);
+        let before = self.dispose_snapshot();
+        let mut merged: Option<_> = None;
         self.loop_labels.push(statement.label.clone());
         for (case_index, case) in statement.cases.iter().enumerate() {
+            self.restore_dispose_snapshot(&before);
             self.push_scope();
             if let Some(pattern) = &case.pattern {
                 match pattern {
@@ -8188,6 +8331,26 @@ impl<'a> Sema<'a> {
             }
             self.check_block(case.body);
             self.pop_scope();
+            let case_state = self.dispose_snapshot();
+            merged = Some(match merged {
+                Some(previous) => self.merge_dispose_snapshots(&previous, &case_state),
+                None => case_state,
+            });
+        }
+        if let Some(merged) = merged {
+            // A wildcard case always executes; otherwise the match may skip
+            // every case, so combine the case states with the pre-match state.
+            let has_wildcard = statement.cases.iter().any(|case| {
+                case.guard.is_none() && matches!(case.pattern, None | Some(Pattern::Wildcard))
+            });
+            let after = if has_wildcard {
+                merged
+            } else {
+                self.merge_dispose_snapshots(&before, &merged)
+            };
+            self.restore_dispose_snapshot(&after);
+        } else {
+            self.restore_dispose_snapshot(&before);
         }
         self.loop_labels.pop();
         self.check_match_exhaustiveness(node, statement, value_type);

@@ -603,6 +603,8 @@ pub(crate) struct HeapUnit {
     pub(crate) disposed: bool,
     /// Whether the unit was abandoned through `NOLAA.Abandon`.
     pub(crate) abandoned: bool,
+    /// Whether the unit is disposed on some but not all paths.
+    pub(crate) maybe_disposed: bool,
     /// Whether the pointer escaped the function (argument, return, store...).
     pub(crate) escaped: bool,
     /// Whether the unit was returned to the caller (ownership transfer).
@@ -1234,6 +1236,7 @@ pub fn analyze_with_options(
         function_instantiations: HashMap::new(),
         pending_generic_extensions: Vec::new(),
         disposed_locals: std::collections::HashSet::new(),
+        certain_disposed_locals: std::collections::HashSet::new(),
         compile_time_constants: Vec::new(),
         initializer_depth: 0,
         bodies_checked: 0,
@@ -1377,6 +1380,8 @@ pub(crate) struct Sema<'a> {
     pub(crate) heap_demand_edges: HashMap<u32, Vec<u32>>,
     /// Index into `heap_units` for each heap local.
     pub(crate) heap_unit_locals: HashMap<u32, usize>,
+    /// Locals known to be disposed on every path (§12.2).
+    pub(crate) certain_disposed_locals: std::collections::HashSet<LocalId>,
     /// Locals already reported for use-after-dispose (§12.2).
     pub(crate) early_dispose_warned: std::collections::HashSet<u32>,
     /// Type whose body is currently being checked, for accessibility (§9.1).

@@ -27,6 +27,11 @@ intraprocedural heuristics in `src/sema/check.rs` to a full analysis.
   abandonment.
 - Interprocedural ownership for references returned by functions (default
   allocator, plus explicit-allocator class instances via the class-header slot).
+- Interprocedural parameter disposal: a function whose top-level body directly
+  disposes a class parameter owns that unit; call sites mark the argument unit
+  disposed (so the caller does not free it again) and reject non-heap arguments;
+  codegen frees the parameter through the class-header allocator or the default
+  allocator.
 
 ## Remaining / next
 
@@ -38,9 +43,9 @@ intraprocedural heuristics in `src/sema/check.rs` to a full analysis.
 2. **Points-to**: arbitrary pointer-to-pointer, struct/array/container element
    aliases (`container[i] = unit`), and field paths through parameters need
    flow-sensitive alias sets; unknown containers must disable auto-disposal.
-3. **Interprocedural summaries**: parameter/field writes, returned ownership and
-   escape effects computed to a fixed point over the call graph (currently a
-   syntactic return pre-pass).
+3. **Interprocedural summaries**: parameter/field writes, read-only parameters,
+   returned ownership and escape effects computed to a fixed point over the call
+   graph (currently a syntactic return/dispose pre-pass).
 4. **Diagnostics from analysis**: produce all four warning classes from the
    analysis result rather than sequential checking state.
 5. **Value-type explicit-allocator returns**: allocation-descriptor/registry

@@ -965,6 +965,8 @@ pub struct SemaResult {
     pub heap_reference_locals: HashSet<LocalId>,
     /// Locals referencing a returned explicit-allocator heap class instance.
     pub heap_custom_reference_locals: HashSet<LocalId>,
+    /// Parameter locals disposed inside a callee (codegen must free them).
+    pub dispose_parameter_locals: HashSet<LocalId>,
     /// Whether the program contains inline-assembly statements.
     pub has_assembly: bool,
     /// A pointer field (`base.Field`) currently known to hold a heap unit
@@ -1248,6 +1250,7 @@ pub fn analyze_with_options(
         heap_custom_return_functions: HashSet::new(),
         heap_reference_locals: HashSet::new(),
         heap_custom_reference_locals: HashSet::new(),
+        disposing_parameters: HashMap::new(),
         pointer_aliases: HashMap::new(),
         element_heap_aliases: HashMap::new(),
         local_blocks: HashMap::new(),
@@ -1369,6 +1372,8 @@ pub(crate) struct Sema<'a> {
     pub(crate) heap_reference_locals: HashSet<LocalId>,
     /// Locals known to reference a returned custom-allocator heap unit.
     pub(crate) heap_custom_reference_locals: HashSet<LocalId>,
+    /// Parameter positions disposed by each function (interprocedural NOLAA).
+    pub(crate) disposing_parameters: HashMap<u32, Vec<usize>>,
     /// Pointer locals aliasing a heap unit (`local p = &heapUnit;`).
     pub(crate) pointer_aliases: HashMap<LocalId, u32>,
     /// Local containers holding heap units through element writes (`bucket[i] = unit`).

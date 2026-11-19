@@ -5232,6 +5232,51 @@ pub(crate) fn fits_integer(value: i128, signed: bool, bytes: u8) -> bool {
 // ======================================================================
 
 impl<'a> Sema<'a> {
+    /// Pre-pass for interprocedural NOLAA (§12.2): a function whose top-level
+    /// body directly disposes a parameter transfers the disposal responsibility
+    /// to the callee. Only unconditional, control-flow-free prefixes are
+    /// summarised; anything else stays with the conservative caller-side escape.
+    fn mark_disposing_parameters(&mut self) {
+        let count = self.result.functions.len();
+        for index in 0..count {
+            let Some(FunctionBody::Block(block)) = self.result.functions[index].body else {
+                continue;
+            };
+            let statements = match self.node_kind(block) {
+                NodeKind::Block(statements) => statements,
+                _ => continue,
+            };
+            let parameters = self.result.functions[index].parameters.clone();
+            let mut disposed = Vec::new();
+            for statement in statements {
+                match self.node_kind(statement).clone() {
+                    NodeKind::Dispose(dispose) => {
+                        if let NodeKind::Name(name) = self.node_kind(dispose.target) {
+                            if let Some(position) = parameters
+                                .iter()
+                                .position(|parameter| parameter.name == name.name)
+                            {
+                                disposed.push(position);
+                            }
+                        }
+                    }
+                    NodeKind::Local(_)
+                    | NodeKind::Fixed(_)
+                    | NodeKind::Set(_)
+                    | NodeKind::CompoundSet(_)
+                    | NodeKind::Heap(_)
+                    | NodeKind::ExpressionStmt(_)
+                    | NodeKind::Use(_) => {}
+                    // Control flow before a dispose makes it path-dependent.
+                    _ => break,
+                }
+            }
+            if !disposed.is_empty() {
+                self.disposing_parameters.insert(index as u32, disposed);
+            }
+        }
+    }
+
     /// Pre-pass for interprocedural heap ownership (§5.8/§12.2): a function that
     /// directly returns a heap local exposes that unit to its caller. Only the
     /// default-allocator case can be disposed by the caller without extra
@@ -5353,6 +5398,7 @@ impl<'a> Sema<'a> {
 
     pub(crate) fn check_function_bodies(&mut self) {
         self.mark_heap_returning_functions();
+        self.mark_disposing_parameters();
         // Instantiating a generic type or function can add functions while
         // bodies are being checked (§10.2), so the loop follows the growing
         // function list instead of a snapshot.
@@ -7846,6 +7892,26 @@ impl<'a> Sema<'a> {
                                 "disposing a heap reference returned with an explicit allocator is only supported for class types",
                             );
                             return;
+                        }
+                    }
+                    if let Some(parameter) = info.parameter {
+                        if let Some(function) = self.current_function {
+                            let disposes = self.disposing_parameters.get(&function).is_some_and(
+                                |parameters| parameters.contains(&(parameter as usize)),
+                            );
+                            let is_class = matches!(self.type_of(info.ty), Type::Named(index) if matches!(
+                                self.result.type_defs[index as usize].kind,
+                                TypeDefKind::Class
+                            ));
+                            if disposes && is_class {
+                                self.disposed_locals.insert(local);
+                                self.certain_disposed_locals.insert(local);
+                                self.result.dispose_parameter_locals.insert(local);
+                                self.result.resolutions[statement.target as usize] =
+                                    Some(Resolution::Local(local));
+                                self.result.node_types[statement.target as usize] = Some(info.ty);
+                                return;
+                            }
                         }
                     }
                     // §5.8: the target must point to a heap allocation unit; a
@@ -12642,6 +12708,52 @@ impl<'a> Sema<'a> {
         Some((ordered, extras))
     }
 
+    /// Applies interprocedural NOLAA effects of a resolved plain-function call:
+    /// a callee that directly disposes a parameter takes ownership and frees the
+    /// caller's heap unit, so the caller must not dispose it again.
+    fn apply_disposing_call_effects(&mut self, mapped: &[NodeId], selected: u32) {
+        let function = &self.result.functions[selected as usize];
+        if function.method_of.is_some() {
+            return;
+        }
+        let Some(positions) = self.disposing_parameters.get(&selected).cloned() else {
+            return;
+        };
+        if function.parameters.len() != mapped.len() {
+            return;
+        }
+        for position in positions {
+            let Some(value) = mapped.get(position).copied() else {
+                continue;
+            };
+            let local = match self.node_kind(value) {
+                NodeKind::Name(name) => match self.lookup(&name.name).cloned() {
+                    Some(Symbol::Local(local)) => Some(local),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(unit) = self.heap_source_unit(value) {
+                self.heap_units[unit as usize].disposed = true;
+                self.heap_units[unit as usize].maybe_disposed = false;
+                if let Some(local) = local {
+                    self.disposed_locals.insert(local);
+                    self.certain_disposed_locals.insert(local);
+                }
+            } else if self.heap_reference_kind(value).is_some() {
+                if let Some(local) = local {
+                    self.disposed_locals.insert(local);
+                    self.certain_disposed_locals.insert(local);
+                }
+            } else {
+                self.error(
+                    self.span_of(value),
+                    "an argument passed to a disposing parameter must point to a heap allocation unit (§5.8)",
+                );
+            }
+        }
+    }
+
     fn resolve_overload(
         &mut self,
         node: NodeId,
@@ -12785,6 +12897,7 @@ impl<'a> Sema<'a> {
                 self.expect_assignable(self.span_of(*value), ty, parameter.ty);
             }
         }
+        self.apply_disposing_call_effects(&mapped, selected);
         self.result.call_arguments.insert(node, mapped);
         if self.result.functions[selected as usize].wildcard && !extras.is_empty() {
             // Wildcard arguments are type-checked for validity but never

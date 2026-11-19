@@ -5425,3 +5425,35 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 79);
 }
+
+#[test]
+fn callee_parameter_disposal_runs_the_caller_owned_destructor_once() {
+    let source = "\
+local destroyed: integer(4) = 0;
+
+class Token
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Destruct(this: &Token)
+        {
+            destroyed = destroyed + 1;
+        }
+    }
+}
+
+fixed Release(token: Token)
+{
+    dispose token;
+}
+
+fixed Main(): integer(4)
+{
+    heap token: Token = Token();
+    Release(token);
+    return destroyed;
+}";
+    assert_eq!(run_program(source), 1);
+}

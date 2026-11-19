@@ -2960,6 +2960,53 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         // A reference returned by another function points to a heap unit created
         // there with the default allocator (§5.8/§12.2). Dispose it through the
         // default allocator; the reference was never registered as a local unit.
+        if self.sema.dispose_parameter_locals.contains(&local) {
+            let instance = self
+                .builder
+                .build_load(pointer_type, slot, "parameter_heap")
+                .map_err(|error| format!("cannot load parameter heap reference: {error}"))?
+                .into_pointer_value();
+            if let Some(destructor) = self.find_method(info.ty, "Destruct") {
+                let function = *self
+                    .functions
+                    .get(&destructor)
+                    .ok_or_else(|| "missing destructor".to_string())?;
+                self.builder
+                    .build_call(function, &[instance.into()], "destruct")
+                    .map_err(|error| format!("cannot call destructor: {error}"))?;
+            }
+            let instance_struct = self.instance_llvm_type(info.ty)?;
+            let allocator_slot = self
+                .builder
+                .build_struct_gep(instance_struct, instance, 2, "parameter_allocator")
+                .map_err(|error| format!("cannot locate allocator header: {error}"))?;
+            let header_allocator = self
+                .builder
+                .build_load(pointer_type, allocator_slot, "parameter_allocator")
+                .map_err(|error| format!("cannot load allocator header: {error}"))?
+                .into_pointer_value();
+            let default_allocator = self.load_default_allocator()?;
+            let is_null = self
+                .builder
+                .build_is_null(header_allocator, "parameter_allocator_null")
+                .map_err(|error| format!("cannot test allocator header: {error}"))?;
+            let allocator = self
+                .builder
+                .build_select(
+                    is_null,
+                    default_allocator,
+                    header_allocator,
+                    "parameter_allocator",
+                )
+                .map_err(|error| format!("cannot select allocator: {error}"))?
+                .into_pointer_value();
+            let (interface_index, method) = self
+                .builtin_interface_method("IAllocator", "Deallocate")
+                .ok_or_else(|| "IAllocator.Deallocate is missing".to_string())?;
+            let arguments = vec![allocator.into(), instance.into()];
+            self.gen_interface_call(allocator, interface_index, method, &arguments)?;
+            return Ok(());
+        }
         if self.sema.heap_custom_reference_locals.contains(&local) {
             let instance = self
                 .builder

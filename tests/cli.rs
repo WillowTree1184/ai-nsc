@@ -3722,3 +3722,65 @@ fixed Main(): integer(4)
     );
     assert!(use_after.contains("used after 'dispose'"), "{use_after}");
 }
+
+#[test]
+fn nolaa_supports_interprocedural_parameter_disposal() {
+    let safe = check_source_ok(
+        "\
+class Token { public Value: integer(4); }
+
+fixed Release(token: Token): integer(4)
+{
+    dispose token;
+    return 0;
+}
+
+fixed Main(): integer(4)
+{
+    heap token: Token = Token();
+    Release(token);
+    return 0;
+}",
+    );
+    assert!(safe.is_empty(), "{safe}");
+    let stack = check_source(
+        "\
+class Token { public Value: integer(4); }
+
+fixed Release(token: Token): integer(4)
+{
+    dispose token;
+    return 0;
+}
+
+fixed Main(): integer(4)
+{
+    local token: Token = Token();
+    Release(token);
+    return 0;
+}",
+    );
+    assert!(
+        stack.contains("must point to a heap allocation unit"),
+        "{stack}"
+    );
+    let double = check_source_ok(
+        "\
+class Token { public Value: integer(4); }
+
+fixed Release(token: Token): integer(4)
+{
+    dispose token;
+    return 0;
+}
+
+fixed Main(): integer(4)
+{
+    heap token: Token = Token();
+    Release(token);
+    dispose token;
+    return 0;
+}",
+    );
+    assert!(double.contains("disposed more than once"), "{double}");
+}

@@ -90,9 +90,10 @@ semantic failures in `tests/spec_examples.rs`.
 ## Heap units returned from functions
 
 The §5.8/§12.2 example around line 6285 has `Make()` allocate a heap unit, return
-it, and `Main` dispose the returned reference. NOLAA would need interprocedural
-escape/ownership tracking to know that the caller's local points at that heap unit
-(and which allocator to free it with). ai-nsc currently tracks only units created
-in the current function (plus direct aliases), so disposing a returned heap
-reference is diagnosed. This is listed as a remaining deviation in COVERAGE and
-among the documented semantic failures.
+it, and `Main` dispose the returned reference. ai-nsc now performs a syntactic
+pre-pass marking functions that return a heap local allocated with the default
+allocator, tracks call results assigned to locals as heap references, and emits a
+destructor + `DefaultAllocator.Deallocate` on `dispose`. The example compiles and
+runs. A returned unit allocated with an explicit allocator cannot be disposed in
+the caller yet (allocator metadata is not part of the current ABI); that case is
+diagnosed and documented in COVERAGE.

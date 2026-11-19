@@ -5125,7 +5125,127 @@ pub(crate) fn fits_integer(value: i128, signed: bool, bytes: u8) -> bool {
 // ======================================================================
 
 impl<'a> Sema<'a> {
+    /// Pre-pass for interprocedural heap ownership (§5.8/§12.2): a function that
+    /// directly returns a heap local exposes that unit to its caller. Only the
+    /// default-allocator case can be disposed by the caller without extra
+    /// allocator metadata; explicit-allocator returns are recorded separately.
+    fn mark_heap_returning_functions(&mut self) {
+        let count = self.result.functions.len();
+        for index in 0..count {
+            let body = self.result.functions[index].body;
+            let Some(FunctionBody::Block(block)) = body else {
+                continue;
+            };
+            let mut default_names = std::collections::HashSet::new();
+            let mut custom_names = std::collections::HashSet::new();
+            self.scan_heap_declarations(block, &mut default_names, &mut custom_names);
+            if !default_names.is_empty() && self.returns_heap_name(block, &default_names) {
+                self.heap_returning_functions.insert(index as u32);
+            }
+            if !custom_names.is_empty() && self.returns_heap_name(block, &custom_names) {
+                self.heap_custom_return_functions.insert(index as u32);
+            }
+        }
+    }
+
+    fn scan_heap_declarations(
+        &self,
+        node: NodeId,
+        default_names: &mut std::collections::HashSet<String>,
+        custom_names: &mut std::collections::HashSet<String>,
+    ) {
+        match self.node_kind(node) {
+            NodeKind::Heap(declaration) => {
+                if declaration.size.is_none() {
+                    default_names.insert(declaration.name.clone());
+                } else {
+                    custom_names.insert(declaration.name.clone());
+                }
+            }
+            NodeKind::Block(statements) => {
+                for statement in statements {
+                    self.scan_heap_declarations(statement, default_names, custom_names);
+                }
+            }
+            NodeKind::VerbatimBlock(inner) => {
+                self.scan_heap_declarations(inner, default_names, custom_names);
+            }
+            NodeKind::If(statement) => {
+                for branch in &statement.branches {
+                    self.scan_heap_declarations(branch.body, default_names, custom_names);
+                }
+                if let Some(else_block) = statement.else_block {
+                    self.scan_heap_declarations(else_block, default_names, custom_names);
+                }
+            }
+            NodeKind::While(statement) => {
+                self.scan_heap_declarations(statement.body, default_names, custom_names);
+            }
+            NodeKind::DoWhile(statement) => {
+                self.scan_heap_declarations(statement.body, default_names, custom_names);
+            }
+            NodeKind::For(statement) => {
+                self.scan_heap_declarations(statement.body, default_names, custom_names);
+            }
+            NodeKind::Match(statement) => {
+                for case in &statement.cases {
+                    self.scan_heap_declarations(case.body, default_names, custom_names);
+                }
+            }
+            NodeKind::Trap(statement) => {
+                self.scan_heap_declarations(statement.body, default_names, custom_names);
+                for catch in &statement.catches {
+                    self.scan_heap_declarations(catch.body, default_names, custom_names);
+                }
+                if let Some(finally) = statement.finally {
+                    self.scan_heap_declarations(finally, default_names, custom_names);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn returns_heap_name(&self, node: NodeId, names: &std::collections::HashSet<String>) -> bool {
+        match self.node_kind(node) {
+            NodeKind::Return(statement) => statement.value.is_some_and(|value| {
+                matches!(self.node_kind(value), NodeKind::Name(name) if names.contains(&name.name))
+            }),
+            NodeKind::Block(statements) => statements
+                .iter()
+                .any(|statement| self.returns_heap_name(*statement, names)),
+            NodeKind::VerbatimBlock(inner) => self.returns_heap_name(inner, names),
+            NodeKind::If(statement) => {
+                statement
+                    .branches
+                    .iter()
+                    .any(|branch| self.returns_heap_name(branch.body, names))
+                    || statement
+                        .else_block
+                        .is_some_and(|block| self.returns_heap_name(block, names))
+            }
+            NodeKind::While(statement) => self.returns_heap_name(statement.body, names),
+            NodeKind::DoWhile(statement) => self.returns_heap_name(statement.body, names),
+            NodeKind::For(statement) => self.returns_heap_name(statement.body, names),
+            NodeKind::Match(statement) => statement
+                .cases
+                .iter()
+                .any(|case| self.returns_heap_name(case.body, names)),
+            NodeKind::Trap(statement) => {
+                self.returns_heap_name(statement.body, names)
+                    || statement
+                        .catches
+                        .iter()
+                        .any(|catch| self.returns_heap_name(catch.body, names))
+                    || statement
+                        .finally
+                        .is_some_and(|block| self.returns_heap_name(block, names))
+            }
+            _ => false,
+        }
+    }
+
     pub(crate) fn check_function_bodies(&mut self) {
+        self.mark_heap_returning_functions();
         // Instantiating a generic type or function can add functions while
         // bodies are being checked (§10.2), so the loop follows the growing
         // function list instead of a snapshot.
@@ -5232,7 +5352,7 @@ impl<'a> Sema<'a> {
                 .heap_units
                 .iter()
                 .filter(|unit| {
-                    if unit.manual || unit.disposed || unit.abandoned {
+                    if unit.manual || unit.disposed || unit.abandoned || unit.returned {
                         return false;
                     }
                     // Linkable calls force NOLAA to abandon the unit, which is
@@ -5268,6 +5388,7 @@ impl<'a> Sema<'a> {
             self.current_owner = None;
         }
         self.bodies_checked = self.result.functions.len();
+        self.result.heap_reference_locals = self.heap_reference_locals.clone();
         self.finalize_compile_time_block_locals();
         self.check_return_paths();
     }
@@ -6164,6 +6285,20 @@ impl<'a> Sema<'a> {
                 if let Some(Resolution::Local(target)) =
                     self.result.resolutions[statement.target as usize].clone()
                 {
+                    match self.heap_reference_kind(statement.value) {
+                        Some(true) => {
+                            self.heap_reference_locals.insert(target);
+                            self.heap_custom_reference_locals.remove(&target);
+                        }
+                        Some(false) => {
+                            self.heap_custom_reference_locals.insert(target);
+                            self.heap_reference_locals.remove(&target);
+                        }
+                        None => {
+                            self.heap_reference_locals.remove(&target);
+                            self.heap_custom_reference_locals.remove(&target);
+                        }
+                    }
                     if let Some(unit) = self.heap_unit_for_name_expression(statement.value) {
                         self.heap_alias_units.insert(target, unit);
                     } else {
@@ -6383,10 +6518,12 @@ impl<'a> Sema<'a> {
                 }
             }
             NodeKind::Return(statement) => {
-                self.plan_return_dispose(node);
+                // Returned heap units escape before NOLAA plans return disposal;
+                // otherwise the callee would free the value it hands to the caller.
                 if let Some(value) = statement.value {
-                    self.note_heap_escape(value);
+                    self.note_heap_return(value);
                 }
+                self.plan_return_dispose(node);
                 if matches!(self.trap_contexts.last(), Some(TrapContextKind::Finally)) {
                     self.error(
                         self.span_of(node),
@@ -6671,6 +6808,19 @@ impl<'a> Sema<'a> {
                             "a variable-length array cannot have an initializer",
                         );
                     }
+                }
+            }
+        }
+        for (local, item) in locals.iter().zip(declaration.items.iter()) {
+            if let Some(initializer) = item.init {
+                match self.heap_reference_kind(initializer) {
+                    Some(true) => {
+                        self.heap_reference_locals.insert(*local);
+                    }
+                    Some(false) => {
+                        self.heap_custom_reference_locals.insert(*local);
+                    }
+                    None => {}
                 }
             }
         }
@@ -7021,6 +7171,41 @@ impl<'a> Sema<'a> {
         }
     }
 
+    /// Whether an expression produces a reference to a heap unit returned by
+    /// another function: `Some(true)` for a default-allocator unit, `Some(false)`
+    /// for an explicit-allocator unit (§5.8/§12.2).
+    fn heap_reference_kind(&self, node: NodeId) -> Option<bool> {
+        match self.node_kind(node) {
+            NodeKind::Name(name) => match self.lookup(&name.name) {
+                Some(Symbol::Local(local)) => {
+                    if self.heap_reference_locals.contains(local) {
+                        Some(true)
+                    } else if self.heap_custom_reference_locals.contains(local) {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            },
+            NodeKind::Call(_) => {
+                let Some(Resolution::Function(index)) =
+                    self.result.resolutions[node as usize].clone()
+                else {
+                    return None;
+                };
+                if self.heap_returning_functions.contains(&index) {
+                    Some(true)
+                } else if self.heap_custom_return_functions.contains(&index) {
+                    Some(false)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// The heap allocation unit an alias expression directly names (§12.2), if
     /// the expression is a plain local reference to a heap unit or alias.
     fn heap_unit_for_name_expression(&self, node: NodeId) -> Option<u32> {
@@ -7058,6 +7243,26 @@ impl<'a> Sema<'a> {
                         self.heap_units[index].escaped = true;
                     }
                 }
+            }
+        }
+    }
+
+    /// Marks a heap unit as returned to the caller: it escapes the function, but
+    /// ownership transfers, so Never-Disposed does not apply (the caller owns it).
+    fn note_heap_return(&mut self, node: NodeId) {
+        let NodeKind::Name(name) = self.node_kind(node) else {
+            return;
+        };
+        let Some(Symbol::Local(local)) = self.lookup(&name.name).cloned() else {
+            return;
+        };
+        if !self.heap_unit_locals.contains_key(&local) {
+            return;
+        }
+        for peer in self.heap_group_peers(local) {
+            if let Some(index) = self.heap_unit_locals.get(&peer).copied() {
+                self.heap_units[index].escaped = true;
+                self.heap_units[index].returned = true;
             }
         }
     }
@@ -7143,6 +7348,7 @@ impl<'a> Sema<'a> {
             disposed: false,
             abandoned: false,
             escaped: false,
+            returned: false,
             linkable_abandoned: false,
             local,
             block: self.current_block,
@@ -7160,12 +7366,20 @@ impl<'a> Sema<'a> {
             if let Some(Symbol::Local(local)) = self.lookup(&name.name).cloned() {
                 let info = self.local_info(local).cloned();
                 if let Some(info) = info {
+                    if self.heap_custom_reference_locals.contains(&local) {
+                        self.error(
+                            self.span_of(statement.target),
+                            "disposing a heap reference returned with an explicit allocator is not supported",
+                        );
+                        return;
+                    }
                     // §5.8: the target must point to a heap allocation unit; a
                     // scope-lifetime instance is not disposable.
                     let disposable = self.heap_unit_locals.contains_key(&local)
-                        || self.heap_alias_units.contains_key(&local);
+                        || self.heap_alias_units.contains_key(&local)
+                        || self.heap_reference_locals.contains(&local);
                     if disposable {
-                        self.disposed_locals.insert(local);
+                        let was_disposed = !self.disposed_locals.insert(local);
                         let unit = self.heap_unit_locals.get(&local).copied().or_else(|| {
                             self.heap_alias_units
                                 .get(&local)
@@ -7193,7 +7407,7 @@ impl<'a> Sema<'a> {
                                 }
                             }
                             None => {
-                                if !self.disposed_locals.insert(local) {
+                                if was_disposed {
                                     self.warn(
                                         self.span_of(statement.target),
                                         format!("'{}' is disposed more than once", name.name),

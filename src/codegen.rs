@@ -2735,6 +2735,32 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             .get(&local)
             .ok_or_else(|| "missing heap slot".to_string())?;
         let pointer_type = self.context.ptr_type(AddressSpace::default());
+        // A reference returned by another function points to a heap unit created
+        // there with the default allocator (§5.8/§12.2). Dispose it through the
+        // default allocator; the reference was never registered as a local unit.
+        if self.sema.heap_reference_locals.contains(&local) {
+            let instance = self
+                .builder
+                .build_load(pointer_type, slot, "heap_reference")
+                .map_err(|error| format!("cannot load heap reference: {error}"))?
+                .into_pointer_value();
+            if let Some(destructor) = self.find_method(info.ty, "Destruct") {
+                let function = *self
+                    .functions
+                    .get(&destructor)
+                    .ok_or_else(|| "missing destructor".to_string())?;
+                self.builder
+                    .build_call(function, &[instance.into()], "destruct")
+                    .map_err(|error| format!("cannot call destructor: {error}"))?;
+            }
+            let allocator = self.load_default_allocator()?;
+            let (interface_index, method) = self
+                .builtin_interface_method("IAllocator", "Deallocate")
+                .ok_or_else(|| "IAllocator.Deallocate is missing".to_string())?;
+            let arguments = vec![allocator.into(), instance.into()];
+            self.gen_interface_call(allocator, interface_index, method, &arguments)?;
+            return Ok(());
+        }
         // Heap storage holds the instance pointer; value storage (scope-lifetime
         // locals, §5.8) is the instance itself.
         let is_heap = info.storage == Storage::Heap;

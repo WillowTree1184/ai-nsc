@@ -605,6 +605,8 @@ pub(crate) struct HeapUnit {
     pub(crate) abandoned: bool,
     /// Whether the pointer escaped the function (argument, return, store...).
     pub(crate) escaped: bool,
+    /// Whether the unit was returned to the caller (ownership transfer).
+    pub(crate) returned: bool,
     /// Whether the unit was passed to a `linkable` call, which makes NOLAA
     /// abandon its lifetime analysis (§12.2) and report it as never disposed.
     pub(crate) linkable_abandoned: bool,
@@ -956,6 +958,9 @@ pub struct SemaResult {
     /// Locals whose declaring compile-time block is dropped: code generation must
     /// not allocate storage for them (§11.4).
     pub dead_locals: HashSet<(u32, LocalId)>,
+    /// Locals referencing a heap unit returned by another function with the
+    /// default allocator (§5.8/§12.2).
+    pub heap_reference_locals: HashSet<LocalId>,
     /// Methods belonging to non-named owners (array extensions, §3.8.3).
     pub owner_methods: HashMap<TypeId, Vec<u32>>,
     /// Accessors belonging to non-named owners (array extensions, §3.8.3).
@@ -1218,6 +1223,10 @@ pub fn analyze_with_options(
         constant_instantiations: HashMap::new(),
         heap_units: Vec::new(),
         heap_alias_units: HashMap::new(),
+        heap_returning_functions: HashSet::new(),
+        heap_custom_return_functions: HashSet::new(),
+        heap_reference_locals: HashSet::new(),
+        heap_custom_reference_locals: HashSet::new(),
         heap_demand_edges: HashMap::new(),
         heap_unit_locals: HashMap::new(),
         early_dispose_warned: std::collections::HashSet::new(),
@@ -1323,6 +1332,15 @@ pub(crate) struct Sema<'a> {
     pub(crate) heap_units: Vec<HeapUnit>,
     /// Alias locals mapped to their heap allocation unit (§12.2).
     pub(crate) heap_alias_units: HashMap<LocalId, u32>,
+    /// Functions whose returned reference points to a heap unit allocated with
+    /// the default allocator (§5.8/§12.2 interprocedural ownership).
+    pub(crate) heap_returning_functions: HashSet<u32>,
+    /// Functions returning heap units allocated through an explicit allocator.
+    pub(crate) heap_custom_return_functions: HashSet<u32>,
+    /// Locals known to reference a returned default-allocator heap unit.
+    pub(crate) heap_reference_locals: HashSet<LocalId>,
+    /// Locals known to reference a returned custom-allocator heap unit.
+    pub(crate) heap_custom_reference_locals: HashSet<LocalId>,
     /// Demand edges between heap units discovered from field stores (§12.2).
     pub(crate) heap_demand_edges: HashMap<u32, Vec<u32>>,
     /// Index into `heap_units` for each heap local.

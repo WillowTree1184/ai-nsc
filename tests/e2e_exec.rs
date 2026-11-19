@@ -5272,3 +5272,38 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 3);
 }
+
+#[test]
+fn returned_heap_reference_is_disposed_through_the_default_allocator() {
+    let source = "\
+local destroyed: integer(4) = 0;
+
+class Token
+{
+    public Value: integer(4);
+
+    extension
+    {
+        public fixed Destruct(this: &Token)
+        {
+            destroyed = destroyed + 1;
+        }
+    }
+}
+
+fixed Make(): Token
+{
+    heap token: Token = Token();
+    token.Value = 5;
+    return token;
+}
+
+fixed Main(): integer(4)
+{
+    local made: Token = Make();
+    local value: integer(4) = made.Value;
+    dispose made;
+    return destroyed * 10 + value;
+}";
+    assert_eq!(run_program(source), 15);
+}

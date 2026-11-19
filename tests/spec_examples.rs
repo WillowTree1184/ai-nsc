@@ -162,18 +162,15 @@ fn sema_clean_spec_programs_compile() {
 
 /// The set of `Main`-containing examples that are *not* complete programs is
 /// documented in `docs/spec-notes/_inconsistencies.md`: elided/omitted returns,
-/// a top-level loop in a declaration-shorthand example, a returned heap unit
-/// disposed by the caller (interprocedural escape not yet tracked), and the
-/// launcher example with three `Main` declarations. This test keeps that set
+/// a top-level loop in a declaration-shorthand example, and the launcher example
+/// with three `Main` declarations. This test keeps that set
 /// closed so no new semantic regression can hide among skipped examples.
 #[test]
 fn only_documented_spec_programs_fail_semantics() {
     use ainsc::diagnostics::DiagnosticEngine;
     use ainsc::sema;
 
-    const DOCUMENTED: &[usize] = &[
-        508, 3784, 4729, 4797, 6285, 6408, 6476, 6538, 6717, 8651, 10216,
-    ];
+    const DOCUMENTED: &[usize] = &[508, 3784, 4729, 4797, 6408, 6476, 6538, 6717, 8651, 10216];
     let spec = std::fs::read_to_string(spec_path()).expect("read the language specification");
     let examples = nova_examples(&spec);
     let mut failing = Vec::new();

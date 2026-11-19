@@ -3784,3 +3784,32 @@ fixed Main(): integer(4)
     );
     assert!(double.contains("disposed more than once"), "{double}");
 }
+
+#[test]
+fn nolaa_supports_method_parameter_disposal() {
+    let stderr = check_source_ok(
+        "\
+class Token { public Value: integer(4); }
+
+class Helper
+{
+    extension
+    {
+        public fixed Release(this: &Helper, token: Token): integer(4)
+        {
+            dispose token;
+            return 0;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    heap token: Token = Token();
+    local helper: Helper = Helper();
+    helper.Release(token);
+    return 0;
+}",
+    );
+    assert!(stderr.is_empty(), "{stderr}");
+}

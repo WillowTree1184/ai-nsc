@@ -5984,7 +5984,7 @@ impl<'a> Sema<'a> {
         self.current_block = node;
         self.block_stack.push(node);
         for statement in statements {
-            self.check_statement(statement);
+            self.check_statement_at(statement, node);
         }
         self.block_stack.pop();
         self.current_block = block_before;
@@ -6329,7 +6329,6 @@ impl<'a> Sema<'a> {
         if self.block_always_returns(block) {
             return;
         }
-        let mut locals = Vec::new();
         let candidates: Vec<(usize, LocalId)> = self
             .heap_units
             .iter()
@@ -6344,25 +6343,76 @@ impl<'a> Sema<'a> {
             })
             .map(|(index, unit)| (index, unit.local))
             .collect();
-        for (_, local) in candidates {
-            if !self.heap_group_disposable(local) {
+        let mut processed = std::collections::HashSet::new();
+        for (index, local) in candidates {
+            if processed.contains(&index) || !self.heap_group_disposable(local) {
                 continue;
             }
-            for peer in self.heap_group_peers(local) {
-                if let Some(index) = self.heap_unit_locals.get(&peer).copied() {
-                    self.heap_units[index].disposed = true;
-                }
-                if !locals.contains(&peer) {
-                    locals.push(peer);
+            let peers = self.heap_group_peers(local);
+            let mut point: Option<NodeId> = None;
+            let mut nested = false;
+            let mut jump_disposed = false;
+            for peer in &peers {
+                if let Some(unit_index) = self.heap_unit_locals.get(peer).copied() {
+                    processed.insert(unit_index);
+                    if self.heap_units[unit_index].block != block {
+                        nested = true;
+                    }
+                    if self
+                        .result
+                        .jump_dispose
+                        .values()
+                        .any(|locals| locals.contains(peer))
+                    {
+                        jump_disposed = true;
+                    }
+                    match self.unit_demands.get(&unit_index).copied() {
+                        None => {}
+                        Some(UnitDemand::Nested) => nested = true,
+                        Some(UnitDemand::Direct(statement)) => {
+                            if matches!(
+                                self.node_kind(statement),
+                                NodeKind::Return(_)
+                                    | NodeKind::Break(_)
+                                    | NodeKind::Continue(_)
+                                    | NodeKind::Throw(_)
+                            ) {
+                                nested = true;
+                            } else if point.map_or(true, |previous| statement > previous) {
+                                point = Some(statement);
+                            }
+                        }
+                    }
                 }
             }
-        }
-        if !locals.is_empty() {
-            self.result
-                .auto_dispose
-                .entry(block)
-                .or_default()
-                .extend(locals);
+            // A dispose scheduled after a direct statement would run before a
+            // later `return` jump disposal, so keep the block-end path when a
+            // jump disposal already owns the unit.
+            let schedule_after = if nested || jump_disposed { None } else { point };
+            for peer in &peers {
+                if let Some(unit_index) = self.heap_unit_locals.get(peer).copied() {
+                    self.heap_units[unit_index].disposed = true;
+                    self.heap_units[unit_index].maybe_disposed = false;
+                }
+            }
+            match schedule_after {
+                Some(statement) => {
+                    let locals = self.result.dispose_after.entry(statement).or_default();
+                    for peer in peers {
+                        if !locals.contains(&peer) {
+                            locals.push(peer);
+                        }
+                    }
+                }
+                None => {
+                    let locals = self.result.auto_dispose.entry(block).or_default();
+                    for peer in peers {
+                        if !locals.contains(&peer) {
+                            locals.push(peer);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -6389,12 +6439,21 @@ impl<'a> Sema<'a> {
         self.current_block = block;
         self.block_stack.push(block);
         for statement in statements {
-            self.check_statement(statement);
+            self.check_statement_at(statement, block);
         }
         self.block_stack.pop();
         self.current_block = block_before;
         self.plan_auto_dispose(block);
         self.disposed_locals = disposed_before;
+    }
+
+    /// Checks one statement as a direct child of `block`, recording its
+    /// position for NOLAA safe-point selection (§12.2).
+    fn check_statement_at(&mut self, node: NodeId, block: NodeId) {
+        let previous = self.current_direct_statement;
+        self.current_direct_statement = Some((node, block));
+        self.check_statement(node);
+        self.current_direct_statement = previous;
     }
 
     fn check_statement(&mut self, node: NodeId) {
@@ -6716,7 +6775,7 @@ impl<'a> Sema<'a> {
                 self.push_scope();
                 let statements = self.block_statements(loop_statement.body);
                 for statement in &statements {
-                    self.check_statement(*statement);
+                    self.check_statement_at(*statement, loop_statement.body);
                 }
                 self.plan_auto_dispose(loop_statement.body);
                 self.check_condition(loop_statement.condition);
@@ -7502,6 +7561,40 @@ impl<'a> Sema<'a> {
             _ => return None,
         };
         self.pointer_aliases.get(&local).copied()
+    }
+
+    /// Records a demand on all heap units reachable through a local (§12.2).
+    fn note_unit_demand(&mut self, local: LocalId) {
+        let mut units = Vec::new();
+        if let Some(index) = self.heap_unit_locals.get(&local).copied() {
+            units.push(index);
+        }
+        if let Some(index) = self.heap_alias_units.get(&local).copied() {
+            units.push(index as usize);
+        }
+        if let Some(index) = self.pointer_aliases.get(&local).copied() {
+            units.push(index as usize);
+        }
+        if let Some(entries) = self.element_heap_aliases.get(&local) {
+            units.extend(entries.iter().map(|index| *index as usize));
+        }
+        for ((base, _), index) in &self.field_heap_aliases {
+            if *base == local {
+                units.push(*index as usize);
+            }
+        }
+        units.sort_unstable();
+        units.dedup();
+        for index in units {
+            let Some(unit) = self.heap_units.get(index) else {
+                continue;
+            };
+            let demand = match self.current_direct_statement {
+                Some((statement, block)) if block == unit.block => UnitDemand::Direct(statement),
+                Some(_) | None => UnitDemand::Nested,
+            };
+            self.unit_demands.insert(index, demand);
+        }
     }
 
     /// Marks a unit escaped when a pointer alias is stored in storage that may
@@ -9232,6 +9325,7 @@ impl<'a> Sema<'a> {
                         return None;
                     }
                 }
+                self.note_unit_demand(local);
                 let unit_disposed = self
                     .heap_unit_locals
                     .get(&local)
@@ -11729,6 +11823,7 @@ impl<'a> Sema<'a> {
                 self.expect_assignable(self.span_of(*value), ty, parameter.ty);
             }
         }
+        self.apply_disposing_method_effects(&mapped, instance);
         self.result.call_arguments.insert(node, mapped);
         self.result.resolutions[node as usize] = Some(Resolution::Function(instance));
         self.result.functions[instance as usize].return_type
@@ -12345,6 +12440,7 @@ impl<'a> Sema<'a> {
                 self.expect_assignable(self.span_of(*value), ty, parameter.ty);
             }
         }
+        self.apply_disposing_method_effects(&mapped, selected);
         self.result.call_arguments.insert(node, mapped);
         self.result.resolutions[node as usize] = Some(Resolution::Function(selected));
         Some(self.result.functions[selected as usize].return_type)
@@ -12530,6 +12626,7 @@ impl<'a> Sema<'a> {
                 self.expect_assignable(self.span_of(*value), ty, parameter.ty);
             }
         }
+        self.apply_disposing_method_effects(&mapped, selected);
         self.result.call_arguments.insert(node, mapped);
         self.result.resolutions[node as usize] = Some(Resolution::Construct {
             type_id,
@@ -12724,6 +12821,47 @@ impl<'a> Sema<'a> {
         }
         for position in positions {
             let Some(value) = mapped.get(position).copied() else {
+                continue;
+            };
+            let local = match self.node_kind(value) {
+                NodeKind::Name(name) => match self.lookup(&name.name).cloned() {
+                    Some(Symbol::Local(local)) => Some(local),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(unit) = self.heap_source_unit(value) {
+                self.heap_units[unit as usize].disposed = true;
+                self.heap_units[unit as usize].maybe_disposed = false;
+                if let Some(local) = local {
+                    self.disposed_locals.insert(local);
+                    self.certain_disposed_locals.insert(local);
+                }
+            } else if self.heap_reference_kind(value).is_some() {
+                if let Some(local) = local {
+                    self.disposed_locals.insert(local);
+                    self.certain_disposed_locals.insert(local);
+                }
+            } else {
+                self.error(
+                    self.span_of(value),
+                    "an argument passed to a disposing parameter must point to a heap allocation unit (§5.8)",
+                );
+            }
+        }
+    }
+
+    /// Method/constructor variant of `apply_disposing_call_effects`: mapped
+    /// arguments correspond to parameters[1..] (the receiver is implicit).
+    fn apply_disposing_method_effects(&mut self, mapped: &[NodeId], selected: u32) {
+        let Some(positions) = self.disposing_parameters.get(&selected).cloned() else {
+            return;
+        };
+        for position in positions {
+            if position == 0 {
+                continue;
+            }
+            let Some(value) = mapped.get(position - 1).copied() else {
                 continue;
             };
             let local = match self.node_kind(value) {

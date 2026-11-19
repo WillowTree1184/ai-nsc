@@ -18,6 +18,9 @@ intraprocedural heuristics in `src/sema/check.rs` to a full analysis.
   container, and report use-after-dispose when the element is accessed later.
 - Automatic disposal at block natural exits/fall-through and jump disposal at
   `return`/`break`/`continue`; SCC grouping for units needed through fields.
+- Safe-point selection: the last direct demand statement of a unit's block is
+  chosen as the insertion point (dispose immediately after it); nested uses,
+  jump-disposal paths and block-always-return paths fall back to block end.
 - Path-sensitive dispose state: `if`/`else-if`/`else`, `match` cases (including
   wildcard exhaustiveness), `while`/`do-while`/`for` merge definitely-vs-maybe
   disposed states; jump disposal is skipped when a unit may already be disposed

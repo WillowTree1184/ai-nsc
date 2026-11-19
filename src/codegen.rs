@@ -1733,6 +1733,16 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
     }
 
     fn gen_statement(&mut self, node: NodeId) -> Result<(), String> {
+        self.gen_statement_inner(node)?;
+        if let Some(locals) = self.sema.dispose_after.get(&node).cloned() {
+            for local in locals {
+                self.gen_dispose_local(local)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn gen_statement_inner(&mut self, node: NodeId) -> Result<(), String> {
         match self.ast.node(node).kind.clone() {
             NodeKind::Block(_) | NodeKind::VerbatimBlock(_) => self.gen_block_contents(node),
             NodeKind::Local(_) | NodeKind::Fixed(_) => self.gen_local_declaration(node),

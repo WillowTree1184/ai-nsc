@@ -618,6 +618,15 @@ pub(crate) struct HeapUnit {
     pub(crate) block: NodeId,
 }
 
+/// Latest demand on a heap unit, used for safe-point selection (§12.2).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum UnitDemand {
+    /// Last use is a direct statement of the unit's block.
+    Direct(NodeId),
+    /// The unit is used from a nested block or control structure.
+    Nested,
+}
+
 /// A module-level variable or constant.
 #[derive(Debug)]
 pub struct GlobalInfo {
@@ -960,6 +969,8 @@ pub struct SemaResult {
     /// Locals whose declaring compile-time block is dropped: code generation must
     /// not allocate storage for them (§11.4).
     pub dead_locals: HashSet<(u32, LocalId)>,
+    /// Locals to dispose immediately after a specific statement (§12.2 safe point).
+    pub dispose_after: HashMap<NodeId, Vec<LocalId>>,
     /// Locals referencing a heap unit returned by another function with the
     /// default allocator (§5.8/§12.2).
     pub heap_reference_locals: HashSet<LocalId>,
@@ -1254,6 +1265,8 @@ pub fn analyze_with_options(
         pointer_aliases: HashMap::new(),
         element_heap_aliases: HashMap::new(),
         local_blocks: HashMap::new(),
+        unit_demands: HashMap::new(),
+        current_direct_statement: None,
         field_heap_aliases: HashMap::new(),
         dispose_target_units: HashMap::new(),
         heap_demand_edges: HashMap::new(),
@@ -1380,6 +1393,10 @@ pub(crate) struct Sema<'a> {
     pub(crate) element_heap_aliases: HashMap<LocalId, Vec<u32>>,
     /// Lexical block that declared each local (for alias scope comparison).
     pub(crate) local_blocks: HashMap<LocalId, NodeId>,
+    /// Latest demand points per heap unit (§12.2 safe-point analysis).
+    pub(crate) unit_demands: HashMap<usize, UnitDemand>,
+    /// The direct statement currently being checked and its block.
+    pub(crate) current_direct_statement: Option<(NodeId, NodeId)>,
     /// Direct pointer-field aliases to heap units (§5.8 pointer-member dispose).
     pub(crate) field_heap_aliases: HashMap<(LocalId, String), u32>,
     /// `dispose holder->Field` nodes resolved to their heap unit.

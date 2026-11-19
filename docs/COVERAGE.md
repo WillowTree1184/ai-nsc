@@ -21,7 +21,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **412 tests**: 41 lib unit tests (lexer, literal,
+`cargo test` currently runs **413 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
 that read `docs/grammar/Draft 1.153.md` directly (a closed-set test also asserts that the only spec programs failing semantic analysis are the documented demonstration/inconsistency snippets):
@@ -129,8 +129,12 @@ are not listed.
    `EnvironmentFacts` structure/module, frozen Current/Host/Target values and
    `PlatformIs`/`ArchitectureIs` declarations are materialised; queries on
    frozen facts and locals initialized from them fold at compile time. A query on
-   a facts-typed parameter/value whose origin is not statically tracked is
-   explicitly diagnosed (§11.9.3 requires compile-time evaluation).
+   a facts-typed parameter/value whose origin is not statically tracked is now
+   lowered to a runtime comparison of the frozen fact field (same result as a
+   compile-time fold); inside `#(...)`/`#if` such a query is still diagnosed
+   because that context requires a compile-time value. Remaining deviation:
+   specialization-by-fact-value so untracked facts queries also fold during
+   compilation.
 
 ## Capabilities and implementation notes (not deviations)
 

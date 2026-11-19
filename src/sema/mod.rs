@@ -782,6 +782,16 @@ pub enum Resolution {
         /// Whether this value describes the compiler host.
         host: bool,
     },
+    /// A query on a facts value whose origin is not statically tracked; lowered
+    /// to a runtime comparison of the frozen fact field.
+    EnvironmentFactsQuery {
+        /// Facts expression.
+        base: NodeId,
+        /// Whether the query is `ArchitectureIs` (otherwise `PlatformIs`).
+        architecture: bool,
+        /// Canonical kind to compare against.
+        expected: u32,
+    },
     /// A structure or class field.
     Field {
         /// The declaring type.

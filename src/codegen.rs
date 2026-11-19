@@ -6013,6 +6013,38 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             Some(Resolution::EnvironmentFacts { host }) => {
                 self.gen_environment_facts_value(node, host)
             }
+            Some(Resolution::EnvironmentFactsQuery {
+                base,
+                architecture,
+                expected,
+            }) => {
+                let base_value = self.gen_expr(base)?;
+                let BasicValueEnum::StructValue(facts) = base_value else {
+                    return Err("environment facts query requires a facts value".to_string());
+                };
+                let field = self
+                    .builder
+                    .build_extract_value(facts, u32::from(architecture), "facts_field")
+                    .map_err(|error| format!("cannot read environment facts: {error}"))?;
+                let expected = self
+                    .context
+                    .i32_type()
+                    .const_int(u64::from(expected), false);
+                let result = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        field.into_int_value(),
+                        expected,
+                        "facts_query",
+                    )
+                    .map_err(|error| format!("cannot compare environment facts: {error}"))?;
+                let boolean = self
+                    .builder
+                    .build_int_z_extend(result, self.context.i8_type(), "facts_bool")
+                    .map_err(|error| format!("cannot widen environment query: {error}"))?;
+                Ok(boolean.into())
+            }
             Some(Resolution::Function(index)) => Ok(self.function_value_closure(index)?.into()),
             Some(Resolution::Type(_)) | None => Err("name cannot be used as a value".to_string()),
         }
@@ -6803,6 +6835,38 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             }
             Some(Resolution::EnvironmentFacts { host }) => {
                 self.gen_environment_facts_value(node, host)
+            }
+            Some(Resolution::EnvironmentFactsQuery {
+                base,
+                architecture,
+                expected,
+            }) => {
+                let base_value = self.gen_expr(base)?;
+                let BasicValueEnum::StructValue(facts) = base_value else {
+                    return Err("environment facts query requires a facts value".to_string());
+                };
+                let field = self
+                    .builder
+                    .build_extract_value(facts, u32::from(architecture), "facts_field")
+                    .map_err(|error| format!("cannot read environment facts: {error}"))?;
+                let expected = self
+                    .context
+                    .i32_type()
+                    .const_int(u64::from(expected), false);
+                let result = self
+                    .builder
+                    .build_int_compare(
+                        IntPredicate::EQ,
+                        field.into_int_value(),
+                        expected,
+                        "facts_query",
+                    )
+                    .map_err(|error| format!("cannot compare environment facts: {error}"))?;
+                let boolean = self
+                    .builder
+                    .build_int_z_extend(result, self.context.i8_type(), "facts_bool")
+                    .map_err(|error| format!("cannot widen environment query: {error}"))?;
+                Ok(boolean.into())
             }
             Some(Resolution::Function(index)) => {
                 let function = *self

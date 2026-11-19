@@ -11712,16 +11712,40 @@ impl<'a> Sema<'a> {
                 }
                 let Some(host) = self.environment_fact_source(access.base) else {
                     let base_type = self.check_expr(access.base, None);
-                    if base_type.is_some_and(|ty| {
+                    let is_facts = base_type.is_some_and(|ty| {
                         matches!(self.lookup_type_id("EnvironmentFacts"), Some(facts) if facts == ty)
-                    }) {
+                    });
+                    if !is_facts {
+                        return None;
+                    }
+                    if self.in_compile_time_code() || self.environment_eval_depth > 0 {
                         self.error(
                             self.span_of(node),
                             "environment queries require environment facts known at compile time (§11.9.3)",
                         );
                         return Some(None);
                     }
-                    return None;
+                    let name = self.environment_string_argument(&call)?;
+                    let architecture = access.name == "ArchitectureIs";
+                    let expected = if architecture {
+                        Self::architecture_kind_from_name(&name)
+                    } else {
+                        Self::platform_kind_from_name(&name)
+                    };
+                    let resolution = match expected {
+                        Some(expected) => Resolution::EnvironmentFactsQuery {
+                            base: access.base,
+                            architecture,
+                            expected,
+                        },
+                        None => Resolution::Constant {
+                            ty: TypeId::BOOLEAN,
+                            value: 0,
+                        },
+                    };
+                    self.result.resolutions[node as usize] = Some(resolution);
+                    self.result.node_types[node as usize] = Some(TypeId::BOOLEAN);
+                    return Some(Some(TypeId::BOOLEAN));
                 };
                 if !self.in_compile_time_code() && self.environment_eval_depth == 0 {
                     self.error(

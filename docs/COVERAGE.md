@@ -21,10 +21,10 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **376 tests**: 41 lib unit tests (lexer, literal,
+`cargo test` currently runs **377 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
-that read `docs/grammar/Draft 1.152.md` directly:
+that read `docs/grammar/Draft 1.152.md` directly (a closed-set test also asserts that the only spec programs failing semantic analysis are the documented demonstration/inconsistency snippets):
 
 1. every `novasharp` fence in the specification parses (80+ examples);
 2. every whole-program example that passes semantic analysis is compiled end to
@@ -139,6 +139,11 @@ implementing them is conforming and they are therefore not listed as deviations.
    example uses `(value: integer(4)) => value`. ai-nsc accepts the single
    expression and treats it as an implicit return; tests otherwise use block
    bodies. This is a spec-example accommodation, not a preferred extension.
+6. **Interprocedural heap ownership**: a heap unit returned from one function and
+   disposed by the caller (§5.8/§12.2 example around line 6285) is not tracked:
+   ai-nsc's NOLAA tracks units created in the current function and direct
+   aliases, so disposing such a returned reference is diagnosed. This is the
+   remaining ownership/escape gap beyond direct aliases/field SCCs.
 6. **NOLAA** is a conservative approximation: warnings (including Early-Dispose),
    block-end/return/break/continue auto-dispose, alias/store demand tracking,
    `NOLAA.Bind` groups, `NOLAA.AssumeNoDemandNext`, and automatic SCC grouping of
@@ -161,5 +166,3 @@ implementing them is conforming and they are therefore not listed as deviations.
    an `IAllocator` and uses explicit `heap` allocator expressions (allocators are
    the developer's responsibility); bare `heap` is diagnosed. `run` is rejected
    (boot with qemu + OVMF or real firmware); aarch64 UEFI is not supported yet.
-11. Container/iterator utilities beyond the specification's §15.2 (dynamic
-    arrays, lists, maps) are not provided.

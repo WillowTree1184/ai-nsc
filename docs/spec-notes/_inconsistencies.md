@@ -78,3 +78,21 @@ line 7808 of Draft 1.152) writes bodies such as `(value: integer(4)) => value`.
 ai-nsc accepts a single expression after `=>` and treats it as an implicit
 return; this is a deliberate accommodation for the draft's examples, recorded as
 a deviation in `docs/COVERAGE.md`.
+
+## Draft 1.152 top-level loop example
+
+The declaration-shorthand example around line 508 writes a `for row[5] ... in
+matrix` loop directly at file scope, while §5 (and the draft's own later if/while/
+for examples) says statements belong inside function bodies. ai-nsc follows §5 and
+rejects top-level runtime statements; the example is listed among the documented
+semantic failures in `tests/spec_examples.rs`.
+
+## Heap units returned from functions
+
+The §5.8/§12.2 example around line 6285 has `Make()` allocate a heap unit, return
+it, and `Main` dispose the returned reference. NOLAA would need interprocedural
+escape/ownership tracking to know that the caller's local points at that heap unit
+(and which allocator to free it with). ai-nsc currently tracks only units created
+in the current function (plus direct aliases), so disposing a returned heap
+reference is diagnosed. This is listed as a remaining deviation in COVERAGE and
+among the documented semantic failures.

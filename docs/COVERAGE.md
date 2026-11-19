@@ -101,8 +101,7 @@ means the area has tests, not that every conceivable defect is ruled out.
 ## Known deviations / remaining backlog
 
 These are the remaining deliberate, documented limitations rather than silent
-miscompiles. §14.3.2 volume/speed optimisations are permissions in the draft and
-are not listed.
+miscompiles.
 
 1. **Compile-time non-scalar execution (§11.4)**: top-level blocks and
    compile-time functions interpret constants, assignments, if/while/do-while/
@@ -112,32 +111,31 @@ are not listed.
    run time). Non-scalar compile-time heap objects, compile-time `throw`/`trap`
    and `is` match patterns are not interpreted; those forms are diagnosed rather
    than miscompiled.
-2. **Single-expression function-literal bodies**: §2.7.9's EBNF allows only
-   `Block | VerbatimBlock`, but Draft 1.153's own function-type-constructor
-   example uses `(value: integer(4)) => value`. ai-nsc accepts the single
-   expression as an implicit return; tests otherwise use block bodies. This is a
-   spec-example accommodation, not a preferred extension.
-3. **NOLAA precision**: direct/pointer/field/pointer-member/container-element
-   aliases, path-sensitive definitely/maybe disposal, direct parameter-disposal
-   ownership transfer, read-only parameter summaries (for already-checked
-   callees) and last-demand safe points are implemented. Remaining conservative
-   areas: arbitrary pointer/container points-to paths, field-write/interprocedural
-   fixed-point summaries, callees checked after a caller (fall back to escape),
-   and pointer-member dispose through complex paths. `docs/NOLAA.md` tracks the
-   migration plan.
-4. **EnvironmentFacts member queries on untracked facts**: the
-   `EnvironmentFacts` structure/module, frozen Current/Host/Target values and
-   `PlatformIs`/`ArchitectureIs` declarations are materialised; queries on
-   frozen facts and locals initialized from them fold at compile time. A query on
-   a facts-typed parameter/value whose origin is not statically tracked is now
-   lowered to a runtime comparison of the frozen fact field (same result as a
-   compile-time fold); inside `#(...)`/`#if` such a query is still diagnosed
-   because that context requires a compile-time value. Remaining deviation:
-   specialization-by-fact-value so untracked facts queries also fold during
-   compilation.
+2. **EnvironmentFacts compile-time specialization**: queries on frozen facts and
+   locals initialized from them fold at compile time. A query on a facts value
+   whose origin is not statically tracked (for example an `EnvironmentFacts`
+   parameter) is lowered to an equivalent runtime comparison; inside
+   `#(...)`/`#if` it is diagnosed because that context requires a compile-time
+   value. Specialization-by-fact-value (so the query also folds in compile-time
+   contexts) remains.
+
+## Specification inconsistencies (not deliberate extensions)
+
+- §2.7.9's function-literal EBNF allows only `Block | VerbatimBlock`, but the
+  Draft 1.153 function-type-constructor example uses
+  `(value: integer(4)) => value`. ai-nsc follows the example by accepting a
+  single expression as an implicit return; this is a response to the
+  specification's internal inconsistency, documented in
+  `docs/spec-notes/_inconsistencies.md`, not an extension of the language.
 
 ## Capabilities and implementation notes (not deviations)
 
+- NOLAA is deliberately conservative, as §12.2 requires: it only inserts a
+  dispose when it can assert a safe point, does not dispose on unknown aliasing
+  or linkable calls, and emits the required warnings. Its precision limits
+  (arbitrary container/pointer points-to, field-write fixed points, callees
+  checked later) are therefore permitted conservative behavior, not conformance
+  deviations.
 - Unannotated inline assembly is a full register barrier: operand-free blocks
   clobber all target registers, and operand blocks pin each operand to a fixed
   target register, clobbering every other register. `clobber(...)` remains

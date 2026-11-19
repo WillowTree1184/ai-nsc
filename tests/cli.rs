@@ -3472,3 +3472,35 @@ fixed Main(): integer(4)
     );
     assert!(valid.is_empty(), "{valid}");
 }
+
+#[test]
+fn unannotated_assembly_is_a_memory_and_flag_barrier() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-asm-barrier-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(
+        &path,
+        "fixed Main(): integer(4)\n{\n    assembly { nop }\n    return 0;\n}",
+    )
+    .expect("write");
+    let output = ai_nsc()
+        .args(["emit-ir", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let ir = String::from_utf8_lossy(&output.stdout);
+    for clobber in ["~{memory}", "~{cc}", "~{flags}", "~{fpsr}", "~{dirflag}"] {
+        assert!(ir.contains(clobber), "missing {clobber} in\n{ir}");
+    }
+}

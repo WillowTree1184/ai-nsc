@@ -2830,6 +2830,9 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 // are clobbered -> a global barrier (§5.2).
                 constraints.push("~{memory}".to_string());
                 constraints.push("~{cc}".to_string());
+                constraints.push("~{flags}".to_string());
+                constraints.push("~{fpsr}".to_string());
+                constraints.push("~{dirflag}".to_string());
             }
             Some(names) => {
                 for name in names {

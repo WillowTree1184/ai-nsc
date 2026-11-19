@@ -1245,6 +1245,8 @@ pub fn analyze_with_options(
         heap_custom_return_functions: HashSet::new(),
         heap_reference_locals: HashSet::new(),
         heap_custom_reference_locals: HashSet::new(),
+        pointer_aliases: HashMap::new(),
+        local_blocks: HashMap::new(),
         field_heap_aliases: HashMap::new(),
         dispose_target_units: HashMap::new(),
         heap_demand_edges: HashMap::new(),
@@ -1363,6 +1365,10 @@ pub(crate) struct Sema<'a> {
     pub(crate) heap_reference_locals: HashSet<LocalId>,
     /// Locals known to reference a returned custom-allocator heap unit.
     pub(crate) heap_custom_reference_locals: HashSet<LocalId>,
+    /// Pointer locals aliasing a heap unit (`local p = &heapUnit;`).
+    pub(crate) pointer_aliases: HashMap<LocalId, u32>,
+    /// Lexical block that declared each local (for alias scope comparison).
+    pub(crate) local_blocks: HashMap<LocalId, NodeId>,
     /// Direct pointer-field aliases to heap units (§5.8 pointer-member dispose).
     pub(crate) field_heap_aliases: HashMap<(LocalId, String), u32>,
     /// `dispose holder->Field` nodes resolved to their heap unit.

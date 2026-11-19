@@ -3536,3 +3536,52 @@ fixed Main(): integer(4)
     );
     assert!(same.is_empty(), "{same}");
 }
+
+#[test]
+fn nolaa_tracks_pointer_aliases() {
+    let safe = check_source_ok(
+        "\
+class Token { public Value: integer(4); }
+
+fixed Main(): integer(4)
+{
+    heap token: Token = Token();
+    local p: pointer Token = &token;
+    p->Value = 5;
+    return p->Value;
+}",
+    );
+    assert!(safe.is_empty(), "{safe}");
+    let use_after = check_source_ok(
+        "\
+class Token { public Value: integer(4); }
+
+fixed Main(): integer(4)
+{
+    heap token: Token = Token();
+    local p: pointer Token = &token;
+    dispose token;
+    p->Value = 5;
+    return 0;
+}",
+    );
+    assert!(use_after.contains("used after 'dispose'"), "{use_after}");
+    let escaped = check_source_ok(
+        "\
+class Token { public Value: integer(4); }
+
+fixed Main(): integer(4)
+{
+    local p: pointer Token;
+    {
+        heap token: Token = Token();
+        p = &token;
+    }
+    return 0;
+}",
+    );
+    assert!(
+        escaped.contains("never disposed"),
+        "outer-scope pointer alias must prevent automatic disposal: {escaped}"
+    );
+}

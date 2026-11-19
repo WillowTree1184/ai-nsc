@@ -5750,6 +5750,7 @@ impl<'a> Sema<'a> {
             storage,
             span,
         });
+        self.local_blocks.insert(id, self.current_block);
         self.declare(name, Symbol::Local(id), span);
         id
     }
@@ -6423,10 +6424,24 @@ impl<'a> Sema<'a> {
                             self.heap_custom_reference_locals.remove(&target);
                         }
                     }
-                    if let Some(unit) = self.heap_unit_for_name_expression(statement.value) {
-                        self.heap_alias_units.insert(target, unit);
-                    } else {
-                        self.heap_alias_units.remove(&target);
+                    match self.heap_source_unit(statement.value) {
+                        Some(unit) => {
+                            let is_pointer = self.local_info(target).is_some_and(|info| {
+                                matches!(self.types_of(info.ty), Type::Pointer { .. })
+                            });
+                            if is_pointer {
+                                self.pointer_aliases.insert(target, unit);
+                                self.heap_alias_units.remove(&target);
+                            } else {
+                                self.heap_alias_units.insert(target, unit);
+                                self.pointer_aliases.remove(&target);
+                            }
+                            self.note_alias_scope(target, unit);
+                        }
+                        None => {
+                            self.heap_alias_units.remove(&target);
+                            self.pointer_aliases.remove(&target);
+                        }
                     }
                 }
                 if let Some(Resolution::Accessor { setter, .. }) =
@@ -6468,7 +6483,14 @@ impl<'a> Sema<'a> {
                     };
                     // Storing a heap pointer into an alias (local, field, global
                     // or through a pointer) creates another demand on it (§12.2).
-                    if !internal_edge {
+                    let local_target =
+                        match self.result.resolutions[statement.target as usize].clone() {
+                            Some(Resolution::Local(local)) => Some(local),
+                            _ => None,
+                        };
+                    let alias_source =
+                        local_target.and_then(|_| self.heap_source_unit(statement.value));
+                    if !internal_edge && alias_source.is_none() {
                         self.note_heap_escape(statement.value);
                     }
                     let carrier = match self.result.resolutions[statement.target as usize].clone() {
@@ -6873,7 +6895,7 @@ impl<'a> Sema<'a> {
             if let Some(initializer) = item.init {
                 if !self.compile_time_constants.is_empty() {
                     // Compile-time variables are not run-time heap aliases.
-                } else {
+                } else if self.heap_source_unit(initializer).is_none() {
                     self.note_heap_escape(initializer);
                 }
             }
@@ -6918,8 +6940,16 @@ impl<'a> Sema<'a> {
         // checks see through them (§12.2).
         for (local, item) in locals.iter().zip(declaration.items.iter()) {
             if let Some(initializer) = item.init {
-                if let Some(unit) = self.heap_unit_for_name_expression(initializer) {
-                    self.heap_alias_units.insert(*local, unit);
+                if let Some(unit) = self.heap_source_unit(initializer) {
+                    let is_pointer = self
+                        .local_info(*local)
+                        .is_some_and(|info| matches!(self.types_of(info.ty), Type::Pointer { .. }));
+                    if is_pointer {
+                        self.pointer_aliases.insert(*local, unit);
+                    } else {
+                        self.heap_alias_units.insert(*local, unit);
+                    }
+                    self.note_alias_scope(*local, unit);
                 }
             }
         }
@@ -7350,6 +7380,46 @@ impl<'a> Sema<'a> {
             .or_else(|| self.heap_alias_units.get(&local).copied())
     }
 
+    /// The heap unit directly named or addressed by an expression, following
+    /// direct aliases and pointer aliases.
+    fn heap_source_unit(&self, node: NodeId) -> Option<u32> {
+        if let Some(unit) = self.heap_unit_for_name_expression(node) {
+            return Some(unit);
+        }
+        let node = match self.node_kind(node) {
+            NodeKind::Unary(unary) if unary.op == UnaryOp::Reference => unary.operand,
+            _ => node,
+        };
+        let NodeKind::Name(name) = self.node_kind(node) else {
+            return None;
+        };
+        let local = match self.lookup(&name.name).cloned() {
+            Some(Symbol::Local(local)) => local,
+            _ => return None,
+        };
+        self.pointer_aliases.get(&local).copied()
+    }
+
+    /// Marks a unit escaped when a pointer alias is stored in storage that may
+    /// outlive the unit's block (or escapes the function).
+    fn note_alias_scope(&mut self, alias: LocalId, unit: u32) {
+        let unit_block = self.heap_units[unit as usize].block;
+        let alias_block = self
+            .local_blocks
+            .get(&alias)
+            .copied()
+            .unwrap_or(NodeId::default());
+        if alias_block == unit_block {
+            return;
+        }
+        let unit_span = self.span_of(unit_block);
+        let alias_span = self.local_info(alias).map_or(unit_span, |info| info.span);
+        let nested = unit_span.start <= alias_span.start && alias_span.end <= unit_span.end;
+        if !nested {
+            self.heap_units[unit as usize].escaped = true;
+        }
+    }
+
     fn note_heap_escape(&mut self, node: NodeId) {
         let name = match self.node_kind(node) {
             NodeKind::Name(name) => name.name.clone(),
@@ -7366,12 +7436,21 @@ impl<'a> Sema<'a> {
                 // The following statement brings no existence demand (§12.2).
                 return;
             }
-            if self.heap_unit_locals.contains_key(&local) {
+            let direct = self.heap_unit_locals.get(&local).copied();
+            let via_alias = self
+                .heap_alias_units
+                .get(&local)
+                .copied()
+                .or_else(|| self.pointer_aliases.get(&local).copied());
+            if let Some(index) = direct {
                 for peer in self.heap_group_peers(local) {
                     if let Some(index) = self.heap_unit_locals.get(&peer).copied() {
                         self.heap_units[index].escaped = true;
                     }
                 }
+                let _ = index;
+            } else if let Some(index) = via_alias {
+                self.heap_units[index as usize].escaped = true;
             }
         }
     }
@@ -7386,6 +7465,15 @@ impl<'a> Sema<'a> {
             return;
         };
         if !self.heap_unit_locals.contains_key(&local) {
+            if let Some(index) = self
+                .heap_alias_units
+                .get(&local)
+                .copied()
+                .or_else(|| self.pointer_aliases.get(&local).copied())
+            {
+                self.heap_units[index as usize].escaped = true;
+                self.heap_units[index as usize].returned = true;
+            }
             return;
         }
         for peer in self.heap_group_peers(local) {
@@ -8889,6 +8977,7 @@ impl<'a> Sema<'a> {
                         self.heap_alias_units
                             .get(&local)
                             .copied()
+                            .or_else(|| self.pointer_aliases.get(&local).copied())
                             .map(|index| index as usize)
                     })
                     .is_some_and(|index| self.heap_units[index].disposed);

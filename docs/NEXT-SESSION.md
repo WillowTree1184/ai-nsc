@@ -79,7 +79,7 @@
   `Environment` module, `ArchitectureKind`/`EnvironmentKind`/`EnvironmentFacts`
   are materialised (remaining limitation: queries on untracked facts values).
 - Docs: `docs/COVERAGE.md` maps every spec section to status; `docs/AUDIT.md`
-  tracks 177 reproduced defects. `docs/spec-notes/_inconsistencies.md` was
+  tracks 188 reproduced defects. `docs/spec-notes/_inconsistencies.md` was
   rewritten for 1.153.
 
 ## Remaining backlog (updated through round 40)

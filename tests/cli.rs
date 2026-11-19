@@ -3353,3 +3353,90 @@ fn inline_assembly_escapes_emit_ir() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn environment_value_queries_are_compile_time_constants() {
+    let platform = check_source(
+        "\
+#if Environment.Current.Platform == PlatformKind.Linux
+{
+    #{ Compiler.LogError(\"linux kind\"); }
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(platform.contains("linux kind"), "{platform}");
+    let architecture = check_source(
+        "\
+#if Environment.Current.Architecture == ArchitectureKind.X86_64
+{
+    #{ Compiler.LogError(\"x86_64 kind\"); }
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(architecture.contains("x86_64 kind"), "{architecture}");
+    let kind = check_source(
+        "\
+#if Environment.Kind == EnvironmentKind.Target
+{
+    #{ Compiler.LogError(\"target kind\"); }
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(kind.contains("target kind"), "{kind}");
+    let other_name = check_source(
+        "\
+#if Environment.Target.PlatformIs(\"Other\")
+{
+    #{ Compiler.LogError(\"other named\"); }
+}
+else
+{
+    #{ Compiler.LogError(\"other unnamed\"); }
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(other_name.contains("other unnamed"), "{other_name}");
+}
+
+#[test]
+fn inline_assembly_emits_objects_for_supported_architectures() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-asm-arch-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(
+        &path,
+        "fixed Main(): integer(4)\n{\n    assembly { nop }\n    return 0;\n}",
+    )
+    .expect("write");
+    for target in [
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "riscv64-unknown-linux-gnu",
+    ] {
+        let output = ai_nsc()
+            .args([
+                "emit-obj",
+                "--target",
+                target,
+                path.to_str().expect("utf-8 path"),
+            ])
+            .output()
+            .expect("run ai-nsc");
+        assert!(
+            output.status.success(),
+            "{target}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let _ = std::fs::remove_dir_all(&directory);
+}

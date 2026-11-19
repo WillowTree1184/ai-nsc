@@ -7,8 +7,8 @@
   authoritative specification is `docs/grammar/Draft 1.153.md`; Draft 1.152 is
   historical only.
 - Gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-  — **388 tests green** (41 lib unit, 123 CLI, 2 codegen/LLVM, 1 MCJIT probe,
-  2 JIT compile-time evaluation, 206 end-to-end execution, 10 parser, 3
+  — **391 tests green** (41 lib unit, 125 CLI, 2 codegen/LLVM, 1 MCJIT probe,
+  2 JIT compile-time evaluation, 207 end-to-end execution, 10 parser, 3
   spec-example conformance). The spec-conformance tests read `Draft 1.153.md`:
   all 97 `novasharp` examples parse (the bare inline-assembly block and the bare
   function-type fragment are recorded as syntax fragments), and every whole
@@ -26,6 +26,11 @@
   with x86_64 `mov`/`add` e2e, escapes and diagnostics; assembly spec examples now
   parse. Remaining assembly limitations: target-syntax validation timing and the
   full no-clobber register barrier (COVERAGE deviations 14/15).
+- Draft 1.153 verification (round 27): default parameter expressions are
+  caller-side runtime values (no compile-time-constant requirement) and are
+  evaluated per call; Environment kind/architecture value queries are
+  compile-time constants; assembly objects emit for x86_64, aarch64 and
+  riscv64.
 - **Draft 1.153 new work still open**:
   1. §5.2 inline assembly: implemented (lexer/parser/placeholders/escapes/
      clobbers/sema/LLVM InlineAsm/x86 e2e). Remaining: target-syntax validation

@@ -5379,3 +5379,32 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 76);
 }
+
+#[test]
+fn default_parameter_expression_is_evaluated_at_the_call_site() {
+    let source = "\
+local calls: integer(4) = 0;
+
+fixed Next(): integer(4)
+{
+    calls = calls + 1;
+    return calls;
+}
+
+fixed Add(value: integer(4) = Next()): integer(4)
+{
+    return value + 10;
+}
+
+fixed Main(): integer(4)
+{
+    local first: integer(4) = Add();
+    local second: integer(4) = Add();
+    if (first == 11 && second == 12)
+    {
+        return 23;
+    }
+    return 0;
+}";
+    assert_eq!(run_program(source), 23);
+}

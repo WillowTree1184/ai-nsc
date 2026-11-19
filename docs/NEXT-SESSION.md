@@ -2,7 +2,7 @@
 
 ## State
 
-- Branch `main`; last feature commit `b1434f4` (keyword shadowing §2.4/§6.4).
+- Branch `main`; last feature commit `76597e1` (Platform.Is target + member shadow scopes).
 - **Active goal: 100% draft-1.152 conformance, no more no less** (no
   compatibility syntax beyond the draft; no unimplemented normative rules).
   `git status` is clean.

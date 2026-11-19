@@ -13,14 +13,14 @@ contains only the version title and callout formatting, not semantic changes.
 | --- | --- |
 | `cargo fmt --check` | pass |
 | `cargo clippy --all-targets -- -D warnings` | zero warnings |
-| `cargo test` | **453 tests green** |
+| `cargo test` | **454 tests green** |
 | Spec example parse test | **102/102** examples parse |
 | Spec clean-program compile test | pass |
 | Documented semantic-failure set | exact match (10 sources) |
 | Stale `docs/grammar`/Draft path references | none |
 
 Test breakdown: 41 lib unit, 150 CLI, 2 LLVM codegen, 1 MCJIT probe,
-2 JIT compile-time evaluation, 244 end-to-end execution, 10 parser, 3 spec.
+2 JIT compile-time evaluation, 245 end-to-end execution, 10 parser, 3 spec.
 
 ## 1.162-specific semantics
 

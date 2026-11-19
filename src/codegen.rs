@@ -3061,17 +3061,53 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         Ok(())
     }
 
+    /// Register-class constraint for an inline-assembly operand (§5.2 allows
+    /// any expression; floating-point operands use the target's FP register
+    /// class).
+    fn asm_operand_constraint(&self, ty: &BasicTypeEnum<'ctx>, target: &str) -> &'static str {
+        if !matches!(ty, BasicTypeEnum::FloatType(_)) {
+            return "r";
+        }
+        if target.starts_with("x86_64")
+            || target.starts_with("i386")
+            || target.starts_with("i486")
+            || target.starts_with("i586")
+            || target.starts_with("i686")
+        {
+            "x"
+        } else if target.starts_with("aarch64") || target.starts_with("arm") {
+            "w"
+        } else if target.starts_with("riscv") {
+            "f"
+        } else {
+            "r"
+        }
+    }
+
     fn gen_assembly_statement(&mut self, statement: &AssemblyStmt) -> Result<(), String> {
         if statement.clobbers.is_none() {
             let target = self.options.target.as_deref().unwrap_or(crate::HOST_TRIPLE);
-            if let Some(registers) = Self::pinned_asm_registers(target) {
-                let placeholders = statement
-                    .segments
-                    .iter()
-                    .filter(|segment| matches!(segment, AssemblySegment::Placeholder { .. }))
-                    .count();
-                if placeholders > 0 && placeholders <= registers.len() {
-                    return self.gen_pinned_assembly(statement, &registers);
+            let has_float_operand = statement.segments.iter().any(|segment| {
+                let AssemblySegment::Placeholder { expression, .. } = segment else {
+                    return false;
+                };
+                self.sema
+                    .node_types
+                    .get(*expression as usize)
+                    .copied()
+                    .flatten()
+                    .is_some_and(|ty| matches!(self.sema.types.get(ty), Type::Float { .. }))
+            });
+            if !has_float_operand {
+                if let Some(registers) = Self::pinned_asm_registers(target) {
+                    let placeholders = statement
+                        .segments
+                        .iter()
+                        .filter(|segment| matches!(segment, AssemblySegment::Placeholder { .. }))
+                        .count();
+                    if placeholders > 0 && placeholders <= registers.len() {
+                        return self.gen_pinned_assembly(statement, &registers);
+                    }
                 }
             }
         }
@@ -3136,7 +3172,11 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         }
         // LLVM constraint order: outputs first, then inputs. Read-write operands
         // use an output constraint plus a tied input `"N"`; inputs-only use "r".
-        let mut constraints: Vec<String> = outputs.iter().map(|_| "=r".to_string()).collect();
+        let target = self.options.target.as_deref().unwrap_or(crate::HOST_TRIPLE);
+        let mut constraints: Vec<String> = outputs
+            .iter()
+            .map(|output| format!("={}", self.asm_operand_constraint(&output.ty, target)))
+            .collect();
         let mut args: Vec<BasicValueEnum<'ctx>> = Vec::new();
         let mut arg_types: Vec<BasicMetadataTypeEnum<'ctx>> = Vec::new();
         let tied_inputs: Vec<(usize, BasicValueEnum<'ctx>)> = outputs
@@ -3152,7 +3192,10 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         let input_base = outputs.len() + tied_inputs.len();
         for (offset, (sequence, value)) in inputs.iter().enumerate() {
             mapping.insert(*sequence, input_base + offset);
-            constraints.push("r".to_string());
+            constraints.push(
+                self.asm_operand_constraint(&value.get_type(), target)
+                    .to_string(),
+            );
             args.push(*value);
             arg_types.push((*value).get_type().into());
         }

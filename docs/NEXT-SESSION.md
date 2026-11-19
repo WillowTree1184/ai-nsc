@@ -6,8 +6,8 @@
 - **Active goal: 100% Beta 1.1 conformance.** Authoritative specification:
   `docs/LanguageSpecification/docs/specification/zh-cn.md` (1.153 and earlier are historical only).
 - Gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-  `cargo test` — **453 tests green** (41 lib unit, 150 CLI, 2 codegen/LLVM,
-  1 MCJIT probe, 2 JIT compile-time evaluation, 244 end-to-end execution,
+  `cargo test` — **454 tests green** (41 lib unit, 150 CLI, 2 codegen/LLVM,
+  1 MCJIT probe, 2 JIT compile-time evaluation, 245 end-to-end execution,
   10 parser, 3 spec-example conformance).
 - Spec tests read Beta 1.1 directly: 102 `novasharp` fences; all parse except
   five documented syntax fragments; every complete `Main` example compiles; the

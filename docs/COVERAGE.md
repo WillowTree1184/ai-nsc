@@ -15,7 +15,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **453 tests**: 41 lib unit, 150 CLI/driver,
+`cargo test` currently runs **454 tests**: 41 lib unit, 150 CLI/driver,
 2 LLVM codegen, 1 MCJIT probe, 2 JIT compile-time evaluation, 228 end-to-end
 execution, 10 parser and 3 spec-example conformance tests. The spec tests read
 `zh-cn.md` directly: 102 `novasharp` fences, all parse except five documented
@@ -57,7 +57,7 @@ semantics is pinned (`3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`).
 | §4.9 operators, derived comparisons, indexer, conversion, `??` | ✅ | operator/implicit conversion/coalescing tests |
 | §4.9.3–4.9.29 unary/arithmetic/bitwise/shift/rotate/comparison/logical/conditional | ✅ | e2e arithmetic/shift/rotate/logical/conditional |
 | §5.1 blocks/statement terminators | ✅ | parser/e2e |
-| §5.2 inline assembly | ✅ | lexer/parser/placeholders/escapes/clobbers; operand-free blocks clobber all registers; operand blocks pin operands and clobber every other register on x86_64/i686/aarch64/armv7/riscv64; x86_64 runtime mov/add; `check` assembles asm-containing programs |
+| §5.2 inline assembly | ✅ | lexer/parser/placeholders/escapes/clobbers; operand-free blocks clobber all registers; operand blocks pin operands and clobber every other register on x86_64/i686/aarch64/armv7/riscv64; floating-point operands use target FP register classes (`x`/`w`/`f`), so `movss`/`movsd` work; x86_64 runtime mov/add/movss/movsd; `check` assembles asm-containing programs |
 | §5.3–5.6 local/fixed/heap/linkable | ✅ | locals/fixed/heap, linkable functions and linkable variables/global external symbols (definitions or external declarations) |
 | §5.7 use | ✅ | per-scope, later imports, multi-file tests |
 | §5.8 assignment/compound assignment | ✅ | assignment/alias/write-through tests |

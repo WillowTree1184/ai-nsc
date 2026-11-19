@@ -8380,11 +8380,11 @@ impl<'a> Sema<'a> {
             if let Some(ty) = ty {
                 if !(self.is_integer(ty)
                     || self.is_boolean(ty)
-                    || matches!(self.type_of(ty), Type::Pointer { .. }))
+                    || matches!(self.type_of(ty), Type::Pointer { .. } | Type::Float { .. }))
                 {
                     self.error(
                         self.span_of(*expression),
-                        "an assembly operand must be an integer, boolean or pointer value",
+                        "an assembly operand must be an integer, boolean, pointer or floating-point value",
                     );
                 }
             }

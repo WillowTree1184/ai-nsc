@@ -6226,3 +6226,28 @@ class Token
 fixed Main(): integer(4) { return destroyed; }";
     assert_eq!(run_program(source), 22);
 }
+
+#[test]
+fn inline_assembly_accepts_float_and_double_operands() {
+    let source = "\
+fixed Main(): integer(4)
+{
+    local value: float(4) = 1.5;
+    local result: float(4) = 0.0;
+    assembly with clobber(\"memory\", \"cc\", \"xmm0\", \"xmm1\")
+    {
+        movss xmm0, @[value:in]
+        movss @[result:out], xmm0
+    }
+    local wide: float(8) = 2.5;
+    local wide_result: float(8) = 0.0;
+    assembly with clobber(\"memory\", \"cc\", \"xmm2\", \"xmm3\")
+    {
+        movsd xmm2, @[wide:in]
+        movsd @[wide_result:out], xmm2
+    }
+    if (result == 1.5 && wide_result == 2.5) { return 1; }
+    return 0;
+}";
+    assert_eq!(run_program(source), 1);
+}

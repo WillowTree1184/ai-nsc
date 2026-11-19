@@ -18,3 +18,13 @@
 
 # OS
 .DS_Store
+
+
+# Compiler/test scratch artifacts
+/program
+program.o
+*.out
+core
+core.*
+.tmp-*
+*.log

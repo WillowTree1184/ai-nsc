@@ -14,8 +14,10 @@ use ainsc::source::SourceManager;
 fn spec_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("docs")
-        .join("grammar")
-        .join("Draft 1.162.md")
+        .join("LanguageSpecification")
+        .join("docs")
+        .join("specification")
+        .join("zh-cn.md")
 }
 
 /// Returns the contents of every ```novasharp fenced block, with its 1-based
@@ -51,7 +53,7 @@ fn every_spec_example_parses() {
     );
 
     // Examples that are syntax fragments rather than whole programs.
-    const NON_PROGRAM_FRAGMENTS: &[usize] = &[9220, 9278, 9441, 9454, 9674, 9838];
+    const NON_PROGRAM_FRAGMENTS: &[usize] = &[9220, 9278, 9441, 9454, 9674, 9855];
 
     let mut failures = Vec::new();
     for (line, source) in &examples {
@@ -170,7 +172,7 @@ fn only_documented_spec_programs_fail_semantics() {
     use ainsc::diagnostics::DiagnosticEngine;
     use ainsc::sema;
 
-    const DOCUMENTED: &[usize] = &[3873, 4849, 4917, 6723, 6791, 6853, 7032, 7979, 9009, 10688];
+    const DOCUMENTED: &[usize] = &[3881, 4857, 4925, 6734, 6803, 6866, 7045, 7994, 9025, 10706];
     let spec = std::fs::read_to_string(spec_path()).expect("read the language specification");
     let examples = nova_examples(&spec);
     let mut failing = Vec::new();

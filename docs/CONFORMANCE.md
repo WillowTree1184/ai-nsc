@@ -1,6 +1,6 @@
-# Draft 1.162 conformance evidence
+# Beta 1.1 conformance evidence
 
-Authoritative specification: `docs/grammar/Draft 1.162.md`.
+Authoritative specification: `docs/LanguageSpecification/docs/specification/zh-cn.md`.
 
 ## Verification gates
 
@@ -26,7 +26,7 @@ Current result: **441 tests green**, formatting clean, clippy with zero warnings
 
 ## Specification examples
 
-`tests/spec_examples.rs` reads Draft 1.162 directly:
+`tests/spec_examples.rs` reads Beta 1.1 directly:
 
 - 102 `novasharp` fenced blocks are discovered;
 - all parse except five documented non-program syntax fragments;
@@ -35,7 +35,7 @@ Current result: **441 tests green**, formatting clean, clippy with zero warnings
   `3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`, so a new semantic
   failure cannot hide among skipped examples.
 
-## Draft 1.162 new-feature evidence
+## Beta 1.1 new-feature evidence
 
 | Area | Evidence |
 | --- | --- |

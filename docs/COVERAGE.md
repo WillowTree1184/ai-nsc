@@ -1,6 +1,6 @@
-# Draft 1.162 coverage matrix
+# Beta 1.1 coverage matrix
 
-Status against `docs/grammar/Draft 1.162.md`. The specification is the source of
+Status against `docs/LanguageSpecification/docs/specification/zh-cn.md`. The specification is the source of
 truth; this matrix records what the compiler implements and what it diagnoses
 instead of miscompiling.
 
@@ -18,7 +18,7 @@ cargo test
 `cargo test` currently runs **441 tests**: 41 lib unit, 146 CLI/driver,
 2 LLVM codegen, 1 MCJIT probe, 2 JIT compile-time evaluation, 228 end-to-end
 execution, 10 parser and 3 spec-example conformance tests. The spec tests read
-`Draft 1.162.md` directly: 102 `novasharp` fences, all parse except five documented
+`zh-cn.md` directly: 102 `novasharp` fences, all parse except five documented
 syntax fragments, every `Main` example that is a complete program compiles end
 to end, and the exact set of demonstration-only `Main` examples failing
 semantics is pinned (`3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`).
@@ -27,8 +27,8 @@ semantics is pinned (`3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`).
 
 | Spec area | Status | Evidence / limitations |
 |---|---|---|
-| §2.1–2.6 source text, lexical rules, identifiers, keywords | ✅ | driver/lexer/parser tests; `illegal`/`infinite` are ordinary names in 1.162 |
-| §2.7.1–2.7.3 integer/float literals and numeric literal inference | ✅ | literal unit tests and literal-family overload tests; defaults follow 1.162 |
+| §2.1–2.6 source text, lexical rules, identifiers, keywords | ✅ | driver/lexer/parser tests; `illegal`/`infinite` are ordinary names in Beta 1.1 |
+| §2.7.1–2.7.3 integer/float literals and numeric literal inference | ✅ | literal unit tests and literal-family overload tests; defaults follow Beta 1.1 |
 | §2.7.4–2.7.10 float/bool/char/string/encoding/escapes | ✅ | lexer/literal/e2e tests |
 | §2.7.11 arrays, ranges, array literals | ✅ | e2e arrays/bounds/VLA/range tests; multi-dimensional VLA limits diagnosed |
 | §2.7.12 functions, closures, captures | ✅ | function value/closure/capture e2e |
@@ -51,7 +51,7 @@ semantics is pinned (`3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`).
 | §3.9.2 accessors | ✅ | extension/interface/free accessors, backing get/set, expression/block bodies, static alias |
 | §3.9.3 extensions | ✅ | extension methods/functions, generic/array targets, class-body interface implementation |
 | §4.1–4.4 expressions, access, index access | ✅ | parser/e2e; array bounds raise `OutOfRangeException` |
-| §4.5 calls: overloads, defaults, named args, function values, closures | ✅ | call/closure e2e; signature rules follow 1.162 (contracts affect type equality/mangling) |
+| §4.5 calls: overloads, defaults, named args, function values, closures | ✅ | call/closure e2e; signature rules follow Beta 1.1 (contracts affect type equality/mangling) |
 | §4.6–4.7 construction/member construction | ✅ | construction tests; interface/union/variant elision included |
 | §4.8 `is`: classes/interfaces/variants/float NaN | ✅ | RTTI and `is float(N).NotANumber`; statically impossible checks fold |
 | §4.9 operators, derived comparisons, indexer, conversion, `??` | ✅ | operator/implicit conversion/coalescing tests |
@@ -101,7 +101,7 @@ semantics is pinned (`3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`).
 ## Specification inconsistencies (not deliberate extensions)
 
 - §2.7.12's function-literal EBNF allows only `Block | VerbatimBlock`, but the
-  Draft 1.162 function-type-constructor example uses `(value: integer(4)) => value`.
+  Beta 1.1 function-type-constructor example uses `(value: integer(4)) => value`.
   ai-nsc follows the example by accepting a single expression as an implicit
   return; this is a specification inconsistency, documented in
   `docs/spec-notes/_inconsistencies.md`, not a language extension.

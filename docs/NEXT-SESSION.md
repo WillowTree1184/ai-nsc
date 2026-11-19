@@ -3,20 +3,20 @@
 ## State
 
 - Branch `main`; last feature commit `98d5900`.
-- **Active goal: 100% Draft 1.162 conformance.** Authoritative specification:
-  `docs/grammar/Draft 1.162.md` (1.153 and earlier are historical only).
+- **Active goal: 100% Beta 1.1 conformance.** Authoritative specification:
+  `docs/LanguageSpecification/docs/specification/zh-cn.md` (1.153 and earlier are historical only).
 - Gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
   `cargo test` — **441 tests green** (41 lib unit, 146 CLI, 2 codegen/LLVM,
   1 MCJIT probe, 2 JIT compile-time evaluation, 236 end-to-end execution,
   10 parser, 3 spec-example conformance).
-- Spec tests read Draft 1.162 directly: 102 `novasharp` fences; all parse except
+- Spec tests read Beta 1.1 directly: 102 `novasharp` fences; all parse except
   five documented syntax fragments; every complete `Main` example compiles; the
   demonstration-only semantic-failure set is pinned
   (`3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`).
 
-## Draft 1.162 migration so far
+## Beta 1.1 migration so far
 
-- Sections/anchors/examples moved from 1.153 to 1.162.
+- Sections/anchors/examples moved from 1.153 to Beta 1.1.
 - Removed old `illegal` / `infinite` keywords and literals; added
   `float(4/8).NotANumber`, `float(4/8).Infinite`, negative infinity and the
   `is float(N).NotANumber` `FloatSpecialTarget` (codegen `fcmp uno`).
@@ -55,7 +55,7 @@
 1. Compile-time object constructor/destructor body interpretation, lifecycle
    ordering, copy-to-runtime restrictions and nested non-scalar fields.
 2. NOLAA/automatic-dispose compile-time exclusion checks.
-3. Remaining 1.162/1.16 example gaps from the full `check` scan (accessor/`this`
+3. Remaining Beta 1.1/1.16 example gaps from the full `check` scan (accessor/`this`
    scope, function-valued extension constants are now restricted per spec).
 4. Final audit: COVERAGE/AUDIT/README/spec-notes consistency and full gates.
 
@@ -68,7 +68,7 @@
   bodies, generics and EnvironmentFacts specialization.
 - `src/codegen.rs` — inkwell lowering (metadata/vtables/interfaces, heap,
   dispose, operators, accessors, traps, inline asm, UEFI helpers).
-- `docs/COVERAGE.md` — Draft 1.162 section matrix and deviations.
+- `docs/COVERAGE.md` — Beta 1.1 section matrix and deviations.
 - `docs/AUDIT.md` — reproduced conformance defects/fixes (197 entries).
 - `docs/CONFORMANCE.md` — concise final evidence report.
 - `docs/spec-notes/` — spec extracts and known inconsistencies.

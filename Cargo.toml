@@ -3,8 +3,9 @@ name = "ai-nsc"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.75"
-description = "NovaSharp compiler with an LLVM backend"
+description = "NovaSharp Compiler (Rapid Prototype) Developed by AI"
 publish = false
+license = "MIT"
 
 [[bin]]
 name = "ai-nsc"

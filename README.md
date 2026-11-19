@@ -1,4 +1,6 @@
-# ai-nsc — the NovaSharp compiler
+# NovaSharp Compiler (Rapid Prototype)
+
+> Developed by AI.
 
 `ai-nsc` is the compiler for **NovaSharp**, a statically typed language that compiles to
 native code through **LLVM 18**. The compiler is written in Rust and builds LLVM IR with
@@ -106,7 +108,7 @@ src/lib.rs           crate root and toolchain constants
 src/main.rs          thin binary entry point
 tests/               CLI and LLVM codegen integration tests
 docs/                architecture, roadmap, toolchain notes
-docs/grammar/        the language specification (Draft 1.162 is current)
+docs/LanguageSpecification/  authoritative specification Git submodule (Beta 1.1)
 docs/spec-notes/     exhaustive per-section extraction of the spec + open questions
 runtime/             NovaSharp runtime support library (planned)
 examples/            example programs (added with the language)
@@ -125,3 +127,21 @@ scripts/             build, test, format, lint, toolchain checks
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and
 [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md).
+
+
+## Repository layout
+
+- `src/` — compiler implementation (Rust).
+- `tests/` — conformance, CLI, parser and end-to-end execution tests.
+- `docs/LanguageSpecification/` — Git submodule for the authoritative
+  [NovaSharp Language Specification](https://github.com/NovaSharpCommunity/LanguageSpecification).
+  The compiler test suite reads
+  `docs/LanguageSpecification/docs/specification/zh-cn.md` directly. After a
+  fresh clone run `git submodule update --init --recursive`.
+- `examples/`, `runtime/`, `scripts/` — sample programs, runtime notes and
+  build/lint/test helpers.
+- `docs/` — coverage matrix, audit register, architecture and implementation notes.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

@@ -1,9 +1,9 @@
-# Draft 1.162 specification inconsistencies
+# Beta 1.1 specification inconsistencies
 
 The specification is a moving draft. This file records the places where a
 literal reading of the grammar contradicts the prose or the spec's own examples,
 and what ai-nsc does about each one. Line numbers refer to
-`docs/grammar/Draft 1.162.md`.
+`docs/LanguageSpecification/docs/specification/zh-cn.md`.
 
 ## Earlier contradictions resolved by Draft 1.153
 
@@ -71,7 +71,7 @@ questions. The ones that shape the implementation most:
    validation) are only partially specified; ai-nsc documents its choices in
    COVERAGE/AUDIT.
 
-## Draft 1.162 extension function-constant contradiction
+## Beta 1.1 extension function-constant contradiction
 
 §3.9.3 states that an extension function constant without `this` and without
 `static` **must** be rejected ("扩展中的函数常量必须为方法或 `static fixed`；

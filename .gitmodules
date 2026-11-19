@@ -1,0 +1,4 @@
+[submodule "docs/LanguageSpecification"]
+	path = docs/LanguageSpecification
+	url = https://github.com/NovaSharpCommunity/LanguageSpecification.git
+	branch = developing

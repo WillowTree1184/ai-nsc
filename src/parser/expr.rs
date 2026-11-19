@@ -255,6 +255,7 @@ impl<'a> Parser<'a> {
         // `@(Expression)` is a no-optimize expression (§14.3.1).
         if self.at(TokenKind::At) && self.peek_at(1) == TokenKind::LeftParen {
             let start_token = self.position;
+            self.require_at_adjacent("'('");
             self.bump();
             self.expect(TokenKind::LeftParen, "'(' after '@'")?;
             let inner = self.parse_expression()?;

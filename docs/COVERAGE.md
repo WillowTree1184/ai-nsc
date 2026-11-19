@@ -116,9 +116,12 @@ implementing them is conforming and they are therefore not listed as deviations.
    full compile-time execution remains only partially implemented.
 2. **Non-leading runtime array dimensions** are diagnosed (multi-dimensional
    VLAs with a leading runtime dimension are supported).
-5. **`@` no-optimize markers** mirror the old `verbatim` behaviour (optnone
-   bodies, no compile-time evaluation). Marked constant subexpressions are still
-   represented as LLVM constants (canonical IR, not an optimisation pass).
+5. **`@` no-optimize markers** (§14.3.1): marked expressions, blocks, `local
+   @Name` and `fixed @Name` force the enclosing function to `optnone`, are
+   rejected in compile-time contexts, and marked expressions materialise literal
+   operands through memory so the IR builder cannot constant-fold the marked
+   expression (`@(1 + 2)` keeps its `add`). The `@` adjacency rules (no
+   whitespace before a keyword, `(`, `{` or declared name) are diagnosed.
 6. **Compile-time libraries for external `linkable` functions** (§5.5: "编译期
    所需的库必须由编译器命令参数提供"): on the host target the compiler process's
    own C library acts as the compile-time library, so calls such as `printf` in

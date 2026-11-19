@@ -171,6 +171,7 @@ pub fn generate_module<'ctx>(
         default_allocator_instance: None,
         default_allocator_class: None,
         current_function_verbatim: false,
+        verbatim_expression_depth: 0,
         current_env_slot: None,
         builtin_exceptions: HashMap::new(),
     };
@@ -541,6 +542,9 @@ struct Generator<'ctx, 'a> {
     default_allocator_class: Option<u32>,
     /// Whether the function being generated contains a `verbatim` block (§9.8).
     current_function_verbatim: bool,
+    /// Nesting depth of `@( ... )` no-optimize expressions being generated
+    /// (§14.3.1).
+    verbatim_expression_depth: u32,
     /// Slot holding the current literal's closure environment pointer.
     current_env_slot: Option<PointerValue<'ctx>>,
     builtin_exceptions: HashMap<u32, GlobalValue<'ctx>>,
@@ -3135,6 +3139,15 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
         let Some(locals) = self.sema.local_declarations.get(&node).cloned() else {
             return Ok(());
         };
+        // `local @Name` / `fixed @Name` storage must not be optimised (§14.3.1).
+        let verbatim = match self.ast.node(node).kind.clone() {
+            NodeKind::Local(declaration) => declaration.items.iter().any(|item| item.verbatim),
+            NodeKind::Fixed(declaration) => declaration.modifiers.verbatim,
+            _ => false,
+        };
+        if verbatim {
+            self.current_function_verbatim = true;
+        }
         let (initializers, type_nodes): (Vec<Option<NodeId>>, Vec<Option<NodeId>>) =
             match self.ast.node(node).kind.clone() {
                 NodeKind::Local(declaration) => (
@@ -4895,6 +4908,30 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
 
     // -- expressions -------------------------------------------------------
 
+    /// Materialises a literal through memory while generating a no-optimize
+    /// expression, so the IR builder cannot constant-fold the marked expression
+    /// (§14.3.1). The enclosing function is `optnone`, so no later pass folds
+    /// these loads either.
+    fn verbatim_materialize(
+        &mut self,
+        value: BasicValueEnum<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, String> {
+        if self.verbatim_expression_depth == 0 {
+            return Ok(value);
+        }
+        let llvm_type = value.get_type();
+        let slot = self
+            .builder
+            .build_alloca(llvm_type, "verbatim_temp")
+            .map_err(|error| format!("cannot allocate verbatim temporary: {error}"))?;
+        self.builder
+            .build_store(slot, value)
+            .map_err(|error| format!("cannot store verbatim temporary: {error}"))?;
+        self.builder
+            .build_load(llvm_type, slot, "verbatim_value")
+            .map_err(|error| format!("cannot load verbatim temporary: {error}"))
+    }
+
     fn gen_expr(&mut self, node: NodeId) -> Result<BasicValueEnum<'ctx>, String> {
         match self.ast.node(node).kind.clone() {
             NodeKind::IntegerLiteral(literal_value) => {
@@ -4905,22 +4942,26 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 // An integer literal may be inferred as a floating-point type by
                 // the surrounding context (§2.7.1), e.g. Constructor(0, 0, 0)
                 // with float parameters.
-                match llvm_type {
+                let literal = match llvm_type {
                     inkwell::types::BasicTypeEnum::IntType(int_type) => {
-                        Ok(int_type.const_int(value as u64, false).into())
+                        int_type.const_int(value as u64, false).into()
                     }
                     inkwell::types::BasicTypeEnum::FloatType(float_type) => {
-                        Ok(float_type.const_float(value as f64).into())
+                        float_type.const_float(value as f64).into()
                     }
-                    _ => Err("integer literal must have an integer or float type".to_string()),
-                }
+                    _ => {
+                        return Err("integer literal must have an integer or float type".to_string())
+                    }
+                };
+                self.verbatim_materialize(literal)
             }
             NodeKind::FloatLiteral(literal_value) => {
                 let ty = self.type_of(node);
                 let llvm_type = self.llvm_type(ty)?;
                 let value = literal::decode_float(&literal_value.raw)
                     .map_err(|message| format!("invalid float literal: {message}"))?;
-                Ok(llvm_type.into_float_type().const_float(value).into())
+                let literal = llvm_type.into_float_type().const_float(value).into();
+                self.verbatim_materialize(literal)
             }
             NodeKind::CharacterLiteral(literal_value) => {
                 let ty = self.type_of(node);
@@ -4936,11 +4977,14 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
             | NodeKind::VerbatimStringLiteral(literal_value) => {
                 self.gen_string_literal(node, &literal_value.raw)
             }
-            NodeKind::BooleanLiteral(value) => Ok(self
-                .context
-                .i8_type()
-                .const_int(u64::from(value), false)
-                .into()),
+            NodeKind::BooleanLiteral(value) => {
+                let literal = self
+                    .context
+                    .i8_type()
+                    .const_int(u64::from(value), false)
+                    .into();
+                self.verbatim_materialize(literal)
+            }
             NodeKind::InfiniteLiteral => {
                 let llvm_type = self.llvm_type(self.type_of(node))?;
                 Ok(llvm_type
@@ -4977,7 +5021,15 @@ impl<'ctx, 'a> Generator<'ctx, 'a> {
                 Ok(self.literal_closure(index)?.into())
             }
             NodeKind::ArrayLiteral(literal_value) => self.gen_array_literal(node, &literal_value),
-            NodeKind::VerbatimExpression(inner) => self.gen_expr(inner),
+            NodeKind::VerbatimExpression(inner) => {
+                // A no-optimize expression forbids optimisation and constant
+                // folding of the marked expression (§14.3.1).
+                self.current_function_verbatim = true;
+                self.verbatim_expression_depth += 1;
+                let value = self.gen_expr(inner);
+                self.verbatim_expression_depth -= 1;
+                value
+            }
             NodeKind::CompileTimeExpr(inner) => {
                 // Compile-time expressions are emitted as their end product
                 // (§11.4); only non-integer results fall back to the inner

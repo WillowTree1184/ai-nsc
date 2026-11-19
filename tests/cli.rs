@@ -2778,3 +2778,67 @@ fixed Main(): integer(4)
         "{stderr}"
     );
 }
+
+#[test]
+fn no_optimize_expressions_are_not_constant_folded() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-verbatim-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(
+        &path,
+        "fixed Main(): integer(4)\n{\n    local x: integer(4) = @(1 + 2);\n    local @y: integer(4) = 3;\n    return x + y;\n}",
+    )
+    .expect("write");
+    let output = ai_nsc()
+        .args(["emit-ir", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let ir = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let main_start = ir
+        .find("define i32 @N04Main")
+        .unwrap_or_else(|| panic!("Main not found:\n{ir}"));
+    let main_body = &ir[main_start..];
+    let main_end = main_body.find("\n}").unwrap_or(main_body.len());
+    let main_ir = &main_body[..main_end];
+    assert!(
+        main_ir.contains("verbatim_temp") && main_ir.contains("add i32"),
+        "the marked expression must stay in the IR:\n{main_ir}"
+    );
+    assert!(
+        ir.contains("optnone"),
+        "the containing function must be optnone:\n{ir}"
+    );
+}
+
+#[test]
+fn no_optimize_markers_reject_surrounding_whitespace() {
+    let stderr = check_source(
+        "\
+@ class MyClass { }
+
+fixed Main(): integer(4)
+{
+    local x: @ integer(4) = @ (1 + 2);
+    return x;
+}",
+    );
+    assert!(
+        stderr
+            .matches("whitespace is not allowed between '@'")
+            .count()
+            >= 3,
+        "{stderr}"
+    );
+}

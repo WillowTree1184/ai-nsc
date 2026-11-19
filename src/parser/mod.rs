@@ -208,10 +208,35 @@ impl<'a> Parser<'a> {
             return true;
         }
         if self.at(TokenKind::At) && self.peek_at(1) == kind {
+            self.require_at_adjacent("the keyword");
             self.position += 2;
             return true;
         }
         false
+    }
+
+    /// Reports the §14.3.1 spacing rule: `@` must be immediately adjacent to
+    /// its marker/name/keyword.
+    fn require_at_adjacent(&mut self, description: &str) {
+        let at = self.tokens[self.position];
+        let next = self.tokens[(self.position + 1).min(self.tokens.len() - 1)];
+        if at.span.end != next.span.start {
+            self.error_at(
+                at.span,
+                format!("whitespace is not allowed between '@' and {description}"),
+            );
+        }
+    }
+
+    /// Consumes an `@` marker after checking the adjacency rule; returns whether
+    /// an `@` was present.
+    fn eat_at_marker(&mut self, description: &str) -> bool {
+        if !self.at(TokenKind::At) {
+            return false;
+        }
+        self.require_at_adjacent(description);
+        self.bump();
+        true
     }
 
     pub(crate) fn expect(&mut self, kind: TokenKind, what: &str) -> Option<Token> {
@@ -1019,6 +1044,7 @@ impl<'a> Parser<'a> {
         // `@class Name { }` forces the keyword meaning even when an identifier
         // of that name shadows it (§2.4).
         if self.at(TokenKind::At) && self.peek_at(1).is_keyword() {
+            self.require_at_adjacent("the keyword");
             self.bump();
             self.forced_keyword = true;
         }
@@ -1093,7 +1119,7 @@ impl<'a> Parser<'a> {
     pub(crate) fn parse_verbatim_block(&mut self) -> Option<NodeId> {
         let start_token = self.position;
         // `@{ ... }` or, after modifiers, a bare `{ ... }` block body.
-        self.eat(TokenKind::At);
+        self.eat_at_marker("'{'");
         let block = self.parse_block()?;
         let span = self.span_between(start_token, self.position);
         Some(self.ast.push(span, NodeKind::VerbatimBlock(block)))
@@ -1769,11 +1795,11 @@ impl<'a> Parser<'a> {
         let start_token = self.position;
         self.bump();
         // `local @Name, Other` marks every item no-optimize (§14.3.1).
-        let leading_verbatim = self.eat(TokenKind::At);
+        let leading_verbatim = self.eat_at_marker("the local name");
         let mut items = Vec::new();
         loop {
             let item_start = self.position;
-            let verbatim = leading_verbatim || self.eat(TokenKind::At);
+            let verbatim = leading_verbatim || self.eat_at_marker("the local name");
             let head = self.parse_definition_head(false)?;
             self.declare_shadow_name(&head.name);
             self.push_shadow_scope();
@@ -1839,7 +1865,7 @@ impl<'a> Parser<'a> {
         let start_token = self.position;
         self.bump();
         let mut modifiers = modifiers;
-        if self.eat(TokenKind::At) {
+        if self.eat_at_marker("the fixed name") {
             modifiers.verbatim = true;
         }
         let head = self.parse_definition_head(true)?;

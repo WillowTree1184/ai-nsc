@@ -15,7 +15,7 @@ fn spec_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("docs")
         .join("grammar")
-        .join("Draft 1.16.md")
+        .join("Draft 1.161.md")
 }
 
 /// Returns the contents of every ```novasharp fenced block, with its 1-based

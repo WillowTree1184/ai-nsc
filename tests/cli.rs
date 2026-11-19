@@ -4137,3 +4137,60 @@ fixed Main(): integer(4) { return 0; }",
         "{stderr}"
     );
 }
+
+#[test]
+fn compile_time_constructor_exceptions_terminate_execution() {
+    let stderr = check_source(
+        "\
+class Token
+{
+    public Value: integer(4);
+    extension
+    {
+        public fixed Construct(this: Token)
+        {
+            trap { throw 1; }
+        }
+    }
+}
+
+#{
+    heap token: Token = Token();
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(
+        stderr.contains("uncaught exception in a compile-time 'Construct' body"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn compile_time_destructor_exceptions_terminate_execution() {
+    let stderr = check_source(
+        "\
+class Token
+{
+    public Value: integer(4);
+    extension
+    {
+        public fixed Destruct(this: Token)
+        {
+            trap { throw 1; }
+        }
+    }
+}
+
+#{
+    heap token: Token = Token();
+    dispose token;
+}
+
+fixed Main(): integer(4) { return 0; }",
+    );
+    assert!(
+        stderr.contains("uncaught exception in a compile-time 'Destruct' body"),
+        "{stderr}"
+    );
+}

@@ -15,7 +15,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **444 tests**: 41 lib unit, 146 CLI/driver,
+`cargo test` currently runs **446 tests**: 41 lib unit, 148 CLI/driver,
 2 LLVM codegen, 1 MCJIT probe, 2 JIT compile-time evaluation, 228 end-to-end
 execution, 10 parser and 3 spec-example conformance tests. The spec tests read
 `zh-cn.md` directly: 102 `novasharp` fences, all parse except five documented
@@ -95,8 +95,9 @@ semantics is pinned (`3858, 4834, 4902, 6692, 6761, 6824, 7003, 8983, 10620`).
    explicit dispose and end-of-block reverse destruction), and copyable
    scalar-field structures, one-dimensional scalar arrays, strings (as byte
    arrays), enumerations, unions and variants with scalar payloads are
-   materialised as runtime constants. Remaining: constructor/destructor
-   exceptions and arbitrary side effects, and non-scalar/pointer fields.
+   materialised as runtime constants. Constructor/destructor exceptions now
+   terminate compile-time execution with a diagnostic. Remaining: arbitrary
+   constructor/destructor side effects and non-scalar/pointer fields.
 
 ## Specification inconsistencies (not deliberate extensions)
 

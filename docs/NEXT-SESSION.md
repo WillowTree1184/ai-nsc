@@ -6,7 +6,7 @@
 - **Active goal: 100% Beta 1.1 conformance.** Authoritative specification:
   `docs/LanguageSpecification/docs/specification/zh-cn.md` (1.153 and earlier are historical only).
 - Gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
-  `cargo test` — **444 tests green** (41 lib unit, 146 CLI, 2 codegen/LLVM,
+  `cargo test` — **446 tests green** (41 lib unit, 148 CLI, 2 codegen/LLVM,
   1 MCJIT probe, 2 JIT compile-time evaluation, 239 end-to-end execution,
   10 parser, 3 spec-example conformance).
 - Spec tests read Beta 1.1 directly: 102 `novasharp` fences; all parse except
@@ -40,8 +40,8 @@
 
 1. **Compile-time non-scalar execution (§11.4)**: constructor `this.Method()`
    calls and copy-to-runtime for scalar structures/arrays/strings/enums/unions/
-   variants are implemented; constructor/destructor exceptions/side effects and
-   non-scalar/pointer fields remain.
+   variants are implemented; compile-time constructor/destructor exceptions are
+   diagnosed. Arbitrary side effects and non-scalar/pointer fields remain.
 2. **Interface constant contracts (§3.8.3)**: function/accessor/operator contracts
    work; non-function constants without initializers are not modelled as
    class-side constant contracts.

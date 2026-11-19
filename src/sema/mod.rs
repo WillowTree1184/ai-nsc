@@ -4517,7 +4517,15 @@ impl<'a> Sema<'a> {
         }
         match flow {
             CompileTimeFlow::Return(value) => return value,
-            CompileTimeFlow::Throw(_) => self.compile_time_aborted = true,
+            CompileTimeFlow::Throw(_) => {
+                self.error(
+                    self.span_of(body),
+                    format!(
+                        "uncaught exception in a compile-time '{method_name}' body terminates compile-time execution (§11.4)"
+                    ),
+                );
+                self.compile_time_aborted = true;
+            }
             _ => {}
         }
         None
@@ -4921,7 +4929,13 @@ impl<'a> Sema<'a> {
                     .collect(),
                 _ => Vec::new(),
             };
+            let was_aborted = self.compile_time_aborted;
             self.execute_compile_time_object_method(ty, &declaration.name, "Construct", &arguments);
+            if !was_aborted && self.compile_time_aborted {
+                self.compile_time_objects.remove(&declaration.name);
+                self.compile_time_object_order
+                    .retain(|candidate| *candidate != declaration.name);
+            }
             return;
         };
         if let Type::Named(index) = self.types_of(ty) {

@@ -2733,3 +2733,31 @@ fixed Main(): integer(4)
     assert!(other_stderr.contains("other target"), "{other_stderr}");
     assert!(named_stderr.contains("named target"), "{named_stderr}");
 }
+
+#[test]
+fn array_extension_index_accessors_are_rejected() {
+    let stderr = check_source(
+        "\
+extension for array(length: cardinal(4)) T
+{
+    operator [index: cardinal(4)]: T
+    {
+        get(this: &array(length) T) { }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local values: array(4) integer(4) = { 1, 2, 3, 4 };
+    if (values == values)
+    {
+        return values[0];
+    }
+    return 0;
+}",
+    );
+    assert!(
+        stderr.contains("index accessor must be declared in a class or structure extension"),
+        "{stderr}"
+    );
+}

@@ -4930,3 +4930,58 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 3);
 }
+
+#[test]
+fn structure_index_accessor_operator_works() {
+    let source = "\
+structure Buffer
+{
+    Stored: integer(4);
+
+    extension
+    {
+        operator [index: cardinal(4)]: integer(4)
+        {
+            get(this: &Buffer)
+            {
+                return 42;
+            }
+
+            set(this: &Buffer, value: integer(4))
+            {
+            }
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local buffer: Buffer = Buffer();
+    return buffer[0];
+}";
+    assert_eq!(run_program(source), 42);
+}
+
+#[test]
+fn operator_parameter_names_shadow_keywords_in_the_body_scope() {
+    let source = "\
+class Box
+{
+    extension
+    {
+        operator +(class: Box, other: Box): Box
+        {
+            return class;
+        }
+    }
+}
+
+fixed Main(): integer(4)
+{
+    local first: Box = Box();
+    local second: Box = Box();
+    local result: Box = first + second;
+    return 0;
+}";
+    assert_eq!(run_program(source), 0);
+}

@@ -10619,9 +10619,12 @@ impl<'a> Sema<'a> {
                     }
                     NodeKind::Operator(declaration) => {
                         if matches!(declaration.head, crate::ast::OperatorHead::Indexer { .. }) {
-                            self.unsupported(
+                            // §4.9.2: an index accessor may only be declared in a
+                            // class or structure extension block, never for an
+                            // array extension target.
+                            self.error(
                                 self.span_of(cloned),
-                                "array extension indexer operators",
+                                "an index accessor must be declared in a class or structure extension (§4.9.2)",
                             );
                         } else {
                             self.resolve_operator_declaration(cloned, Some(type_id));

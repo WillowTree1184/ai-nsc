@@ -1665,6 +1665,20 @@ impl<'a> Parser<'a> {
         };
 
         let _ = head_start;
+        // Operator/indexer/conversion parameters belong to the body scope (§6.4).
+        let parameter_names: Vec<String> = match &head {
+            OperatorHead::Indexer { parameters, .. }
+            | OperatorHead::Shorthand { parameters, .. }
+            | OperatorHead::Conversion { parameters, .. } => parameters
+                .iter()
+                .filter_map(|parameter| parameter.name.clone())
+                .collect(),
+            OperatorHead::Notation { .. } => Vec::new(),
+        };
+        self.push_shadow_scope();
+        for name in &parameter_names {
+            self.declare_shadow_name(name);
+        }
         let body = if self.eat(TokenKind::Equals) {
             match self.parse_expression() {
                 Some(expression) => OperatorBody::Expression(expression),
@@ -1699,6 +1713,7 @@ impl<'a> Parser<'a> {
         } else {
             OperatorBody::None
         };
+        self.pop_shadow_scope();
 
         let span = self.span_between(start_token, self.position);
         Some(self.ast.push(

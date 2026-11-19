@@ -1218,6 +1218,7 @@ impl<'a> Parser<'a> {
         self.expect(TokenKind::Colon, "':' before the enumeration's basic type");
         let underlying = self.parse_type()?;
         self.expect(TokenKind::LeftBrace, "'{'");
+        self.push_shadow_scope();
         let mut members = Vec::new();
         let mut extensions = Vec::new();
         while !self.at(TokenKind::RightBrace) && !self.at_end() {
@@ -1227,6 +1228,7 @@ impl<'a> Parser<'a> {
                 }
             } else {
                 let (member_name, member_span) = self.parse_name()?;
+                self.declare_shadow_name(&member_name);
                 let value = if self.eat(TokenKind::Equals) {
                     self.parse_expression()
                 } else {
@@ -1241,6 +1243,7 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(TokenKind::RightBrace, "'}'");
+        self.pop_shadow_scope();
         let span = self.span_between(start_token, self.position);
         Some(self.ast.push(
             span,
@@ -1259,11 +1262,13 @@ impl<'a> Parser<'a> {
         self.bump();
         let (name, _) = self.parse_name()?;
         self.declare_shadow_name(&name);
+        self.push_shadow_scope();
         let generics = if self.at(TokenKind::Less) {
             self.parse_generic_parameters()
         } else {
             Vec::new()
         };
+        self.declare_generic_parameters(&generics);
         self.expect(TokenKind::LeftBrace, "'{'");
         let mut members = Vec::new();
         let mut extensions = Vec::new();
@@ -1274,6 +1279,7 @@ impl<'a> Parser<'a> {
                 }
             } else {
                 let (member_name, member_span) = self.parse_name()?;
+                self.declare_shadow_name(&member_name);
                 let payload = if self.eat(TokenKind::Colon) {
                     self.parse_type()
                 } else {
@@ -1288,6 +1294,7 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(TokenKind::RightBrace, "'}'");
+        self.pop_shadow_scope();
         let span = self.span_between(start_token, self.position);
         Some(self.ast.push(
             span,
@@ -1306,11 +1313,13 @@ impl<'a> Parser<'a> {
         self.bump();
         let (name, _) = self.parse_name()?;
         self.declare_shadow_name(&name);
+        self.push_shadow_scope();
         let generics = if self.at(TokenKind::Less) {
             self.parse_generic_parameters()
         } else {
             Vec::new()
         };
+        self.declare_generic_parameters(&generics);
         self.expect(TokenKind::LeftBrace, "'{'");
         let mut members = Vec::new();
         let mut extensions = Vec::new();
@@ -1323,6 +1332,7 @@ impl<'a> Parser<'a> {
                 let member_start = self.position;
                 let member_modifiers = self.parse_modifiers();
                 let head = self.parse_definition_head(true)?;
+                self.declare_shadow_name(&head.name);
                 let Some(ty) = head.ty else {
                     self.error_here("union member requires a type");
                     self.synchronize();
@@ -1338,6 +1348,7 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(TokenKind::RightBrace, "'}'");
+        self.pop_shadow_scope();
         let span = self.span_between(start_token, self.position);
         Some(self.ast.push(
             span,

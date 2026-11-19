@@ -4010,7 +4010,7 @@ impl<'a> Sema<'a> {
                         let name = String::from_utf8_lossy(&decoded.bytes).into_owned();
                         Some(
                             Self::platform_kind_from_name(&name)
-                                .is_some_and(|kind| kind == Self::host_platform_kind()),
+                                .is_some_and(|kind| kind == self.target_platform_kind),
                         )
                     }
                     NodeKind::MemberAccess(access) => {
@@ -4025,7 +4025,7 @@ impl<'a> Sema<'a> {
                             .enum_members
                             .iter()
                             .find(|(member, _)| *member == access.name)?;
-                        Some(*value as u32 == Self::host_platform_kind())
+                        Some(*value as u32 == self.target_platform_kind)
                     }
                     _ => None,
                 }
@@ -10026,7 +10026,7 @@ impl<'a> Sema<'a> {
                     let name = String::from_utf8_lossy(&decoded.bytes).into_owned();
                     // Names outside the canonical set answer false (§15.3).
                     Self::platform_kind_from_name(&name)
-                        .is_some_and(|kind| kind == Self::host_platform_kind())
+                        .is_some_and(|kind| kind == self.target_platform_kind)
                 }
                 Err(message) => {
                     self.error(self.span_of(argument.value), message);
@@ -10052,7 +10052,7 @@ impl<'a> Sema<'a> {
                     .iter()
                     .find(|(member, _)| *member == access.name)
                 {
-                    Some((_, value)) => *value as u32 == Self::host_platform_kind(),
+                    Some((_, value)) => *value as u32 == self.target_platform_kind,
                     None => {
                         self.error(
                             self.span_of(node),

@@ -2646,3 +2646,90 @@ fixed Main(): integer(4)
     );
     assert!(!stderr.is_empty(), "{stderr}");
 }
+
+#[test]
+fn platform_queries_answer_the_selected_target() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "ainsc-cli-platform-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&directory).expect("create temp dir");
+    let path = directory.join("program.ns");
+    std::fs::write(
+        &path,
+        "\
+#if Platform.Is(PlatformKind.Windows)
+{
+    #{ Compiler.LogError(\"windows target\"); }
+}
+else
+{
+    #{ Compiler.LogError(\"non-windows target\"); }
+}
+
+fixed Main(): integer(4)
+{
+    return 0;
+}",
+    )
+    .expect("write");
+    let host = ai_nsc()
+        .args(["check", path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let windows = ai_nsc()
+        .args([
+            "check",
+            "--target=x86_64-pc-windows-msvc",
+            path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("run ai-nsc");
+    let other_path = directory.join("other.ns");
+    std::fs::write(
+        &other_path,
+        "\
+#if Platform.Is(PlatformKind.Other)
+{
+    #{ Compiler.LogError(\"other target\"); }
+}
+else
+{
+    #{ Compiler.LogError(\"named target\"); }
+}
+
+fixed Main(): integer(4)
+{
+    return 0;
+}",
+    )
+    .expect("write");
+    let other = ai_nsc()
+        .args([
+            "check",
+            "--target=x86_64-unknown-uefi",
+            other_path.to_str().expect("utf-8 path"),
+        ])
+        .output()
+        .expect("run ai-nsc");
+    let named = ai_nsc()
+        .args(["check", other_path.to_str().expect("utf-8 path")])
+        .output()
+        .expect("run ai-nsc");
+    let _ = std::fs::remove_dir_all(&directory);
+    let host_stderr = String::from_utf8_lossy(&host.stderr);
+    let windows_stderr = String::from_utf8_lossy(&windows.stderr);
+    let other_stderr = String::from_utf8_lossy(&other.stderr);
+    let named_stderr = String::from_utf8_lossy(&named.stderr);
+    assert!(!host.status.success(), "{host_stderr}");
+    assert!(host_stderr.contains("non-windows target"), "{host_stderr}");
+    assert!(
+        windows_stderr.contains("windows target"),
+        "{windows_stderr}"
+    );
+    assert!(other_stderr.contains("other target"), "{other_stderr}");
+    assert!(named_stderr.contains("named target"), "{named_stderr}");
+}

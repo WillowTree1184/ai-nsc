@@ -4896,3 +4896,23 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 0);
 }
+
+#[test]
+fn keyword_shadowing_is_scoped_to_enum_variant_and_union_bodies() {
+    // Member names shadow keywords only inside their type body; the outer scope
+    // still parses `class` as the keyword (§6.4).
+    let source = "\
+enumeration Palette: integer(4) { class = 1; }
+
+variant Shape { class: integer(4); }
+
+union Bits { class: integer(4); }
+
+class Marker { }
+
+fixed Main(): integer(4)
+{
+    return Palette.class;
+}";
+    assert_eq!(run_program(source), 1);
+}

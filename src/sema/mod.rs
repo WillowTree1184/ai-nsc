@@ -1170,7 +1170,7 @@ pub fn analyze_with_layout(
     engine: &mut DiagnosticEngine,
     layout: crate::sema::types::TargetLayout,
 ) -> SemaResult {
-    analyze_with_options(ast, sources, engine, layout, true, false)
+    analyze_with_options(ast, sources, engine, layout, true, false, None)
 }
 
 /// Runs semantic analysis for an explicit target layout and host-JIT choice.
@@ -1181,6 +1181,7 @@ pub fn analyze_with_options(
     layout: crate::sema::types::TargetLayout,
     jit_allowed: bool,
     freestanding: bool,
+    target_triple: Option<&str>,
 ) -> SemaResult {
     let node_count = ast.nodes.len();
     let mut sema = Sema {
@@ -1234,6 +1235,7 @@ pub fn analyze_with_options(
         unknown_compile_time_names: std::collections::HashSet::new(),
         jit_allowed,
         freestanding,
+        target_platform_kind: Sema::platform_kind_for_triple(target_triple),
         compile_time_phase_b: false,
         compile_time_deferred: false,
         compile_time_aborted: false,
@@ -1346,6 +1348,8 @@ pub(crate) struct Sema<'a> {
     /// Whether the target is freestanding (no host C library, e.g. UEFI): the
     /// platform `DefaultAllocator` is then the developer's responsibility.
     pub(crate) freestanding: bool,
+    /// Compilation target's `PlatformKind` value for `Platform.Is` (§11.9.3).
+    pub(crate) target_platform_kind: u32,
     /// Whether a constant initializer is being checked (§5.3).
     pub(crate) in_constant_initializer: bool,
     /// Nesting depth of compile-time function interpretation (§11.4).
@@ -1442,9 +1446,13 @@ impl<'a> Sema<'a> {
         *self.scope_stack.last().expect("scope stack is never empty")
     }
 
-    /// The host platform kind as the numeric value of `PlatformKind` (§15.2).
-    pub(crate) fn host_platform_kind() -> u32 {
-        let triple = crate::HOST_TRIPLE.to_ascii_lowercase();
+    /// The `PlatformKind` value for a target triple (§15.2, §11.9.3): 0 `Other`,
+    /// 1 `Windows`, 2 `Linux`, 3 `MacOS`, 4 `FreeBSD`. `None` means the host.
+    pub(crate) fn platform_kind_for_triple(triple: Option<&str>) -> u32 {
+        let triple = triple.map_or_else(
+            || crate::HOST_TRIPLE.to_ascii_lowercase(),
+            |triple| triple.to_ascii_lowercase(),
+        );
         if triple.contains("windows") {
             1
         } else if triple.contains("linux") {

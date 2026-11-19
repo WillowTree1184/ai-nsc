@@ -359,6 +359,7 @@ fn compile(options: &Options) -> i32 {
         target_layout,
         jit_allowed,
         freestanding,
+        options.target.as_deref(),
     );
     if sema_result.error_count > 0 {
         return 1;

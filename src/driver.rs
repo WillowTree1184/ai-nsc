@@ -365,6 +365,37 @@ fn compile(options: &Options) -> i32 {
         return 1;
     }
     if options.action == Some(Action::Check) {
+        // §5.2 requires inline-assembly text to be validated statically. LLVM
+        // only assembles it during object emission, so assembly-containing
+        // programs are code-generated and assembled to a temporary object here.
+        if sema_result.has_assembly {
+            let codegen_options = codegen::CodegenOptions {
+                optimization_level: options.optimization_level,
+                target: options.target.clone(),
+                emit_launcher: true,
+            };
+            let ir = match codegen::generate(&parsed, &sema_result, &codegen_options) {
+                Ok(ir) => ir,
+                Err(message) => {
+                    diagnostics.report_stderr(&sources, Severity::Error, None, &message);
+                    return 1;
+                }
+            };
+            let object = std::env::temp_dir().join(format!(
+                "ainsc-asm-check-{}-{}.o",
+                std::process::id(),
+                first_input.file_stem().map_or_else(
+                    || "program".to_string(),
+                    |stem| stem.to_string_lossy().into_owned()
+                )
+            ));
+            let result = run_clang(&ir, &object, true, options);
+            let _ = std::fs::remove_file(&object);
+            if let Err(message) = result {
+                eprintln!("ai-nsc: {message}");
+                return 1;
+            }
+        }
         return 0;
     }
 

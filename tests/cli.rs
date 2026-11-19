@@ -3440,3 +3440,35 @@ fn inline_assembly_emits_objects_for_supported_architectures() {
     }
     let _ = std::fs::remove_dir_all(&directory);
 }
+
+#[test]
+fn inline_assembly_text_is_validated_during_check() {
+    let stderr = check_source(
+        "\
+fixed Main(): integer(4)
+{
+    assembly
+    {
+        this_is_not_an_instruction
+    }
+    return 0;
+}",
+    );
+    assert!(
+        stderr.contains("error") || stderr.contains("failed"),
+        "{stderr}"
+    );
+    let valid = check_source_ok(
+        "\
+fixed Main(): integer(4)
+{
+    local value: integer(4) = 1;
+    assembly
+    {
+        add @[value], 1
+    }
+    return value;
+}",
+    );
+    assert!(valid.is_empty(), "{valid}");
+}

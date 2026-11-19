@@ -7477,6 +7477,7 @@ impl<'a> Sema<'a> {
 
     /// Checks an inline-assembly statement (§5.2).
     fn check_assembly_statement(&mut self, node: NodeId, statement: &AssemblyStmt) {
+        self.result.has_assembly = true;
         if self.current_function.is_none() {
             self.error(
                 self.span_of(node),

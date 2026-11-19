@@ -963,6 +963,8 @@ pub struct SemaResult {
     pub heap_reference_locals: HashSet<LocalId>,
     /// Locals referencing a returned explicit-allocator heap class instance.
     pub heap_custom_reference_locals: HashSet<LocalId>,
+    /// Whether the program contains inline-assembly statements.
+    pub has_assembly: bool,
     /// A pointer field (`base.Field`) currently known to hold a heap unit
     /// (§5.8 pointer-member dispose, direct local-field alias only).
     pub field_heap_aliases: HashMap<(LocalId, String), u32>,

@@ -5614,3 +5614,27 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 9);
 }
+
+#[test]
+fn environment_facts_parameters_are_compile_time_specialized() {
+    let source = "\
+fixed IsLinux(facts: EnvironmentFacts): boolean
+{
+    return #(facts.PlatformIs(\"Linux\"));
+}
+
+fixed Wrapper(facts: EnvironmentFacts): boolean
+{
+    return IsLinux(facts);
+}
+
+fixed Main(): integer(4)
+{
+    if (Wrapper(Environment.Host))
+    {
+        return 6;
+    }
+    return 0;
+}";
+    assert_eq!(run_program(source), 6);
+}

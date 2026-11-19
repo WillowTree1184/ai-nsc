@@ -3908,13 +3908,22 @@ fixed IsLinux(facts: EnvironmentFacts): boolean
     return #(facts.PlatformIs(\"Linux\"));
 }
 
+fixed Facts(): EnvironmentFacts
+{
+    return Environment.Host;
+}
+
 fixed Main(): integer(4)
 {
+    if (IsLinux(Facts()))
+    {
+        return 1;
+    }
     return 0;
 }",
     );
     assert!(
-        stderr.contains("environment facts known at compile time"),
+        stderr.contains("requires statically known facts"),
         "{stderr}"
     );
 }

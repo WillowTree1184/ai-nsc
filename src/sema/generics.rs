@@ -162,6 +162,7 @@ impl<'a> Sema<'a> {
             return_type: None,
             mangled: String::new(),
             exposed_symbol,
+            environment_facts: Vec::new(),
             generic_parameters: parameters,
             generic_arguments: Vec::new(),
             template: None,
@@ -581,6 +582,7 @@ impl<'a> Sema<'a> {
             return_type,
             mangled,
             exposed_symbol,
+            environment_facts: Vec::new(),
             generic_parameters: Vec::new(),
             generic_arguments: arguments.clone(),
             template: Some(template_index),
@@ -593,6 +595,117 @@ impl<'a> Sema<'a> {
             span: self.span_of(cloned),
         });
         self.function_instantiations.insert(key, index);
+        Some(index)
+    }
+
+    /// Instantiates a function template for concrete `EnvironmentFacts`
+    /// parameter values (§11.9.3), so compile-time queries in the body fold.
+    pub(crate) fn instantiate_environment_facts_function(
+        &mut self,
+        template_index: u32,
+        facts: &[(usize, bool)],
+        span: Span,
+    ) -> Option<u32> {
+        let (
+            node,
+            scope,
+            decl_scope,
+            name,
+            generic_env,
+            method_of,
+            static_owner,
+            is_virtual,
+            is_override,
+            is_sealed,
+        ) = {
+            let template = &self.result.functions[template_index as usize];
+            (
+                template.node,
+                template.scope.clone(),
+                template.decl_scope,
+                template.name.clone(),
+                template.generic_env.clone(),
+                template.method_of,
+                template.static_owner,
+                template.is_virtual,
+                template.is_override,
+                template.is_sealed,
+            )
+        };
+        let key = (node, facts.to_vec());
+        if let Some(existing) = self.environment_fact_instantiations.get(&key) {
+            return Some(*existing);
+        }
+        let cloned = self.clone_declaration(node);
+        let NodeKind::Fixed(declaration) = self.node_kind(cloned).clone() else {
+            self.error(
+                span,
+                "internal error: EnvironmentFacts function declaration not found",
+            );
+            return None;
+        };
+        let Some(ty_node) = declaration.ty else {
+            self.error(self.span_of(cloned), "a function requires a type");
+            return None;
+        };
+        let NodeKind::FunctionType(function) = self.node_kind(ty_node).clone() else {
+            self.error(self.span_of(cloned), "a function requires a function type");
+            return None;
+        };
+        let Some(Initializer::Block(body)) = declaration.init else {
+            self.error(self.span_of(cloned), "a function requires a body");
+            return None;
+        };
+        self.generic_env.push(generic_env.clone());
+        let resolved = self.resolve_parameters(&function).map(|parameters| {
+            let return_type = function.return_type.and_then(|ty| self.resolve_type(ty));
+            (parameters, return_type)
+        });
+        self.generic_env.pop();
+        let (resolved_parameters, return_type) = resolved?;
+        let spellings: Vec<String> = resolved_parameters
+            .iter()
+            .map(|parameter| self.spelling(parameter.ty))
+            .collect();
+        let base = mangle_function(&scope, &name, &spellings);
+        let suffix: String = facts
+            .iter()
+            .map(|(position, host)| format!(".facts{position}{}", u8::from(*host)))
+            .collect();
+        let mangled = format!("{base}{suffix}");
+        let index = self.result.functions.len() as u32;
+        self.result.functions.push(FunctionInfo {
+            name,
+            scope,
+            node: cloned,
+            body: Some(FunctionBody::Block(body)),
+            parameters: resolved_parameters,
+            wildcard: false,
+            method_of,
+            static_owner,
+            is_virtual,
+            is_override,
+            is_sealed,
+            accessibility: crate::ast::Accessibility::Public,
+            calling_convention: None,
+            scoped: Vec::new(),
+            is_abstract: false,
+            return_type,
+            mangled,
+            exposed_symbol: None,
+            environment_facts: facts.to_vec(),
+            generic_parameters: Vec::new(),
+            generic_arguments: Vec::new(),
+            template: Some(template_index),
+            decl_scope,
+            generic_env,
+            environment: false,
+            captures: Vec::new(),
+            constant_values: HashMap::new(),
+            locals: Vec::new(),
+            span: self.span_of(cloned),
+        });
+        self.environment_fact_instantiations.insert(key, index);
         Some(index)
     }
 
@@ -709,6 +822,7 @@ impl<'a> Sema<'a> {
             return_type,
             mangled,
             exposed_symbol,
+            environment_facts: Vec::new(),
             generic_parameters: Vec::new(),
             generic_arguments: Vec::new(),
             template: Some(template_index),

@@ -21,7 +21,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-`cargo test` currently runs **413 tests**: 41 lib unit tests (lexer, literal,
+`cargo test` currently runs **414 tests**: 41 lib unit tests (lexer, literal,
 mangling, AST clone), 54 CLI behaviour tests, 2 LLVM codegen tests, 125
 end-to-end execution programs, 10 parser tests and **2 spec-conformance tests**
 that read `docs/grammar/Draft 1.153.md` directly (a closed-set test also asserts that the only spec programs failing semantic analysis are the documented demonstration/inconsistency snippets):
@@ -112,12 +112,12 @@ miscompiles.
    and `is` match patterns are not interpreted; those forms are diagnosed rather
    than miscompiled.
 2. **EnvironmentFacts compile-time specialization**: queries on frozen facts and
-   locals initialized from them fold at compile time. A query on a facts value
-   whose origin is not statically tracked (for example an `EnvironmentFacts`
-   parameter) is lowered to an equivalent runtime comparison; inside
-   `#(...)`/`#if` it is diagnosed because that context requires a compile-time
-   value. Specialization-by-fact-value (so the query also folds in compile-time
-   contexts) remains.
+   locals initialized from them fold at compile time; functions taking
+   `EnvironmentFacts` parameters are specialized per call-site fact value
+   (including forwarding through further facts parameters), so queries on those
+   parameters also fold in `#(...)`/`#if`. Residual: a facts value whose origin
+   is not statically tracked (for example returned from a function or loaded from
+   a field) cannot be specialized and is diagnosed.
 
 ## Specification inconsistencies (not deliberate extensions)
 

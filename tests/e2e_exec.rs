@@ -5740,3 +5740,41 @@ fixed Main(): integer(4)
 }";
     assert_eq!(run_program(source), 7);
 }
+
+#[test]
+fn enumeration_type_name_elision_works_in_typed_contexts() {
+    let source = "\
+enumeration Status: integer(4)
+{
+    Pending = 0;
+    Running = 1;
+}
+
+local current: Status = Running;
+
+fixed GetDefault(): Status
+{
+    return Pending;
+}
+
+fixed Main(): integer(4)
+{
+    if (current == Running && GetDefault() == Pending) { return 3; }
+    return 0;
+}";
+    assert_eq!(run_program(source), 3);
+}
+
+#[test]
+fn global_fixed_constants_infer_their_types() {
+    let source = "\
+fixed Flag = true;
+fixed Answer = 42;
+
+fixed Main(): integer(4)
+{
+    if (Flag && Answer == 42) { return 1; }
+    return 0;
+}";
+    assert_eq!(run_program(source), 1);
+}

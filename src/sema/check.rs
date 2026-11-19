@@ -4094,14 +4094,24 @@ impl<'a> Sema<'a> {
     }
 
     fn resolve_global_fixed(&mut self, node: NodeId, declaration: &FixedDecl) {
-        let Some(ty_node) = declaration.ty else {
+        let inferred_ty = if declaration.ty.is_none() {
+            match declaration.init {
+                Some(Initializer::Expression(expression)) => self.check_expr(expression, None),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let ty_node = declaration.ty;
+        let ty = match ty_node {
+            Some(ty_node) => self.resolve_type(ty_node),
+            None => inferred_ty,
+        };
+        let Some(ty) = ty else {
             self.error(
                 self.span_of(node),
-                "a global constant requires a type or a function type",
+                "a global constant requires a type or an inferable initializer",
             );
-            return;
-        };
-        let Some(ty) = self.resolve_type(ty_node) else {
             return;
         };
         let init = declaration.init.and_then(|init| match init {
@@ -9452,6 +9462,22 @@ impl<'a> Sema<'a> {
             if let Some(expected) = expected {
                 if let Type::Named(index) = self.types_of(expected) {
                     let definition = &self.result.type_defs[index as usize];
+                    // Type-name elision for enumeration members (§3.8.5): in a
+                    // context that wants an enumeration, `Name` stands for
+                    // `Enumeration.Name`.
+                    if definition.kind == TypeDefKind::Enumeration {
+                        if let Some((_, value)) = definition
+                            .enum_members
+                            .iter()
+                            .find(|(member, _)| *member == name.name)
+                        {
+                            self.result.resolutions[node as usize] = Some(Resolution::Constant {
+                                ty: expected,
+                                value: *value,
+                            });
+                            return Some(expected);
+                        }
+                    }
                     if definition.kind == TypeDefKind::Variant {
                         if let Some(state) = definition
                             .variant_states

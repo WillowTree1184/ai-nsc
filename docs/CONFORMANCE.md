@@ -11,7 +11,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-Current result: **419 tests green**, formatting clean, clippy with zero warnings.
+Current result: **420 tests green**, formatting clean, clippy with zero warnings.
 
 Test breakdown:
 
@@ -22,7 +22,7 @@ Test breakdown:
 | LLVM codegen | 2 |
 | MCJIT probe | 1 |
 | JIT compile-time evaluation | 2 |
-| end-to-end execution | 220 |
+| end-to-end execution | 221 |
 | parser | 10 |
 | spec-example conformance | 3 |
 
@@ -52,12 +52,14 @@ Test breakdown:
 
 ## Remaining deviation
 
-`COVERAGE.md` lists one remaining deviation: compile-time non-scalar execution
-(non-scalar compile-time `heap` objects, `is` match patterns, and thrown
-values/catch bindings/class-hierarchy matching for compile-time `trap`). Other
-areas previously listed were reclassified after auditing the specification:
-NOLAA conservatism is required by §12.2, the expression-bodied function literal
-is a §2.7.9 EBNF/example inconsistency, and unprovable EnvironmentFacts origins
-are conservatively rejected at compile time per §11.9.3.
+`COVERAGE.md` lists one remaining deviation: compile-time constructor/destructor
+bodies for non-scalar heap objects, non-scalar fields, and thrown object
+values/catch bindings/class-hierarchy matching for compile-time `trap`.
+Compile-time scalar-field heap objects, field reads/writes, `dispose` and `is`
+patterns with named bindings are implemented. Other areas previously listed were
+reclassified after auditing the specification: NOLAA conservatism is required by
+§12.2, the expression-bodied function literal is a §2.7.9 EBNF/example
+inconsistency, and unprovable EnvironmentFacts origins are conservatively
+rejected at compile time per §11.9.3.
 
-Audit history: `docs/AUDIT.md` (187 reproduced defects/fixes).
+Audit history: `docs/AUDIT.md` (188 reproduced defects/fixes).
